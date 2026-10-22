@@ -90,6 +90,29 @@ client.on(Events.InteractionCreate,async i=>{
   }
   if(!p) throw new Error('Chưa có phiên phát.');
   switch(i.commandName) {
+   case 'loop': {
+    const mode=i.options.getString('mode',true);
+    if(!['off','track','queue'].includes(mode)) throw new Error('Lệnh lặp không hợp lệ.');
+    p.loop(mode);
+    return await reply(`Chế độ lặp: ${mode}.`);
+   }
+   case 'shuffle':
+    if(p.upcomingTracks.length<2) throw new Error('Hàng đợi cần ít nhất 2 bài để trộn.');
+    p.shuffle();
+    return await reply('Đã trộn các bài đang chờ.');
+   case 'volume': {
+    const percent=i.options.getInteger('percent',true);
+    if(percent<0 || percent>100) throw new Error('Lệnh âm lượng chỉ nhận 0–100.');
+    if(!p.setVolume(percent)) throw new Error('Không thể chỉnh âm lượng lúc này.');
+    return await reply(`Âm lượng: ${percent}%.`);
+   }
+   case 'remove': {
+    const position=i.options.getInteger('position',true);
+    if(position<1 || position>p.upcomingTracks.length) throw new Error('Hàng đợi không có vị trí này.');
+    const removed=p.queue.remove(position-1);
+    if(!removed) throw new Error('Không thể xóa bài ở vị trí này.');
+    return await reply(`Đã xóa: ${clean(removed.title)}`);
+   }
    case 'pause': p.pause(); break;
    case 'resume': p.resume(); break;
    case 'skip': p.skip(); break;

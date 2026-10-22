@@ -49,13 +49,13 @@ Script start chính xác là `node index.js`. Không cần build TypeScript.
 5. Không bật Message Content, Presence hoặc Server Members privileged intent. Bot chỉ dùng Guilds và GuildVoiceStates.
 6. Vào kênh voice thường rồi `/play query: tên bài`.
 
-Lệnh: `/play`, `/pause`, `/resume`, `/skip`, `/stop`, `/queue`, `/nowplaying`, `/ping`.
+Lệnh: `/loop mode:off|track|queue`, `/shuffle`, `/volume percent:0–100`, `/remove position:1–20`, `/play`, `/pause`, `/resume`, `/skip`, `/stop`, `/queue`, `/nowplaying`, `/ping`.
 Lệnh phản hồi riêng cho người dùng; chỉ người cùng voice mới điều khiển được. `/queue` hiển thị 10 bài; không gửi mention từ tiêu đề. Bot không lưu hàng đợi ra đĩa; restart sẽ mất phiên phát.
 
 ## 4. Chính sách tiết kiệm tài nguyên
 
 - Một phiên phát, một guild; không Message cache, không Presence cache, member cache giới hạn.
-- Không preload, crossfade, smart transition, loudness normalization, filter, autoplay, TTS hoặc Spotify.
+- Không preload, crossfade, smart transition, loudness normalization, filter, autoplay, TTS hoặc Spotify. Loop/shuffle chỉ thao tác hàng đợi; volume có thể tăng CPU khi cần xử lý âm lượng.
 - Search cache/stats của manager tắt. Chỉ lấy một track từ kết quả; tối đa 20 bài chờ, mỗi bài tối đa 10 phút, không livestream/playlist.
 - Yêu cầu người dùng dùng tên bài hoặc URL HTTPS YouTube/SoundCloud. Không nhận local file, URL tùy ý hay endpoint nội bộ từ lệnh.
 - Tự rời khi kết thúc hoặc kênh trống sau khoảng 30 giây qua lifecycle ZiPlayer; `/stop` hủy player ngay.
@@ -94,7 +94,7 @@ npm test
 npm run check
 ```
 
-Đã chạy: 3 unit tests (query validation và command schema), kiểm tra cú pháp index.js; smoke test trên Node 22 khởi tạo plugin/manager/player và destroy thành công. **Chưa login Discord hoặc thử phát âm thanh thực tế**, vì chưa có token/guild. Không giả lập kết quả benchmark.
+Đã chạy: 4 unit tests (query validation và command schema), kiểm tra cú pháp index.js; smoke test trên Node 22 khởi tạo plugin/manager/player và destroy thành công. **Chưa login Discord hoặc thử phát âm thanh thực tế**, vì chưa có token/guild. Không giả lập kết quả benchmark.
 
 Kiểm thử trước khi đưa vào chạy dài hạn:
 - /play bằng tên bài và link, pause/resume/skip, queue/stop.

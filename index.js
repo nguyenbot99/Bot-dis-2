@@ -1,15 +1,15 @@
 import 'dotenv/config';
 import express from 'express';
-import { Client, Events, GatewayIntentBits, Options, PermissionFlagsBits } from 'discord.js';
+import { Client, Events, GatewayIntentBits, Options, PermissionFlagsBits, Routes } from 'discord.js';
 import { PlayerManager } from 'ziplayer';
 import ffmpeg from 'ffmpeg-static';
-import { validateQuery } from './src/policy.js';
+import { resolveConfig, validateQuery } from './src/policy.js';
 import { assertMusicAccess } from './src/access.js';
+import { commands } from './src/commands.js';
 
 const [major, minor] = process.versions.node.split('.').map(Number);
 if(major < 22 || (major === 22 && minor < 12)) throw new Error('Cần Node >=22.12.0');
-const { DISCORD_TOKEN, GUILD_ID } = process.env;
-if(!DISCORD_TOKEN || !/^\d{17,20}$/.test(GUILD_ID ?? '')) throw new Error('Thiếu DISCORD_TOKEN hoặc GUILD_ID không hợp lệ.');
+const { token: DISCORD_TOKEN, guildId: GUILD_ID, autoRegister } = resolveConfig(process.env);
 // Lazy-load only the two enabled source modules; no Spotify, TTS or extensions.
 const pluginRoot = new URL('./node_modules/@ziplayer/plugin/dist/', import.meta.url);
 const { YouTubePlugin } = await import(new URL('YouTubePlugin.js',pluginRoot));
@@ -27,22 +27,51 @@ const app = express();
 app.disable('x-powered-by');
 app.get('/healthz',(_req,res)=>res.status(client.isReady()?200:503).json({ready:client.isReady(),uptime:Math.floor(process.uptime())}));
 app.get('/',(_req,res)=>res.type('text').send('Zi Light Music Bot — /healthz'));
-const server=app.listen(Number(process.env.PORT || process.env.SERVER_PORT || 3000),'0.0.0.0');
-server.on('error',fatal);
+const explicitPort = process.env.PORT || process.env.SERVER_PORT;
+let server = app.listen(Number(explicitPort || 3000),'0.0.0.0');
+server.on('error',e=>{
+ if(!explicitPort && e?.code==='EADDRINUSE') {
+  console.warn('[http] Port 3000 đang bận, chuyển sang cổng tự động.');
+  server = app.listen(0,'0.0.0.0');
+  server.on('error',e2=>console.warn('[http]',e2?.code ?? e2?.name ?? 'Error'));
+  return;
+ }
+ fatal(e);
+});
 let busy=false, closing=false;
 const cooldown=new Map();
 const clean=s=>String(s??'Không rõ').replace(/[@`*_~|<>]/g,'').slice(0,130);
+async function syncGuildCommands(appId, targetGuildId) {
+ await client.rest.put(Routes.applicationGuildCommands(appId, targetGuildId), { body: commands });
+}
 manager.on('playerError',(player,error)=>{
  console.error('[playerError]',error?.name ?? 'Error');
  // Destroy rather than repeatedly extract a broken stream.
  manager.delete(player.guildId);
 });
 manager.on('error',()=>console.error('[manager] error'));
-client.once(Events.ClientReady,c=>console.log(`Ready: ${c.user.tag}`));
+client.once(Events.ClientReady,async c=>{
+ console.log(`Ready: ${c.user.tag}`);
+ if(!autoRegister) return;
+ try {
+  const targets = GUILD_ID ? [GUILD_ID] : [...c.guilds.cache.keys()].slice(0,5);
+  await Promise.all(targets.map(gid=>syncGuildCommands(c.application.id,gid)));
+  console.log(`Synced ${commands.length} slash commands for ${targets.length} guild(s).`);
+ } catch(e) {
+  console.error('[register]',e?.name ?? 'Error',e?.message ?? '');
+ }
+});
+client.on(Events.GuildCreate,guild=>{
+ if(!autoRegister || !client.application?.id) return;
+ if(GUILD_ID ? guild.id!==GUILD_ID : client.guilds.cache.size>5) return;
+ syncGuildCommands(client.application.id,guild.id)
+  .then(()=>console.log(`Synced ${commands.length} slash commands for joined guild ${guild.id}.`))
+  .catch(e=>console.error('[register:guildCreate]',e?.name ?? 'Error'));
+});
 client.on(Events.Error,e=>console.error('[discord]',e.name));
 client.on(Events.InteractionCreate,async i=>{
- if(!i.isChatInputCommand()) return;
- if(i.guildId!==GUILD_ID) return void i.reply({content:'Bot chỉ phục vụ máy chủ đã cấu hình.',ephemeral:true}).catch(()=>{});
+ if(!i.isChatInputCommand() || !i.guild) return;
+ if(GUILD_ID && i.guildId!==GUILD_ID) return void i.reply({content:'Bot chỉ phục vụ máy chủ đã cấu hình.',ephemeral:true}).catch(()=>{});
  const reply=content=>i.editReply({content,allowedMentions:{parse:[]}});
  let ownsLock=false, created=false;
  try {

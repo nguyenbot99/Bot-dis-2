@@ -24,17 +24,17 @@ npm ci --omit=dev
 cp .env.example .env
 ```
 
-Điền trong `.env`:
-- DISCORD_TOKEN: Bot Token từ Discord Developer Portal, không phải OAuth client secret.
-- CLIENT_ID: Application ID.
-- GUILD_ID: Server ID được phép sử dụng bot.
-- PORT: cổng web host cấp. Nếu không đặt, chương trình đọc SERVER_PORT hoặc dùng 3000.
+Điền trong `.env` (trên **botkeep.cloud** chỉ cần cấu hình `DISCORD_TOKEN` trong phần Environment/Token là chạy được ngay):
+- DISCORD_TOKEN: Bot Token từ Discord Developer Portal (cũng chấp nhận alias `BOT_TOKEN`).
+- CLIENT_ID: *(tùy chọn)* Application ID — nếu để trống, bot/script tự lấy từ token.
+- GUILD_ID: *(tùy chọn)* Server ID được phép sử dụng bot (17–20 chữ số). Nếu để trống, bot tự đồng bộ lệnh slash cho các server bot tham gia (tối đa 5 server) và vẫn giới hạn tối đa 1 phiên phát đồng thời.
+- AUTO_REGISTER: *(mặc định `true`)* tự đồng bộ 12 lệnh slash khi bot kết nối (`ClientReady` / `GuildCreate`). Đặt `false` nếu chỉ muốn đăng ký thủ công qua `npm run register`.
+- PORT: cổng web host cấp. Nếu không đặt, chương trình đọc SERVER_PORT hoặc dùng 3000 (tự chuyển cổng trống nếu 3000 bận).
 - NODE_OPTIONS: giới hạn old-space 128 MB; KHÔNG giới hạn tổng RAM.
 
-Đăng ký lệnh (chỉ chạy khi thay đổi danh sách lệnh):
+Khởi chạy (lệnh slash sẽ tự đăng ký khi bot online, hoặc chạy `npm run register` thủ công nếu đặt `AUTO_REGISTER=false`):
 
 ```sh
-npm run register
 npm start
 ```
 
@@ -69,13 +69,12 @@ Lệnh phản hồi riêng cho người dùng; chỉ người cùng voice và l�
 
 Chưa xác minh chính sách gói Free hiện tại của botkeep.cloud. Chỉ triển khai nếu gói cho Node 22+, tiến trình liên tục, đủ RAM/CPU, outbound UDP voice và tải ffmpeg. Nếu không có thì không tương thích dù web health vẫn hoạt động.
 
-Pterodactyl:
-1. Chọn egg Node.js với image Node 22 >=22.12.0; upload nội dung dự án (không upload node_modules).
-2. Cài `npm ci --omit=dev` bằng console/install step host cung cấp.
-3. Đặt DISCORD_TOKEN, CLIENT_ID, GUILD_ID, PORT theo allocation; đặt `NODE_OPTIONS=--max-old-space-size=128` nếu muốn giới hạn heap.
-4. Startup `npm start` hoặc `node index.js`.
-5. Chạy đăng ký slash command một lần bằng console/task riêng trước khi start.
-6. Bật restart-on-crash của panel, tránh chạy thêm PM2 trong container RAM thấp.
+botkeep.cloud / Pterodactyl:
+1. Kết nối repo GitHub hoặc upload mã nguồn dự án (không upload `node_modules` hay `.env`), chọn Node >=22.12.0.
+2. Dán Bot Token vào biến môi trường `DISCORD_TOKEN` trên panel (trên botkeep.cloud chỉ cần mỗi `DISCORD_TOKEN`; `GUILD_ID` là tùy chọn nếu muốn khóa cứng vào 1 server ID 17–20 chữ số).
+3. Startup command: `npm start` (`node index.js`). Khi online, bot tự đồng bộ 12 lệnh slash cho server của bạn mà không cần chạy bước `register` riêng.
+4. Khi cập nhật code mới trên GitHub, mở tab **GitHub** trên panel Botkeep để pull phiên bản mới về rồi Restart (nút Redeploy không tự kéo commit mới từ GitHub).
+5. Bật restart-on-crash của panel, tránh chạy thêm PM2 trong container RAM thấp.
 
 Không tự ping hoặc mở nhiều web worker. `GET /healthz` trả 200 khi Discord client ready, 503 khi chưa ready; `/` chỉ báo dịch vụ web đang sống. Endpoint bind `0.0.0.0`. Health endpoint không chứng minh audio hoạt động và **không vượt được sleep/time quota/termination** do nhà cung cấp áp dụng. Chỉ dùng uptime monitor bên ngoài nếu điều khoản host cho phép.
 

@@ -1,3 +1,17 @@
+export function resolveConfig(env = process.env) {
+ const rawToken = env.DISCORD_TOKEN || env.BOT_TOKEN || env.DISCORD_BOT_TOKEN || env.TOKEN || '';
+ const token = String(rawToken).trim().replace(/^(['"])(.*)\1$/, '$2').trim();
+ if (!token) throw new Error('Thiếu DISCORD_TOKEN trong biến môi trường.');
+
+ const rawGuildId = String(env.GUILD_ID ?? '').trim();
+ if (rawGuildId && !/^\d{17,20}$/.test(rawGuildId)) {
+  throw new Error('GUILD_ID không hợp lệ (cần 17–20 chữ số, hoặc để trống).');
+ }
+
+ const autoRegister = !['false', '0'].includes(String(env.AUTO_REGISTER ?? 'true').trim().toLowerCase());
+ return { token, guildId: rawGuildId || null, autoRegister };
+}
+
 export function validateQuery(input) {
  const q = input.trim();
  if (!q || q.length > 200) throw new Error('Tên bài phải dài 1–200 ký tự.');

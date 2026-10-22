@@ -1,13 +1,17 @@
 import { EmbedBuilder, SlashCommandBuilder } from 'discord.js';
 
-// Giữ nguyên tên lệnh và tên tham số bằng tiếng Anh; Việt hóa toàn bộ phần chú thích hiển thị trên Discord.
+// Giữ nguyên tên lệnh và tên tham số bằng tiếng Anh/số chuẩn Discord (lưu ý Discord không cho dấu "/" trong tên lệnh nên 24/7 viết là /247);
+// Việt hóa toàn bộ phần chú thích hiển thị trên Discord.
 const definitions = [
  ['help', 'Xem danh sách toàn bộ lệnh và hướng dẫn sử dụng bot'],
+ ['join', 'Gọi bot tham gia vào kênh thoại hiện tại của bạn'],
+ ['leave', 'Cho bot dừng nhạc, tắt chế độ 24/7 và rời khỏi kênh thoại'],
+ ['247', 'Bật hoặc tắt chế độ treo kênh thoại 24/7 (không tự rời khi hết nhạc)'],
  ['play', 'Phát nhạc từ tên bài hát hoặc link YouTube/SoundCloud (không nhận danh sách phát)'],
  ['pause', 'Tạm dừng bài hát đang phát'],
  ['resume', 'Tiếp tục phát bài hát đang tạm dừng'],
  ['skip', 'Bỏ qua bài hát hiện tại để sang bài tiếp theo'],
- ['stop', 'Dừng phát nhạc, xóa toàn bộ hàng đợi và rời kênh thoại'],
+ ['stop', 'Dừng phát nhạc và xóa toàn bộ hàng đợi'],
  ['loop', 'Chỉnh chế độ lặp nhạc (tắt, lặp một bài hoặc lặp hàng đợi)'],
  ['shuffle', 'Trộn ngẫu nhiên thứ tự các bài đang chờ trong hàng đợi'],
  ['volume', 'Điều chỉnh âm lượng phát nhạc từ 0% đến 100%'],
@@ -17,7 +21,7 @@ const definitions = [
  ['ping', 'Kiểm tra độ trễ kết nối và mức bộ nhớ Node của bot'],
 ];
 
-// Tạo khung Embed hiển thị đẹp mắt cho lệnh /help (tên lệnh giữ tiếng Anh, chú thích tiếng Việt).
+// Tạo khung Embed hiển thị đẹp mắt cho lệnh /help (tên lệnh giữ chuẩn quốc tế, chú thích tiếng Việt).
 export function buildHelpEmbed(botUser) {
  const botName = botUser?.username ?? 'Music Bot';
  const avatarUrl = botUser?.displayAvatarURL?.({ size: 128 }) ?? undefined;
@@ -35,13 +39,21 @@ export function buildHelpEmbed(botUser) {
   ].join('\n'))
   .addFields(
    {
+    name: '🎙️ Kết nối kênh thoại & 24/7',
+    value: [
+     '`/join` — Gọi bot vào kênh thoại hiện tại của bạn',
+     '`/leave` — Dừng nhạc, tắt 24/7 và cho bot rời khỏi kênh thoại',
+     '`/247` `[mode]` — Bật / tắt chế độ treo kênh thoại 24/7 không tự thoát',
+    ].join('\n'),
+   },
+   {
     name: '▶️ Phát & Điều khiển chính',
     value: [
      '`/play` `query` — Phát nhạc từ tên bài hoặc link YouTube / SoundCloud',
      '`/pause` — Tạm dừng bài hát đang phát',
      '`/resume` — Tiếp tục phát bài đang tạm dừng',
      '`/skip` — Bỏ qua bài hiện tại để sang bài kế tiếp',
-     '`/stop` — Dừng nhạc, xóa toàn bộ hàng đợi và rời kênh thoại',
+     '`/stop` — Dừng nhạc và xóa toàn bộ hàng đợi',
     ].join('\n'),
    },
    {
@@ -88,6 +100,16 @@ export const commands = definitions.map(([name, description]) => {
    .setDescription('Nhập tên bài hát hoặc đường dẫn HTTPS của YouTube / SoundCloud')
    .setRequired(true)
    .setMaxLength(200));
+ }
+ if (name === '247') {
+  c.addStringOption(o => o
+   .setName('mode')
+   .setDescription('Chọn bật hoặc tắt 24/7 (để trống để tự đảo trạng thái)')
+   .setRequired(false)
+   .addChoices(
+    { name: 'Bật 24/7', value: 'on' },
+    { name: 'Tắt 24/7', value: 'off' },
+   ));
  }
  if (name === 'loop') {
   c.addStringOption(o => o

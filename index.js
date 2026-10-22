@@ -72,7 +72,6 @@ const cooldown = new Map();
 const refreshCooldown = new Map();
 const KNOWN_ERROR_RE = /^(Hãy|Bạn|Bot|Chờ|Chỉ|Hàng|Không|Chưa|Tên|URL|Lệnh|Bản)/;
 
-// Xóa bộ hẹn giờ cập nhật khung điều khiển nếu đang chờ.
 function clearPanelTimer(player) {
  if (player?.userdata?.panelTimer) {
   clearTimeout(player.userdata.panelTimer);
@@ -80,10 +79,37 @@ function clearPanelTimer(player) {
  }
 }
 
+function clearEmptyTimer(player) {
+ if (player?.userdata?.emptyTimer) {
+  clearTimeout(player.userdata.emptyTimer);
+  player.userdata.emptyTimer = null;
+ }
+}
+
+// Áp dụng trạng thái 24/7 trực tiếp lên cả Player options lẫn LifecycleController bên trong ZiPlayer.
+function apply247State(player, enabled) {
+ if (!player?.userdata) return;
+ player.userdata.stay247 = enabled;
+ player.options.leaveOnEnd = !enabled;
+ player.options.leaveOnEmpty = !enabled;
+ if (player.runtimeGraph?.lifecycleController) {
+  player.runtimeGraph.lifecycleController.leaveOnEnd = !enabled;
+  player.runtimeGraph.lifecycleController.leaveOnEmpty = !enabled;
+ }
+ if (enabled) {
+  player.clearLeaveTimeout?.();
+  clearEmptyTimer(player);
+ } else if (!player.queue?.currentTrack && (player.upcomingTracks?.length ?? 0) === 0) {
+  player.scheduleLeave?.();
+ }
+}
+
 // Gửi khung điều khiển nhạc mới tinh xuống cuối kênh chat mỗi khi bắt đầu bài mới (xóa khung cũ để tránh rác kênh).
 async function postFreshPanel(player, track) {
  const ud = player?.userdata;
- if (!ud || player.destroyed || ud.ending) return;
+ if (!ud || player.destroyed || ud.manualDisconnect) return;
+ ud.ending = false;
+ ud.idleOpen = false;
  clearPanelTimer(player);
  const oldMsg = ud.panelMessage;
  ud.panelMessage = null;
@@ -91,7 +117,7 @@ async function postFreshPanel(player, track) {
  if (!ud.textChannel?.send) return;
  try {
   const sent = await ud.textChannel.send(buildPlayerPayload(player, { track }));
-  if (player.destroyed || ud.ending) {
+  if (player.destroyed || ud.ending || ud.manualDisconnect) {
    sent.edit(buildEndedPayload()).catch(() => {});
    return;
   }
@@ -101,7 +127,7 @@ async function postFreshPanel(player, track) {
  }
 }
 
-// Gom các thay đổi liên tiếp (âm lượng, lặp, hàng đợi, tạm dừng) để cập nhật khung điều khiển mượt mà không chạm giới hạn API.
+// Gom các thay đổi liên tiếp (âm lượng, lặp, 24/7, hàng đợi, tạm dừng) để cập nhật khung điều khiển mượt mà.
 function schedulePanelUpdate(player, overrides = {}) {
  const ud = player?.userdata;
  if (!ud || player.destroyed || ud.ending || !ud.panelMessage) return;
@@ -115,17 +141,30 @@ function schedulePanelUpdate(player, overrides = {}) {
  ud.panelTimer.unref?.();
 }
 
-// Đóng khung điều khiển, vô hiệu hóa các nút và giải phóng tham chiếu bộ nhớ khi kết thúc phiên phát.
-async function closePanel(player, reason) {
+// Đóng khung điều khiển của bài hiện tại (giữ nguyên kết nối nếu đang bật 24/7).
+async function closeCurrentPanel(player, reason) {
  const ud = player?.userdata;
- if (!ud || ud.closed) return;
+ if (!ud) return;
  ud.ending = true;
- ud.closed = true;
  clearPanelTimer(player);
  const msg = ud.panelMessage;
  ud.panelMessage = null;
- ud.textChannel = null;
  if (msg) await msg.edit(buildEndedPayload(reason)).catch(() => {});
+}
+
+// Đóng toàn bộ phiên phát, xóa mọi bộ hẹn giờ/tham chiếu và cho bot rời khỏi kênh thoại.
+async function destroyPlayerSession(guildId, reason) {
+ const p = manager.get(guildId);
+ if (!p) return;
+ const ud = p.userdata;
+ if (ud) {
+  ud.manualDisconnect = true;
+  ud.stay247 = false;
+  clearEmptyTimer(p);
+  await closeCurrentPanel(p, reason);
+  ud.textChannel = null;
+ }
+ manager.delete(guildId);
 }
 
 // Gắn sự kiện vòng đời từ ZiPlayer để tự động đồng bộ khung điều khiển nhạc trên kênh chat.
@@ -135,13 +174,39 @@ manager.on('playerResume', player => schedulePanelUpdate(player, { paused: false
 manager.on('volumeChange', player => schedulePanelUpdate(player));
 manager.on('queueAdd', player => schedulePanelUpdate(player));
 manager.on('queueRemove', player => schedulePanelUpdate(player));
-manager.on('queueEnd', player => { void closePanel(player, 'Đã phát hết toàn bộ danh sách nhạc.'); });
-manager.on('playerStop', player => { void closePanel(player, 'Đã dừng phát nhạc.'); });
-manager.on('playerDestroy', player => { void closePanel(player, 'Phiên phát nhạc đã kết thúc, bot đã rời kênh thoại.'); });
+manager.on('queueEnd', player => {
+ if (player.userdata?.stay247) {
+  player.userdata.idleOpen = true;
+  player.clearLeaveTimeout?.();
+  void closeCurrentPanel(player, 'Đã phát hết hàng đợi — Bot vẫn đang treo trong kênh thoại 24/7.');
+  return;
+ }
+ void closeCurrentPanel(player, 'Đã phát hết toàn bộ danh sách nhạc.');
+});
+manager.on('playerStop', player => {
+ if (player.userdata?.stay247) {
+  player.userdata.idleOpen = true;
+  player.clearLeaveTimeout?.();
+  void closeCurrentPanel(player, 'Đã dừng phát nhạc — Bot vẫn đang giữ kết nối kênh thoại 24/7.');
+  return;
+ }
+ void closeCurrentPanel(player, 'Đã dừng phát nhạc.');
+});
+manager.on('playerDestroy', player => {
+ clearEmptyTimer(player);
+ void closeCurrentPanel(player, 'Phiên phát nhạc đã kết thúc, bot đã rời kênh thoại.');
+ if (player.userdata) player.userdata.textChannel = null;
+});
 manager.on('playerError', (player, error) => {
  console.error('[lỗi-phát-nhạc]', error?.name ?? 'Error');
- void closePanel(player, 'Nguồn nhạc gặp sự cố nên phiên phát đã tự đóng để bảo vệ tài nguyên.');
- manager.delete(player.guildId);
+ if (player.userdata?.stay247) {
+  player.userdata.idleOpen = true;
+  player.stop();
+  player.clearLeaveTimeout?.();
+  void closeCurrentPanel(player, 'Nguồn bài hát gặp sự cố — Bot vẫn giữ kết nối kênh thoại 24/7.');
+  return;
+ }
+ void destroyPlayerSession(player.guildId, 'Nguồn nhạc gặp sự cố nên phiên phát đã tự đóng để bảo vệ tài nguyên.');
 });
 manager.on('error', () => console.error('[quản-lý-nhạc] lỗi'));
 
@@ -155,14 +220,8 @@ async function requireSameVoiceChannel(guild, userId) {
  return channel;
 }
 
-// Dùng chung logic kiểm tra, tìm kiếm và thêm bài hát cho cả lệnh /play lẫn hộp thoại "Thêm bài hát mới".
-async function enqueueAndPlay({ guild, voiceChannel, textChannel, rawQuery, userId }) {
- const q = validateQuery(rawQuery);
- const now = Date.now();
- if (now - (cooldown.get(userId) ?? 0) < 5000) throw new Error('Chờ 5 giây giữa hai lần thêm nhạc.');
- if (cooldown.size >= 100) cooldown.clear();
- cooldown.set(userId, now);
-
+// Tạo mới hoặc lấy phiên kết nối kênh thoại hiện tại của máy chủ.
+async function ensureVoiceSession({ guild, voiceChannel, textChannel, userId, initial247 = false }) {
  const me = guild.members.me ?? await guild.members.fetchMe();
  const perms = voiceChannel.permissionsFor(me);
  if (!perms?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect, PermissionFlagsBits.Speak])) {
@@ -171,43 +230,64 @@ async function enqueueAndPlay({ guild, voiceChannel, textChannel, rawQuery, user
 
  let p = manager.get(guild.id);
  let created = false;
- try {
-  if (!p) {
-   if (manager.getAll().length) throw new Error('Chỉ cho phép một phiên phát đồng thời.');
-   p = await manager.create(guild.id, {
-    leaveOnEnd: true,
-    leaveOnEmpty: true,
-    leaveTimeout: 30000,
-    userdata: {
-     ownerId: userId,
-     textChannel,
-     voiceChannelId: voiceChannel.id,
-     panelMessage: null,
-     panelTimer: null,
-     ending: false,
-     closed: false,
-    },
-    selfDeaf: true,
-    volume: 100,
-    quality: 'low',
-    ffmpegPath: ffmpeg,
-    lowPerformance: true,
-    preload: { enabled: false },
-    crossfade: { enabled: false, autoEnable: false },
-    smartTransition: { enabled: false },
-    loudnessNormalization: { enabled: false },
-    maxStreamStore: 1,
-    extractorTimeout: 15000,
-    antiStuck: { enabled: false },
-   });
-   created = true;
-  } else if (p.userdata) {
-   if (textChannel) p.userdata.textChannel = textChannel;
-   p.userdata.voiceChannelId = voiceChannel.id;
-  }
+ if (!p) {
+  if (manager.getAll().length) throw new Error('Chỉ cho phép một phiên phát đồng thời.');
+  p = await manager.create(guild.id, {
+   leaveOnEnd: !initial247,
+   leaveOnEmpty: !initial247,
+   leaveTimeout: 30000,
+   userdata: {
+    ownerId: userId,
+    textChannel,
+    voiceChannelId: voiceChannel.id,
+    stay247: initial247,
+    idleOpen: false,
+    panelMessage: null,
+    panelTimer: null,
+    emptyTimer: null,
+    ending: false,
+    manualDisconnect: false,
+    lastReconnectAt: 0,
+   },
+   selfDeaf: true,
+   volume: 100,
+   quality: 'low',
+   ffmpegPath: ffmpeg,
+   lowPerformance: true,
+   preload: { enabled: false },
+   crossfade: { enabled: false, autoEnable: false },
+   smartTransition: { enabled: false },
+   loudnessNormalization: { enabled: false },
+   maxStreamStore: 1,
+   extractorTimeout: 15000,
+   antiStuck: { enabled: false },
+  });
+  created = true;
+ } else if (p.userdata) {
+  if (textChannel) p.userdata.textChannel = textChannel;
+  p.userdata.voiceChannelId = voiceChannel.id;
+ }
 
-  if (p.queue.size >= 20) throw new Error('Hàng đợi đã đủ 20 bài.');
+ try {
   if (!p.connection) await p.connect(voiceChannel);
+  return { player: p, created };
+ } catch (e) {
+  if (created) manager.delete(guild.id);
+  throw e;
+ }
+}
+
+// Dùng chung logic kiểm tra, tìm kiếm và thêm bài hát cho cả lệnh /play lẫn hộp thoại "Thêm bài hát mới".
+async function enqueueAndPlay({ guild, voiceChannel, textChannel, rawQuery, userId }) {
+ const q = validateQuery(rawQuery);
+ const now = Date.now();
+ if (now - (cooldown.get(userId) ?? 0) < 5000) throw new Error('Chờ 5 giây giữa hai lần thêm nhạc.');
+ if (cooldown.size >= 100) cooldown.clear();
+ cooldown.set(userId, now);
+
+ const { player: p, created } = await ensureVoiceSession({ guild, voiceChannel, textChannel, userId });
+ try {
+  if (p.queue.size >= 20) throw new Error('Hàng đợi đã đủ 20 bài.');
   const result = await p.search(q, userId);
   const track = result.tracks?.[0];
   if (!track) throw new Error('Không tìm thấy bài hát phù hợp.');
@@ -215,16 +295,74 @@ async function enqueueAndPlay({ guild, voiceChannel, textChannel, rawQuery, user
    throw new Error('Chỉ nhận bài tối đa 10 phút, không nhận phát trực tiếp (livestream).');
   }
   const hadCurrent = Boolean(p.queue.currentTrack);
+  if (!hadCurrent && p.userdata) {
+   p.userdata.ownerId = userId;
+   p.userdata.idleOpen = false;
+  }
   if (!(await p.play(track, userId))) throw new Error('Không thể phát bài hát này.');
   if (hadCurrent) schedulePanelUpdate(p);
   return { track, queued: hadCurrent };
  } catch (e) {
-  if (created) manager.delete(guild.id);
+  if (created && !p.userdata?.stay247) manager.delete(guild.id);
   throw e;
  }
 }
 
-// Đồng bộ danh sách lệnh (tên lệnh giữ tiếng Anh, chú thích bằng tiếng Việt) cho một máy chủ cụ thể.
+// Theo dõi biến động kênh thoại để tự rời khi kênh trống (nếu tắt 24/7) hoặc tự giữ kết nối khi bật 24/7.
+client.on(Events.VoiceStateUpdate, (oldState, newState) => {
+ const guild = newState.guild ?? oldState.guild;
+ const p = manager.get(guild.id);
+ if (!p || p.destroyed || !p.userdata) return;
+
+ // Trường hợp trạng thái thoại của chính bot thay đổi.
+ if (oldState.id === client.user?.id) {
+  if (newState.channelId) {
+   p.userdata.voiceChannelId = newState.channelId;
+   schedulePanelUpdate(p);
+   return;
+  }
+  if (oldState.channelId && !newState.channelId) {
+   if (p.userdata.stay247 && !p.userdata.manualDisconnect && Date.now() - p.userdata.lastReconnectAt > 15000) {
+    p.userdata.lastReconnectAt = Date.now();
+    const target = guild.channels.cache.get(p.userdata.voiceChannelId);
+    const timer = setTimeout(() => {
+     if (!p.destroyed && p.userdata?.stay247 && !p.userdata.manualDisconnect && target) {
+      p.connect(target).catch(() => {});
+     }
+    }, 3000);
+    timer.unref?.();
+    return;
+   }
+   if (!p.userdata.stay247 && !p.userdata.manualDisconnect) {
+    void destroyPlayerSession(guild.id, 'Bot đã ngắt kết nối khỏi kênh thoại.');
+   }
+  }
+  return;
+ }
+
+ // Trường hợp người nghe vào/ra kênh thoại của bot.
+ const vcId = p.userdata.voiceChannelId;
+ if (!vcId || (oldState.channelId !== vcId && newState.channelId !== vcId)) return;
+ if (p.userdata.stay247) {
+  clearEmptyTimer(p);
+  return;
+ }
+ const listeners = guild.voiceStates.cache.filter(vs => vs.channelId === vcId && vs.id !== client.user?.id).size;
+ if (listeners === 0 && !p.userdata.emptyTimer) {
+  p.userdata.emptyTimer = setTimeout(() => {
+   p.userdata.emptyTimer = null;
+   const remain = guild.voiceStates.cache.filter(vs => vs.channelId === vcId && vs.id !== client.user?.id).size;
+   if (!p.destroyed && !p.userdata?.stay247 && remain === 0) {
+    void destroyPlayerSession(guild.id, 'Kênh thoại không còn người nghe nên bot đã tự rời kênh.');
+   }
+  }, 30000);
+  p.userdata.emptyTimer.unref?.();
+ } else if (listeners > 0) {
+  clearEmptyTimer(p);
+ }
+});
+
+// Đồng bộ danh sách lệnh (tên lệnh giữ chuẩn quốc tế, chú thích bằng tiếng Việt) cho một máy chủ cụ thể.
 async function syncGuildCommands(appId, targetGuildId) {
  await client.rest.put(Routes.applicationGuildCommands(appId, targetGuildId), { body: commands });
 }
@@ -299,7 +437,7 @@ async function handlePlayerComponent(i) {
 
  // Trường hợp làm mới thanh tiến trình (chỉ cập nhật hiển thị thời gian, có giới hạn chống bấm liên tục).
  if (i.isButton() && i.customId === 'player_refresh') {
-  if (!p) return void await i.update(buildEndedPayload());
+  if (!p || !p.queue.currentTrack) return void await i.update(buildEndedPayload());
   const now = Date.now();
   if (now - (refreshCooldown.get(i.guildId) ?? 0) < 2500) {
    return void await i.reply({ content: 'Thanh tiến trình vừa được cập nhật.', flags: MessageFlags.Ephemeral });
@@ -372,7 +510,25 @@ async function handlePlayerComponent(i) {
      return;
     }
     case 'player_stop': {
-     if (p.userdata) { p.userdata.ending = true; p.userdata.closed = true; clearPanelTimer(p); p.userdata.panelMessage = null; p.userdata.textChannel = null; }
+     if (p.userdata?.stay247) {
+      p.userdata.ending = true;
+      p.userdata.idleOpen = true;
+      clearPanelTimer(p);
+      p.userdata.panelMessage = null;
+      p.queue.reset();
+      p.stop();
+      p.clearLeaveTimeout?.();
+      await i.update(buildEndedPayload('Đã dừng phát nhạc và xóa hàng đợi — Bot vẫn đang giữ kết nối 24/7 (dùng `/leave` nếu muốn bot rời kênh).'));
+      return;
+     }
+     if (p.userdata) {
+      p.userdata.manualDisconnect = true;
+      p.userdata.ending = true;
+      clearPanelTimer(p);
+      clearEmptyTimer(p);
+      p.userdata.panelMessage = null;
+      p.userdata.textChannel = null;
+     }
      await i.update(buildEndedPayload('Đã dừng phát nhạc, xóa hàng đợi và rời kênh thoại.'));
      manager.delete(i.guildId);
      return;
@@ -387,6 +543,12 @@ async function handlePlayerComponent(i) {
      const nextMode = order[(order.indexOf(p.loop()) + 1) % order.length];
      p.loop(nextMode);
      await i.update(buildPlayerPayload(p, { loopMode: nextMode }));
+     return;
+    }
+    case 'toggle_247': {
+     const next247 = !p.userdata?.stay247;
+     apply247State(p, next247);
+     await i.update(buildPlayerPayload(p, { stay247: next247 }));
      return;
     }
     case 'shuffle_queue': {
@@ -446,6 +608,35 @@ client.on(Events.InteractionCreate, async i => {
   // Kiểm tra quyền điều khiển: chỉ người yêu cầu bài đang phát mới được tác động vào nhạc.
   assertMusicAccess(i.commandName, i.user.id, p);
 
+  if (i.commandName === 'join') {
+   const alreadyConnected = Boolean(p?.connection);
+   await ensureVoiceSession({ guild: i.guild, voiceChannel: channel, textChannel: i.channel, userId: i.user.id });
+   return await reply(alreadyConnected ? `✅ Bot đang ở sẵn trong kênh thoại <#${channel.id}>.` : `✅ Đã tham gia kênh thoại <#${channel.id}>. Dùng \`/play\` để phát nhạc hoặc \`/247\` để giữ bot ở lại 24/7.`);
+  }
+
+  if (i.commandName === '247') {
+   const chosen = i.options.getString('mode');
+   if (!p) {
+    if (chosen === 'off') return await reply('Chế độ 24/7 hiện đang tắt (bot chưa ở trong kênh thoại).');
+    await ensureVoiceSession({ guild: i.guild, voiceChannel: channel, textChannel: i.channel, userId: i.user.id, initial247: true });
+    return await reply(`🌙 Đã tham gia <#${channel.id}> và **BẬT** chế độ treo kênh thoại 24/7.`);
+   }
+   const next247 = chosen ? chosen === 'on' : !p.userdata?.stay247;
+   apply247State(p, next247);
+   schedulePanelUpdate(p, { stay247: next247 });
+   return await reply(
+    next247
+     ? `🌙 Đã **BẬT** chế độ 24/7 — bot sẽ giữ kết nối trong <#${channel.id}> ngay cả khi hết nhạc hoặc vắng người.`
+     : '🌙 Đã **TẮT** chế độ 24/7 — bot sẽ tự rời kênh thoại sau 30 giây khi hết nhạc hoặc không còn người nghe.',
+   );
+  }
+
+  if (i.commandName === 'leave') {
+   if (!p) throw new Error('Bot hiện không ở trong kênh thoại nào.');
+   await destroyPlayerSession(i.guildId, 'Đã dừng phát nhạc và rời kênh thoại theo lệnh `/leave`.');
+   return await reply('👋 Đã tắt chế độ 24/7, xóa hàng đợi và rời khỏi kênh thoại.');
+  }
+
   if (i.commandName === 'play') {
    const { track, queued } = await enqueueAndPlay({
     guild: i.guild,
@@ -494,8 +685,15 @@ client.on(Events.InteractionCreate, async i => {
    case 'resume': p.resume(); schedulePanelUpdate(p, { paused: false }); return await reply('Đã tiếp tục phát nhạc.');
    case 'skip': p.skip(); return await reply('Đã bỏ qua bài hiện tại.');
    case 'stop':
-    await closePanel(p, 'Đã dừng phát nhạc, xóa hàng đợi và rời kênh thoại.');
-    manager.delete(i.guildId);
+    if (p.userdata?.stay247) {
+     p.userdata.idleOpen = true;
+     p.queue.reset();
+     p.stop();
+     p.clearLeaveTimeout?.();
+     await closeCurrentPanel(p, 'Đã dừng phát nhạc và xóa hàng đợi — Bot vẫn đang giữ kết nối 24/7 (dùng `/leave` nếu muốn bot rời kênh).');
+     return await reply('⏹️ Đã dừng nhạc và xóa hàng đợi (bot vẫn ở lại kênh thoại do đang bật `/247`; dùng `/leave` nếu muốn rời kênh).');
+    }
+    await destroyPlayerSession(i.guildId, 'Đã dừng phát nhạc, xóa hàng đợi và rời kênh thoại.');
     return await reply('Đã dừng nhạc, xóa hàng đợi và rời kênh thoại.');
    default: throw new Error('Lệnh không hợp lệ.');
   }

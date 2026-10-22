@@ -81,6 +81,7 @@ export function buildPlayerPayload(player, overrides = {}) {
  const loopMode = overrides.loopMode ?? (typeof player?.loop === 'function' ? player.loop() : 'off') ?? 'off';
  const volume = overrides.volume ?? player?.volume ?? 100;
  const upcoming = player?.upcomingTracks ?? [];
+ const stay247 = overrides.stay247 ?? Boolean(player?.userdata?.stay247);
  const ownerId = resolveOwnerId(player, track);
  const voiceChannelId = player?.userdata?.voiceChannelId ?? null;
  const trackUrl = safeHttpUrl(track?.url);
@@ -94,7 +95,7 @@ export function buildPlayerPayload(player, overrides = {}) {
  // Phần đầu khung: Tiêu đề bài hát, nghệ sĩ, thông số phát và nút mở bài gốc.
  const titleLine = trackUrl ? `### 🎵 [**${title}**](${trackUrl})` : `### 🎵 **${title}**`;
  const metaLine = `👤 Nghệ sĩ: **${author}** • 📡 Nguồn: **${sourceName}**`;
- const stateLine = `🔊 Âm lượng: **${volume}%** • 🔁 Chế độ: **${LOOP_LABELS[loopMode] ?? LOOP_LABELS.off}** • 📌 Hàng chờ: **${upcoming.length} bài**`;
+ const stateLine = `🔊 Âm lượng: **${volume}%** • 🔁 Chế độ: **${LOOP_LABELS[loopMode] ?? LOOP_LABELS.off}** • 🌙 24/7: **${stay247 ? 'Bật' : 'Tắt'}** • 📌 Chờ: **${upcoming.length}**`;
  const roomLine = [
   voiceChannelId ? `🎙️ Kênh: <#${voiceChannelId}>` : '🎙️ Kênh thoại đang kết nối',
   ownerId ? `👑 Điều khiển: <@${ownerId}>` : '👑 Điều khiển: Người gọi bài',
@@ -162,6 +163,11 @@ export function buildPlayerPayload(player, overrides = {}) {
      .setDescription(`Chuyển vòng: Tắt lặp → Một bài → Hàng đợi (hiện tại: ${LOOP_LABELS[loopMode] ?? 'Tắt lặp'})`)
      .setValue('cycle_loop')
      .setEmoji('🔁'),
+    new StringSelectMenuOptionBuilder()
+     .setLabel(stay247 ? 'Tắt chế độ 24/7' : 'Bật chế độ 24/7')
+     .setDescription(stay247 ? 'Cho phép bot tự rời kênh khi hết nhạc' : 'Giữ bot treo trong kênh thoại 24/7 không tự thoát')
+     .setValue('toggle_247')
+     .setEmoji('🌙'),
     new StringSelectMenuOptionBuilder()
      .setLabel('Trộn hàng đợi')
      .setDescription('Xáo trộn ngẫu nhiên thứ tự các bài đang chờ')

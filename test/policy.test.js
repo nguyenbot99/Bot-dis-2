@@ -16,17 +16,19 @@ test('resolveConfig works with DISCORD_TOKEN only and optional GUILD_ID',()=>{
  assert.throws(()=>resolveConfig({DISCORD_TOKEN:'abc',GUILD_ID:'ten-server'}),/GUILD_ID không hợp lệ/);
 });
 test('unique guild-only commands and valid help embed',()=>{
- assert.equal(new Set(commands.map(c=>c.name)).size,13);
+ assert.equal(new Set(commands.map(c=>c.name)).size,16);
  assert.ok(commands.every(c=>c.dm_permission===false));
  const data=buildHelpEmbed({username:'Bắt_Don',displayAvatarURL:()=>'https://cdn.discordapp.com/embed/avatars/0.png'}).toJSON();
  assert.equal(data.color,0x5865f2);
- assert.equal(data.fields.length,5);
+ assert.equal(data.fields.length,6);
  assert.ok(data.fields.every(f=>f.name.length<=256 && f.value.length<=1024));
  const allValues=data.fields.map(f=>f.value).join('\n');
  for(const c of commands) assert.ok(allValues.includes(`\`/${c.name}\``),`missing /${c.name} in help embed`);
 });
 test('new music command options are bounded',()=>{
  const option=name=>commands.find(c=>c.name===name).options[0];
+ assert.deepEqual(option('247').choices.map(c=>c.value),['on','off']);
+ assert.equal(option('247').required,false);
  assert.deepEqual(option('loop').choices.map(c=>c.value),['off','track','queue']);
  assert.equal(option('volume').min_value,0);
  assert.equal(option('volume').max_value,100);

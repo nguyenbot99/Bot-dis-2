@@ -1,0 +1,30 @@
+{
+  "name": "zi-light-music-bot",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "register": "node scripts/register.js",
+    "test": "node --test",
+    "check": "node --check index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "Resource-conscious ZiPlayer Discord music bot",
+  "dependencies": {
+    "@discordjs/voice": "0.19.2",
+    "@ziplayer/plugin": "1.0.2",
+    "discord.js": "^14.27.0",
+    "dotenv": "18.0.8",
+    "express": "5.3.0",
+    "ffmpeg-static": "5.3.0",
+    "opusscript": "0.1.1",
+    "ziplayer": "1.0.4"
+  },
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  }
+}

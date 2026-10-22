@@ -1,5 +1,5 @@
 // Các lệnh chỉ đọc thông tin, ai trong máy chủ cũng có thể xem được.
-const readOnlyCommands = new Set(['queue', 'nowplaying', 'ping']);
+const readOnlyCommands = new Set(['help', 'queue', 'nowplaying', 'ping']);
 
 // Không mở ngoại lệ cho quản trị viên: quyền điều khiển nhạc đi theo người yêu cầu bài đang phát.
 // Trong khoảng chuyển bài ngắn, giữ quyền của người yêu cầu bài liền trước; trước bài đầu tiên,

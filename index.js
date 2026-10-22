@@ -5,7 +5,7 @@ import { PlayerManager } from 'ziplayer';
 import ffmpeg from 'ffmpeg-static';
 import { resolveConfig, validateQuery } from './src/policy.js';
 import { assertMusicAccess } from './src/access.js';
-import { commands } from './src/commands.js';
+import { commands, helpMessage } from './src/commands.js';
 
 // Kiểm tra phiên bản Node tối thiểu do thư viện voice yêu cầu Node >= 22.12.0.
 const [major, minor] = process.versions.node.split('.').map(Number);
@@ -101,6 +101,7 @@ client.on(Events.InteractionCreate,async i=>{
  let ownsLock=false, created=false;
  try {
   await i.deferReply({ephemeral:true});
+  if(i.commandName==='help') return await reply(helpMessage);
   if(i.commandName==='ping') return await reply(`Độ trễ: ${client.ws.ping} ms • Bộ nhớ Node: ${Math.round(process.memoryUsage().rss/1048576)} MiB (chưa tính tiến trình FFmpeg).`);
   if(busy) return await reply('Đang xử lý lệnh khác, vui lòng thử lại.');
   busy=true; ownsLock=true;

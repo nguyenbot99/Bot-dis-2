@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {resolveConfig,validateQuery} from '../src/policy.js';
-import {commands} from '../src/commands.js';
+import {commands,helpMessage} from '../src/commands.js';
 test('valid search and source URL',()=>{
  assert.equal(validateQuery(' hello '),'hello');
  assert.equal(validateQuery('https://youtu.be/abc'),'https://youtu.be/abc');
@@ -15,9 +15,11 @@ test('resolveConfig works with DISCORD_TOKEN only and optional GUILD_ID',()=>{
  assert.throws(()=>resolveConfig({}),/Thiếu DISCORD_TOKEN/);
  assert.throws(()=>resolveConfig({DISCORD_TOKEN:'abc',GUILD_ID:'ten-server'}),/GUILD_ID không hợp lệ/);
 });
-test('unique guild-only commands',()=>{
- assert.equal(new Set(commands.map(c=>c.name)).size,12);
+test('unique guild-only commands and bounded help message',()=>{
+ assert.equal(new Set(commands.map(c=>c.name)).size,13);
  assert.ok(commands.every(c=>c.dm_permission===false));
+ assert.ok(helpMessage.length>0 && helpMessage.length<=2000);
+ for(const c of commands) assert.ok(helpMessage.includes(`/${c.name}`),`missing /${c.name} in helpMessage`);
 });
 test('new music command options are bounded',()=>{
  const option=name=>commands.find(c=>c.name===name).options[0];

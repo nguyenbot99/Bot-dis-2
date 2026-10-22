@@ -11,7 +11,7 @@ test('only current track requester may mutate music',()=>{
  }
 });
 test('read-only commands stay public',()=>{
- for(const command of ['queue','nowplaying','ping']) assert.doesNotThrow(()=>assertMusicAccess(command,'bob',player));
+ for(const command of ['help','queue','nowplaying','ping']) assert.doesNotThrow(()=>assertMusicAccess(command,'bob',player));
 });
 test('ownership follows next track',()=>{
  const next={...player,queue:{currentTrack:{requestedBy:'bob'}}};

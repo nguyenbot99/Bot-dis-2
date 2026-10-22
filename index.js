@@ -69,7 +69,10 @@ client.once(Events.ClientReady,async c=>{
  console.log(`[khởi-động] Đã đăng nhập: ${c.user.tag}`);
  const appInfo = await c.application.fetch().catch(()=>null);
  if(appInfo?.interactionsEndpointURL) {
-  console.error(`[CẢNH BÁO] Discord Developer Portal đang đặt Interactions Endpoint URL (${appInfo.interactionsEndpointURL}). Mọi lệnh slash đang bị chuyển sang dịch vụ cũ (như BMH) thay vì bot này! Hãy xóa trống ô Interactions Endpoint URL rồi bấm Save Changes.`);
+  console.warn(`[cảnh-báo] Phát hiện Interactions Endpoint URL cũ (${appInfo.interactionsEndpointURL}), đang tự động gỡ bỏ...`);
+  await client.rest.patch(Routes.currentApplication(), { body: { interactions_endpoint_url: null } })
+   .then(()=>console.log('[khởi-động] Đã tự động xóa Interactions Endpoint URL cũ thành công.'))
+   .catch(()=>console.error('[CẢNH BÁO] Không thể tự xóa Interactions Endpoint URL. Hãy vào Discord Developer Portal -> General Information xóa trắng ô Interactions Endpoint URL rồi bấm Save Changes.'));
  }
  if(!autoRegister) return;
  try {

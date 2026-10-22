@@ -30,8 +30,8 @@ export function buildHelpEmbed(botUser) {
   })
   .setTitle('🎵 Bảng Lệnh & Hướng Dẫn Sử Dụng')
   .setDescription([
-   'Hãy vào một **kênh thoại thường** rồi nhập `/play` để bắt đầu nghe nhạc.',
-   '> 🔒 *Chỉ **người yêu cầu bài đang phát** (cùng kênh thoại) mới dùng được nhóm lệnh điều khiển nhạc.*',
+   'Hãy vào một **kênh thoại thường** rồi nhập `/play` — bot sẽ hiện **khung Music Player tương tác** kèm nút bấm & menu ngay tại kênh chat!',
+   '> 🔒 *Chỉ **người yêu cầu bài đang phát** (cùng kênh thoại) mới bấm hoặc gõ lệnh điều khiển nhạc được.*',
   ].join('\n'))
   .addFields(
    {

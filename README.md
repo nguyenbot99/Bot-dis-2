@@ -109,11 +109,13 @@ Không commit `.env`, token hoặc private SSH key. Dự án không chứa deplo
 ## Cấu trúc
 
 ```
-index.js                 Discord client, player, HTTP, graceful shutdown
-src/commands.js          Slash command schema
-src/policy.js            Kiểm tra đầu vào
-scripts/register.js      Đăng ký lệnh một guild
-test/policy.test.js       Unit tests
+index.js                 Discord client, player, khung điều khiển tương tác, HTTP, graceful shutdown
+src/commands.js          Slash command schema & khung Embed /help
+src/playerGui.js         Khung Music Player tương tác kiểu Ziji V10 (Components V2, nút bấm, menu, modal, Embeds)
+src/access.js            Kiểm tra quyền điều khiển theo người yêu cầu bài đang phát
+src/policy.js            Kiểm tra đầu vào và biến môi trường
+scripts/register.js      Đăng ký lệnh thủ công
+test/*.test.js           Bộ unit tests kiểm tra quyền, đầu vào và giao diện
 .env.example             Cấu hình mẫu không chứa bí mật
 Dockerfile               Image Node 22
 package-lock.json        Dependency lock

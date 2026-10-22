@@ -4,6 +4,7 @@ import { Client, Events, GatewayIntentBits, Options, PermissionFlagsBits } from 
 import { PlayerManager } from 'ziplayer';
 import ffmpeg from 'ffmpeg-static';
 import { validateQuery } from './src/policy.js';
+import { assertMusicAccess } from './src/access.js';
 
 const [major, minor] = process.versions.node.split('.').map(Number);
 if(major < 22 || (major === 22 && minor < 12)) throw new Error('Cần Node >=22.12.0');
@@ -62,6 +63,7 @@ client.on(Events.InteractionCreate,async i=>{
   if(!channel || channel.type!==2) throw new Error('Hãy vào một kênh thoại thường trước.');
   const botChannel=i.guild.members.me?.voice.channelId;
   if(botChannel && botChannel!==channel.id) throw new Error('Bạn phải ở cùng kênh thoại với bot.');
+  assertMusicAccess(i.commandName,i.user.id,p);
   if(i.commandName==='play') {
    const q=validateQuery(i.options.getString('query',true));
    const now=Date.now();
@@ -73,7 +75,7 @@ client.on(Events.InteractionCreate,async i=>{
    if(!p) {
     if(manager.getAll().length) throw new Error('Chỉ cho phép một phiên phát đồng thời.');
     p=await manager.create(i.guildId,{leaveOnEnd:true,leaveOnEmpty:true,leaveTimeout:30000,
-     selfDeaf:true,volume:100,quality:'low',ffmpegPath:ffmpeg,lowPerformance:true,
+     userdata:{ownerId:i.user.id},selfDeaf:true,volume:100,quality:'low',ffmpegPath:ffmpeg,lowPerformance:true,
      preload:{enabled:false},crossfade:{enabled:false,autoEnable:false},
      smartTransition:{enabled:false},loudnessNormalization:{enabled:false},
      maxStreamStore:1,extractorTimeout:15000,antiStuck:{enabled:false}});

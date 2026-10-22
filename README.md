@@ -50,7 +50,7 @@ Script start chính xác là `node index.js`. Không cần build TypeScript.
 6. Vào kênh voice thường rồi `/play query: tên bài`.
 
 Lệnh: `/loop mode:off|track|queue`, `/shuffle`, `/volume percent:0–100`, `/remove position:1–20`, `/play`, `/pause`, `/resume`, `/skip`, `/stop`, `/queue`, `/nowplaying`, `/ping`.
-Lệnh phản hồi riêng cho người dùng; chỉ người cùng voice mới điều khiển được. `/queue` hiển thị 10 bài; không gửi mention từ tiêu đề. Bot không lưu hàng đợi ra đĩa; restart sẽ mất phiên phát.
+Lệnh phản hồi riêng cho người dùng; chỉ người cùng voice và là người yêu cầu bài đang phát mới điều khiển được (không có ngoại lệ cho admin). Quyền áp dụng cả /play khi đã có phiên phát, pause/resume/skip/stop/loop/shuffle/volume/remove. Khi chuyển bài, quyền đi theo requestedBy của bài mới. Trong khoảng chuyển bài, quyền giữ theo bài trước; trước bài đầu tiên dùng người tạo phiên. /queue, /nowplaying và /ping là lệnh xem thông tin, không bị giới hạn này. `/queue` hiển thị 10 bài; không gửi mention từ tiêu đề. Bot không lưu hàng đợi ra đĩa; restart sẽ mất phiên phát.
 
 ## 4. Chính sách tiết kiệm tài nguyên
 

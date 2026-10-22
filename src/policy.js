@@ -1,3 +1,4 @@
+// Đọc và kiểm tra cấu hình môi trường; chỉ bắt buộc có Token, còn GUILD_ID là tùy chọn.
 export function resolveConfig(env = process.env) {
  const rawToken = env.DISCORD_TOKEN || env.BOT_TOKEN || env.DISCORD_BOT_TOKEN || env.TOKEN || '';
  const token = String(rawToken).trim().replace(/^(['"])(.*)\1$/, '$2').trim();
@@ -12,6 +13,7 @@ export function resolveConfig(env = process.env) {
  return { token, guildId: rawGuildId || null, autoRegister };
 }
 
+// Kiểm tra từ khóa tìm kiếm hoặc đường dẫn nhạc hợp lệ (chỉ nhận YouTube/SoundCloud đơn lẻ, chặn playlist).
 export function validateQuery(input) {
  const q = input.trim();
  if (!q || q.length > 200) throw new Error('Tên bài phải dài 1–200 ký tự.');

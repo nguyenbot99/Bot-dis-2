@@ -1,8 +1,9 @@
+// Các lệnh chỉ đọc thông tin, ai trong máy chủ cũng có thể xem được.
 const readOnlyCommands = new Set(['queue', 'nowplaying', 'ping']);
 
-// No administrator bypass: controls follow the requester of the current track.
-// During a gap, retain the previous requester's control; before the first track,
-// only the session creator can change the player. Missing ownership fails closed.
+// Không mở ngoại lệ cho quản trị viên: quyền điều khiển nhạc đi theo người yêu cầu bài đang phát.
+// Trong khoảng chuyển bài ngắn, giữ quyền của người yêu cầu bài liền trước; trước bài đầu tiên,
+// dùng người tạo phiên phát. Nếu không xác định được chủ sở hữu thì từ chối để an toàn.
 export function assertMusicAccess(command, userId, player) {
  if (!player || readOnlyCommands.has(command)) return;
  const ownerId = player.queue.currentTrack?.requestedBy

@@ -7,13 +7,17 @@ import { resolveConfig, validateQuery } from './src/policy.js';
 import { assertMusicAccess } from './src/access.js';
 import { commands } from './src/commands.js';
 
+// Kiểm tra phiên bản Node tối thiểu do thư viện voice yêu cầu Node >= 22.12.0.
 const [major, minor] = process.versions.node.split('.').map(Number);
 if(major < 22 || (major === 22 && minor < 12)) throw new Error('Cần Node >=22.12.0');
 const { token: DISCORD_TOKEN, guildId: GUILD_ID, autoRegister } = resolveConfig(process.env);
-// Lazy-load only the two enabled source modules; no Spotify, TTS or extensions.
+
+// Chỉ nạp trực tiếp 2 plugin nguồn nhạc cần dùng để tiết kiệm RAM, không nạp Spotify, TTS hay extension phụ.
 const pluginRoot = new URL('./node_modules/@ziplayer/plugin/dist/', import.meta.url);
 const { YouTubePlugin } = await import(new URL('YouTubePlugin.js',pluginRoot));
 const { SoundCloudPlugin } = await import(new URL('SoundCloudPlugin.js',pluginRoot));
+
+// Khởi tạo Discord client với bộ nhớ đệm tối thiểu để giảm mức tiêu thụ RAM.
 const client = new Client({
  intents:[GatewayIntentBits.Guilds,GatewayIntentBits.GuildVoiceStates],
  allowedMentions:{parse:[]},
@@ -21,8 +25,12 @@ const client = new Client({
   MessageManager:0,PresenceManager:0,ReactionManager:0,UserManager:0,
   GuildMemberManager:{maxSize:1,keepOverLimit:m=>m.id===m.client.user?.id}}),
 });
+
+// Khởi tạo trình quản lý phát nhạc ZiPlayer ở cấu hình nhẹ, tắt bộ đệm tìm kiếm và thống kê.
 const manager = new PlayerManager({plugins:[new YouTubePlugin(),new SoundCloudPlugin()],
  enableSearchCache:false,enableStatsCollection:false,autoCleanup:true,cleanupInterval:60000,extractorTimeout:15000});
+
+// Máy chủ HTTP nhẹ phục vụ kiểm tra trạng thái hoạt động (/healthz).
 const app = express();
 app.disable('x-powered-by');
 app.get('/healthz',(_req,res)=>res.status(client.isReady()?200:503).json({ready:client.isReady(),uptime:Math.floor(process.uptime())}));
@@ -38,19 +46,25 @@ server.on('error',e=>{
  }
  fatal(e);
 });
+
 let busy=false, closing=false;
 const cooldown=new Map();
 const loopLabels={off:'Tắt lặp',track:'Lặp bài hiện tại',queue:'Lặp toàn bộ hàng đợi'};
+// Làm sạch ký tự định dạng/mention trong tiêu đề bài hát trước khi gửi lên Discord.
 const clean=s=>String(s??'Không rõ').replace(/[@`*_~|<>]/g,'').slice(0,130);
+
+// Đồng bộ danh sách lệnh (tên lệnh giữ tiếng Anh, chú thích bằng tiếng Việt) cho một máy chủ cụ thể.
 async function syncGuildCommands(appId, targetGuildId) {
  await client.rest.put(Routes.applicationGuildCommands(appId, targetGuildId), { body: commands });
 }
+
 manager.on('playerError',(player,error)=>{
  console.error('[lỗi-phát-nhạc]',error?.name ?? 'Error');
- // Destroy rather than repeatedly extract a broken stream.
+ // Hủy phiên phát lỗi ngay thay vì thử tải lại liên tục gây tốn RAM/CPU.
  manager.delete(player.guildId);
 });
 manager.on('error',()=>console.error('[quản-lý-nhạc] lỗi'));
+
 client.once(Events.ClientReady,async c=>{
  console.log(`[khởi-động] Đã đăng nhập: ${c.user.tag}`);
  const appInfo = await c.application.fetch().catch(()=>null);
@@ -59,21 +73,27 @@ client.once(Events.ClientReady,async c=>{
  }
  if(!autoRegister) return;
  try {
+  // Xóa các lệnh global tiếng Anh cũ còn sót lại (ví dụ từ BMH) để tránh bị trùng lệnh trên Discord.
+  await client.rest.put(Routes.applicationCommands(c.application.id), { body: [] });
   const targets = GUILD_ID ? [GUILD_ID] : [...c.guilds.cache.keys()].slice(0,5);
   await Promise.all(targets.map(gid=>syncGuildCommands(c.application.id,gid)));
-  console.log(`[đồng-bộ] Đã đăng ký ${commands.length} lệnh slash tiếng Việt cho ${targets.length} máy chủ.`);
+  console.log(`[đồng-bộ] Đã cập nhật ${commands.length} lệnh (chú thích tiếng Việt) cho ${targets.length} máy chủ.`);
  } catch(e) {
   console.error('[đồng-bộ-lỗi]',e?.name ?? 'Error',e?.message ?? '');
  }
 });
+
 client.on(Events.GuildCreate,guild=>{
  if(!autoRegister || !client.application?.id) return;
  if(GUILD_ID ? guild.id!==GUILD_ID : client.guilds.cache.size>5) return;
  syncGuildCommands(client.application.id,guild.id)
-  .then(()=>console.log(`[đồng-bộ] Đã đăng ký ${commands.length} lệnh slash cho máy chủ mới ${guild.id}.`))
+  .then(()=>console.log(`[đồng-bộ] Đã đăng ký ${commands.length} lệnh cho máy chủ mới ${guild.id}.`))
   .catch(e=>console.error('[đồng-bộ-lỗi]',e?.name ?? 'Error'));
 });
+
 client.on(Events.Error,e=>console.error('[discord]',e.name));
+
+// Xử lý các lệnh slash (tên lệnh tiếng Anh: /play, /pause, /skip..., phản hồi tiếng Việt).
 client.on(Events.InteractionCreate,async i=>{
  if(!i.isChatInputCommand() || !i.guild) return;
  if(GUILD_ID && i.guildId!==GUILD_ID) return void i.reply({content:'Bot chỉ phục vụ máy chủ đã cấu hình.',ephemeral:true}).catch(()=>{});
@@ -97,6 +117,7 @@ client.on(Events.InteractionCreate,async i=>{
   if(!channel || channel.type!==2) throw new Error('Hãy vào một kênh thoại thường trước.');
   const botChannel=i.guild.members.me?.voice.channelId;
   if(botChannel && botChannel!==channel.id) throw new Error('Bạn phải ở cùng kênh thoại với bot.');
+  // Kiểm tra quyền điều khiển: chỉ người yêu cầu bài đang phát mới được tác động vào nhạc.
   assertMusicAccess(i.commandName,i.user.id,p);
   if(i.commandName==='play') {
    const q=validateQuery(i.options.getString('query',true));
@@ -166,6 +187,8 @@ client.on(Events.InteractionCreate,async i=>{
   await (i.deferred?reply(known?e.message:'Nguồn nhạc hoặc kết nối gặp lỗi. Vui lòng thử lại sau.'):i.reply({content:'Không thể xử lý lệnh lúc này.',ephemeral:true})).catch(()=>{});
  } finally {if(ownsLock) busy=false;}
 });
+
+// Dọn dẹp tài nguyên phát nhạc, kết nối Discord và cổng HTTP khi tắt tiến trình.
 async function shutdown(code=0) {
  if(closing) return; closing=true;
  const timer=setTimeout(()=>process.exit(code || 1),5000);timer.unref();

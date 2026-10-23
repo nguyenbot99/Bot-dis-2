@@ -128,12 +128,21 @@ export function buildPlayerPayload(player, overrides = {}) {
  container.addSectionComponents(headerSection);
  container.addSeparatorComponents(new SeparatorBuilder().setDivider(true).setSpacing(1));
 
- // Thanh tiến trình thời gian thực + gợi ý bài kế tiếp.
+ // Thanh tiến trình thời gian thực (tự đồng bộ theo từng khung âm thanh Opus của @discordjs/voice) + đồng hồ đếm ngược trực tiếp của Discord.
  const rawBar = typeof player?.getProgressBar === 'function'
   ? player.getProgressBar({ size: 15, barChar: '▬', progressChar: '🔘' })
   : '';
  const progressText = rawBar || `0:00 🔘▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬ ${formatDuration(track?.duration)}`;
- const statusBadge = isPaused ? '⏸️ **Đang tạm dừng**' : '▶️ **Đang phát nhạc**';
+ const timeInfo = typeof player?.getTime === 'function' ? player.getTime() : null;
+ const rawTrackDuration = Number(track?.duration ?? 0);
+ const totalMs = Number(timeInfo?.total ?? (rawTrackDuration > 1000 ? rawTrackDuration : rawTrackDuration * 1000));
+ const currentMs = Math.max(0, Number(timeInfo?.current ?? 0));
+ const endUnix = !isPaused && totalMs > 0 && currentMs < totalMs
+  ? Math.floor((Date.now() + (totalMs - currentMs)) / 1000)
+  : null;
+ const statusBadge = isPaused
+  ? '⏸️ **Đang tạm dừng**'
+  : (endUnix ? `▶️ **Đang phát nhạc** • ⏳ hết bài <t:${endUnix}:R>` : '▶️ **Đang phát nhạc**');
  const nextLine = upcoming.length > 0
   ? `\n⏭️ Tiếp theo: **${cleanText(upcoming[0].title, 70)}** (\`${formatDuration(upcoming[0].duration)}\`)${upcoming.length > 1 ? ` *(+${upcoming.length - 1} bài chờ)*` : ''}`
   : '\n-# 💡 Hàng đợi trống — chọn **Thêm bài hát mới** ở menu bên dưới hoặc gõ `/play`.';
@@ -338,9 +347,13 @@ export function buildQueueEmbed(player, botUser) {
  const avatarUrl = botUser?.displayAvatarURL?.({ size: 128 }) ?? undefined;
 
  const rows = upcoming.slice(0, 10).map((t, idx) => {
-  const who = t.requestedBy ? ` • <@${t.requestedBy}>` : '';
+  const whoId = resolveHumanRequester(t.requestedBy);
+  const who = whoId ? ` • <@${whoId}>` : (t.requestedBy ? ' • *AutoPlay*' : '');
   return `\`${String(idx + 1).padStart(2, '0')}.\` **${cleanText(t.title, 65)}** (\`${formatDuration(t.duration)}\`)${who}`;
  });
+
+ const curWhoId = resolveHumanRequester(current?.requestedBy);
+ const curWho = curWhoId ? ` • <@${curWhoId}>` : (current?.requestedBy ? ' • *AutoPlay*' : '');
 
  const embed = new EmbedBuilder()
   .setColor(0x7c4dff)
@@ -350,7 +363,7 @@ export function buildQueueEmbed(player, botUser) {
   })
   .setDescription([
    current
-    ? `▶️ **Đang phát:** **${cleanText(current.title, 80)}** (\`${formatDuration(current.duration)}\`)${current.requestedBy ? ` • <@${current.requestedBy}>` : ''}`
+    ? `▶️ **Đang phát:** **${cleanText(current.title, 80)}** (\`${formatDuration(current.duration)}\`)${curWho}`
     : '⏸️ *Hiện chưa phát bài nào.*',
    '',
    rows.length > 0 ? `**Danh sách chờ (${upcoming.length}/20 bài):**\n${rows.join('\n')}` : '*Hàng đợi tiếp theo đang trống.*',
@@ -369,9 +382,17 @@ export function buildNowPlayingEmbed(player, botUser) {
  const avatarUrl = botUser?.displayAvatarURL?.({ size: 128 }) ?? undefined;
  const thumbUrl = resolveArtworkUrl(current?.thumbnail);
  const trackUrl = safeHttpUrl(current?.url);
+ const ownerId = resolveOwnerId(player, current);
  const bar = typeof player?.getProgressBar === 'function'
   ? player.getProgressBar({ size: 15, barChar: '▬', progressChar: '🔘' })
   : '';
+ const timeInfo = typeof player?.getTime === 'function' ? player.getTime() : null;
+ const rawDur = Number(current?.duration ?? 0);
+ const totalMs = Number(timeInfo?.total ?? (rawDur > 1000 ? rawDur : rawDur * 1000));
+ const currentMs = Math.max(0, Number(timeInfo?.current ?? 0));
+ const endUnix = !player?.isPaused && totalMs > 0 && currentMs < totalMs
+  ? Math.floor((Date.now() + (totalMs - currentMs)) / 1000)
+  : null;
 
  const embed = new EmbedBuilder()
   .setColor(player?.isPaused ? 0xfee75c : 0x7c4dff)
@@ -382,9 +403,11 @@ export function buildNowPlayingEmbed(player, botUser) {
   .setTitle(`🎵 ${cleanText(current?.title ?? 'Chưa phát bài nào', 95)}`)
   .setDescription([
    `👤 **Nghệ sĩ:** ${cleanText(current?.metadata?.author ?? 'Không rõ', 50)} • **Nguồn:** ${resolveSourceLabel(current?.source)}`,
-   current?.requestedBy ? `👑 **Người điều khiển:** <@${current.requestedBy}>` : '',
+   ownerId ? `👑 **Người điều khiển:** <@${ownerId}>` : '',
    '',
-   `${player?.isPaused ? '⏸️ **Tạm dừng**' : '▶️ **Đang phát**'}`,
+   player?.isPaused
+    ? '⏸️ **Tạm dừng**'
+    : (endUnix ? `▶️ **Đang phát** • ⏳ hết bài <t:${endUnix}:R>` : '▶️ **Đang phát**'),
    `\`${bar || `0:00 🔘▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬ ${formatDuration(current?.duration)}`}\``,
   ].filter(Boolean).join('\n'))
   .setFooter({ text: `Âm lượng: ${player?.volume ?? 100}% • Lặp: ${LOOP_LABELS[loopMode] ?? 'Tắt lặp'} • Chờ: ${(player?.upcomingTracks ?? []).length} bài` })

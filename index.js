@@ -86,6 +86,7 @@ server.on('error', e => {
 let busy = false, closing = false;
 const cooldown = new Map();
 const refreshCooldown = new Map();
+const PROGRESS_TICK_MS = 5000; // Chu kỳ cập nhật thanh tiến trình (5 giây/lần: chuẩn mượt, không bao giờ chạm giới hạn rate-limit Discord).
 const KNOWN_ERROR_RE = /^(Hãy|Bạn|Bot|Chờ|Chỉ|Hàng|Không|Chưa|Tên|URL|Lệnh|Bản|Link|Thời|Số|Định|Vị)/;
 
 function clearPanelTimer(player) {
@@ -93,6 +94,32 @@ function clearPanelTimer(player) {
   clearTimeout(player.userdata.panelTimer);
   player.userdata.panelTimer = null;
  }
+}
+
+function stopProgressTicker(player) {
+ if (player?.userdata?.progressTicker) {
+  clearInterval(player.userdata.progressTicker);
+  player.userdata.progressTicker = null;
+ }
+}
+
+function markPanelTouched(player) {
+ const ud = player?.userdata;
+ if (!ud) return;
+ ud.lastPanelEditAt = Date.now();
+ ud.lastProgressText = typeof player?.getProgressBar === 'function'
+  ? player.getProgressBar({ size: 15, barChar: '▬', progressChar: '🔘' })
+  : '';
+}
+
+// Kiểm tra trong kênh thoại có ít nhất 1 người nghe thật (để không tốn API cập nhật thanh nhạc khi phòng trống).
+function hasHumanListener(player) {
+ const guild = client.guilds.cache.get(player?.guildId);
+ const channelId = player?.userdata?.voiceChannelId ?? guild?.members?.me?.voice?.channelId;
+ if (!guild || !channelId) return true;
+ const ch = guild.channels.cache.get(channelId);
+ if (!ch?.members) return true;
+ return ch.members.some(m => !m.user?.bot);
 }
 
 function clearEmptyTimer(player) {
@@ -126,6 +153,50 @@ function apply247State(player, enabled) {
  }
 }
 
+// Cập nhật tin nhắn khung điều khiển an toàn (chống chồng lấn request và tự dọn nếu tin nhắn bị xóa).
+async function editPanelSafely(player, overrides = {}) {
+ const ud = player?.userdata;
+ if (!ud || player.destroyed || ud.ending || ud.manualDisconnect || !ud.panelMessage) return;
+ if (ud.panelEditInFlight) return;
+ ud.panelEditInFlight = true;
+ try {
+  const msg = ud.panelMessage;
+  const payload = buildPlayerPayload(player, overrides);
+  markPanelTouched(player);
+  await msg.edit(payload);
+ } catch (err) {
+  const code = err?.code;
+  if (code === 10008 || code === 50001 || code === 50013) {
+   ud.panelMessage = null;
+   stopProgressTicker(player);
+  }
+ } finally {
+  ud.panelEditInFlight = false;
+ }
+}
+
+// Bộ nhịp tự động đẩy thanh tiến trình 0:00 🔘▬▬▬ chạy đúng theo luồng âm thanh thực tế mỗi 5 giây.
+function startProgressTicker(player) {
+ const ud = player?.userdata;
+ if (!ud || player.destroyed || ud.ending || ud.manualDisconnect) return;
+ stopProgressTicker(player);
+ ud.progressTicker = setInterval(() => {
+  if (!player || player.destroyed || !ud.panelMessage || ud.ending || ud.manualDisconnect || !player.queue?.currentTrack) {
+   stopProgressTicker(player);
+   return;
+  }
+  if (player.isPaused || !player.isPlaying || ud.panelEditInFlight || ud.panelTimer) return;
+  if (Date.now() - (ud.lastPanelEditAt ?? 0) < 4000) return;
+  if (!hasHumanListener(player)) return;
+  const nextBar = typeof player.getProgressBar === 'function'
+   ? player.getProgressBar({ size: 15, barChar: '▬', progressChar: '🔘' })
+   : '';
+  if (!nextBar || nextBar === ud.lastProgressText) return;
+  void editPanelSafely(player);
+ }, PROGRESS_TICK_MS);
+ ud.progressTicker.unref?.();
+}
+
 // Gửi khung điều khiển nhạc mới tinh xuống cuối kênh chat mỗi khi bắt đầu bài mới (xóa khung cũ để tránh rác kênh).
 async function postFreshPanel(player, track) {
  const ud = player?.userdata;
@@ -133,6 +204,7 @@ async function postFreshPanel(player, track) {
  ud.ending = false;
  ud.idleOpen = false;
  clearPanelTimer(player);
+ stopProgressTicker(player);
  const oldMsg = ud.panelMessage;
  ud.panelMessage = null;
  if (oldMsg) oldMsg.delete().catch(() => {});
@@ -144,21 +216,21 @@ async function postFreshPanel(player, track) {
    return;
   }
   ud.panelMessage = sent;
+  markPanelTouched(player);
+  if (!player.isPaused) startProgressTicker(player);
  } catch (e) {
   console.warn('[khung-nhạc] Không thể gửi khung điều khiển vào kênh chat (kiểm tra quyền Gửi tin nhắn):', e?.code ?? e?.name ?? 'Lỗi');
  }
 }
 
-// Gom các thay đổi liên tiếp (âm lượng, lặp, 24/7, hàng đợi, tạm dừng) để cập nhật khung điều khiển mượt mà.
+// Gom các thay đổi liên tiếp (âm lượng, lặp, 24/7, hàng đợi, tạm dừng, tua nhạc) để cập nhật khung điều khiển mượt mà.
 function schedulePanelUpdate(player, overrides = {}) {
  const ud = player?.userdata;
  if (!ud || player.destroyed || ud.ending || !ud.panelMessage) return;
  clearPanelTimer(player);
  ud.panelTimer = setTimeout(() => {
   ud.panelTimer = null;
-  if (!player.destroyed && !ud.ending && ud.panelMessage) {
-   ud.panelMessage.edit(buildPlayerPayload(player, overrides)).catch(() => {});
-  }
+  void editPanelSafely(player, overrides);
  }, 250);
  ud.panelTimer.unref?.();
 }
@@ -169,6 +241,7 @@ async function closeCurrentPanel(player, reason, { keepIdle247 = false } = {}) {
  if (!ud) return;
  ud.ending = true;
  clearPanelTimer(player);
+ stopProgressTicker(player);
  const payload = keepIdle247 && ud.stay247 && !ud.manualDisconnect
   ? buildIdle247Payload(player, reason)
   : buildEndedPayload(reason);
@@ -195,6 +268,7 @@ async function destroyPlayerSession(guildId, reason) {
  if (ud) {
   ud.manualDisconnect = true;
   ud.stay247 = false;
+  stopProgressTicker(p);
   clearEmptyTimer(p);
   await closeCurrentPanel(p, reason);
   ud.textChannel = null;
@@ -211,8 +285,15 @@ manager.on('trackStart', (player, track) => {
  }
  void postFreshPanel(player, track);
 });
-manager.on('playerPause', player => schedulePanelUpdate(player, { paused: true }));
-manager.on('playerResume', player => schedulePanelUpdate(player, { paused: false }));
+manager.on('playerPause', player => {
+ stopProgressTicker(player);
+ schedulePanelUpdate(player, { paused: true });
+});
+manager.on('playerResume', player => {
+ startProgressTicker(player);
+ schedulePanelUpdate(player, { paused: false });
+});
+manager.on('seek', player => schedulePanelUpdate(player));
 manager.on('volumeChange', player => schedulePanelUpdate(player));
 manager.on('queueAdd', player => schedulePanelUpdate(player));
 manager.on('queueRemove', player => schedulePanelUpdate(player));
@@ -533,10 +614,11 @@ async function handlePlayerComponent(i) {
   if (!p || !p.queue.currentTrack) return void await i.update(buildEndedPayload());
   const now = Date.now();
   if (now - (refreshCooldown.get(i.guildId) ?? 0) < 2500) {
-   return void await i.reply({ content: 'Thanh tiến trình vừa được cập nhật.', flags: MessageFlags.Ephemeral });
+   return void await i.reply({ content: 'Thanh tiến trình đang tự động chạy theo nhạc mỗi 5 giây.', flags: MessageFlags.Ephemeral });
   }
   refreshCooldown.set(i.guildId, now);
   if (p.userdata) p.userdata.panelMessage = i.message;
+  markPanelTouched(p);
   await i.update(buildPlayerPayload(p));
   return;
  }
@@ -587,7 +669,15 @@ async function handlePlayerComponent(i) {
    switch (i.customId) {
     case 'player_pause': {
      const nextPaused = !p.isPaused;
-     if (nextPaused) p.pause(); else p.resume();
+     if (nextPaused) {
+      p.pause();
+      stopProgressTicker(p);
+     } else {
+      p.resume();
+      startProgressTicker(p);
+     }
+     clearPanelTimer(p);
+     markPanelTouched(p);
      await i.update(buildPlayerPayload(p, { paused: nextPaused }));
      return;
     }
@@ -608,6 +698,7 @@ async function handlePlayerComponent(i) {
       p.userdata.stay247 = false;
       p.userdata.ending = true;
       clearPanelTimer(p);
+      stopProgressTicker(p);
       clearEmptyTimer(p);
       p.userdata.panelMessage = null;
       p.userdata.textChannel = null;
@@ -622,6 +713,7 @@ async function handlePlayerComponent(i) {
       p.userdata.idleOpen = true;
       p.userdata.skipNextStopEvent = true;
       clearPanelTimer(p);
+      stopProgressTicker(p);
       p.queue.reset();
       p.stop();
       p.clearLeaveTimeout?.();
@@ -632,6 +724,7 @@ async function handlePlayerComponent(i) {
       p.userdata.manualDisconnect = true;
       p.userdata.ending = true;
       clearPanelTimer(p);
+      stopProgressTicker(p);
       clearEmptyTimer(p);
       p.userdata.panelMessage = null;
       p.userdata.textChannel = null;
@@ -648,6 +741,7 @@ async function handlePlayerComponent(i) {
     case 'toggle_autoplay': {
      const nextAuto = !p.autoPlay();
      p.autoPlay(nextAuto);
+     markPanelTouched(p);
      await i.update(buildPlayerPayload(p, { autoPlay: nextAuto }));
      return;
     }
@@ -655,6 +749,7 @@ async function handlePlayerComponent(i) {
      const nextPreset = getNextSoundPreset(p.userdata?.soundPreset ?? 'hd');
      if (p.userdata) p.userdata.soundPreset = nextPreset;
      setAudioEnhancement({ preset: nextPreset });
+     markPanelTouched(p);
      await i.update(buildPlayerPayload(p, { soundPreset: nextPreset }));
      const presetInfo = SOUND_PRESETS[nextPreset];
      await i.followUp({
@@ -667,24 +762,30 @@ async function handlePlayerComponent(i) {
      const order = ['off', 'track', 'queue'];
      const nextMode = order[(order.indexOf(p.loop()) + 1) % order.length];
      p.loop(nextMode);
+     markPanelTouched(p);
      await i.update(buildPlayerPayload(p, { loopMode: nextMode }));
      return;
     }
     case 'toggle_247': {
      const next247 = !p.userdata?.stay247;
      apply247State(p, next247);
+     markPanelTouched(p);
      await i.update(buildPlayerPayload(p, { stay247: next247 }));
      return;
     }
     case 'shuffle_queue': {
      if (p.upcomingTracks.length < 2) throw new Error('Hàng đợi cần ít nhất 2 bài để trộn.');
      p.shuffle();
+     clearPanelTimer(p);
+     markPanelTouched(p);
      await i.update(buildPlayerPayload(p));
      return;
     }
     case 'clear_queue': {
      if (p.upcomingTracks.length === 0) throw new Error('Hàng đợi chờ hiện đang trống.');
      p.clearQueue();
+     clearPanelTimer(p);
+     markPanelTouched(p);
      await i.update(buildPlayerPayload(p));
      return;
     }
@@ -693,6 +794,8 @@ async function handlePlayerComponent(i) {
     case 'vol_100': {
      const target = i.values[0] === 'vol_100' ? 100 : Math.min(100, Math.max(0, p.volume + (i.values[0] === 'vol_up' ? 20 : -20)));
      if (!p.setVolume(target)) throw new Error('Không thể chỉnh âm lượng lúc này.');
+     clearPanelTimer(p);
+     markPanelTouched(p);
      await i.update(buildPlayerPayload(p, { volume: target }));
      return;
     }
@@ -925,8 +1028,16 @@ client.on(Events.InteractionCreate, async i => {
 async function shutdown(code = 0) {
  if (closing) return; closing = true;
  const timer = setTimeout(() => process.exit(code || 1), 5000); timer.unref();
- try { manager.destroy(); client.destroy(); server.close(() => process.exit(code)); }
- catch { process.exit(1); }
+ try {
+  for (const p of manager.getAll()) {
+   clearPanelTimer(p);
+   stopProgressTicker(p);
+   clearEmptyTimer(p);
+  }
+  manager.destroy();
+  client.destroy();
+  server.close(() => process.exit(code));
+ } catch { process.exit(1); }
 }
 function fatal(e) { console.error('[lỗi-nghiêm-trọng]', e?.name ?? 'Error'); void shutdown(1); }
 process.once('SIGTERM', () => shutdown());

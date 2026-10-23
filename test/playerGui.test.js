@@ -33,10 +33,11 @@ const samplePlayer = {
   { title: 'Lost Sky', duration: 210000, requestedBy: '123456789012345678' },
  ],
  userdata: { ownerId: '123456789012345678', voiceChannelId: '987654321098765432' },
+ getTime: () => ({ current: 42000, total: 236000 }),
  getProgressBar: () => '0:42 ▬▬▬▬🔘▬▬▬▬▬▬▬▬▬▬▬ 3:56',
 };
 
-test('buildPlayerPayload generates valid Components V2 container with artwork and controls', () => {
+test('buildPlayerPayload generates valid Components V2 container with artwork, live timestamp, and controls', () => {
  const payload = buildPlayerPayload(samplePlayer);
  assert.equal(payload.flags, MessageFlags.IsComponentsV2);
  assert.equal(payload.components.length, 1);
@@ -46,8 +47,13 @@ test('buildPlayerPayload generates valid Components V2 container with artwork an
  const raw = JSON.stringify(json);
  assert.ok(raw.includes('-t500x500.jpg'), 'upgrades SoundCloud artwork resolution');
  assert.ok(!raw.includes('@everyone'), 'strips mention tokens from title');
+ assert.ok(raw.includes('0:42 ▬▬▬▬🔘▬▬▬▬▬▬▬▬▬▬▬ 3:56'));
+ assert.ok(/<t:\d+:R>/.test(raw), 'includes Discord live relative end timestamp while playing');
  assert.ok(raw.includes('player_menu'));
  assert.ok(raw.includes('player_pause'));
+
+ const pausedRaw = JSON.stringify(buildPlayerPayload(samplePlayer, { paused: true }).components[0].toJSON());
+ assert.ok(!/<t:\d+:R>/.test(pausedRaw), 'hides live countdown when paused');
 });
 
 test('buildPlayerPayload handles missing URL/thumbnail and paused state gracefully', () => {

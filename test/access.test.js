@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { assertMusicAccess, resolveHumanRequester } from '../src/access.js';
+import { assertMusicAccess, DEFAULT_BOT_OWNER_IDS, isBotOwner, resolveHumanRequester } from '../src/access.js';
 
 const mutations = [
  'join', 'leave', '247', 'autoplay', 'play', 'pause', 'resume',
@@ -53,4 +53,22 @@ test('gaps use previous requester, then session creator; idle 24/7 allows new /p
  assert.throws(() => assertMusicAccess('leave', 'bob', idle247));
  assert.throws(() => assertMusicAccess('247', 'bob', idle247));
  assert.doesNotThrow(() => assertMusicAccess('leave', 'alice', idle247));
+});
+
+test('configured bot owner ID 1243061570247069696 can control all music commands and buttons regardless of requester', () => {
+ assert.ok(DEFAULT_BOT_OWNER_IDS.includes('1243061570247069696'));
+ assert.equal(isBotOwner('1243061570247069696'), true);
+ assert.equal(isBotOwner('bob'), false);
+ assert.equal(isBotOwner('999999999999999999', { BOT_OWNER_ID: '999999999999999999' }), true);
+
+ for (const command of [...mutations, 'control']) {
+  assert.doesNotThrow(() => assertMusicAccess(command, '1243061570247069696', player));
+ }
+
+ const idle247 = {
+  queue: { currentTrack: null },
+  userdata: { ownerId: 'alice', stay247: true, idleOpen: true },
+ };
+ assert.doesNotThrow(() => assertMusicAccess('leave', '1243061570247069696', idle247));
+ assert.doesNotThrow(() => assertMusicAccess('247', '1243061570247069696', idle247));
 });

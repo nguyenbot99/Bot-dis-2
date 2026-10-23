@@ -5,7 +5,7 @@ import { PlayerManager } from 'ziplayer';
 import ffmpeg from 'ffmpeg-static';
 import { parseSeekTime, pickBestMatchingTrack, resolveConfig, resolveMusicRequest } from './src/policy.js';
 import { getNextSoundPreset, installAudioEnhancer, setAudioEnhancement, SOUND_PRESETS } from './src/audioEnhancer.js';
-import { assertMusicAccess, resolveHumanRequester } from './src/access.js';
+import { assertMusicAccess, isBotOwner, resolveHumanRequester } from './src/access.js';
 import { fetchTrackLyrics, sanitizeLyricsTitle } from './src/lyrics.js';
 import { buildVoiceGuardEmbed, evaluateBotVoiceTransition } from './src/voiceGuard.js';
 import { buildHelpEmbed, commands } from './src/commands.js';
@@ -499,13 +499,26 @@ manager.on('playerError', (player, error) => {
 });
 manager.on('error', () => console.error('[quản-lý-nhạc] lỗi'));
 
-// Kiểm tra người dùng đang ở kênh thoại thường và cùng kênh thoại với bot.
+// Kiểm tra người dùng đang ở kênh thoại thường và cùng kênh thoại với bot (chủ bot được phép điều khiển từ xa khi bot đang ở trong phòng).
 async function requireSameVoiceChannel(guild, userId) {
  const cachedChannel = guild.voiceStates.cache.get(userId)?.channel;
- const channel = cachedChannel ?? (await guild.members.fetch(userId)).voice.channel;
+ const channel = cachedChannel ?? (await guild.members.fetch(userId).catch(() => null))?.voice?.channel ?? null;
+ const botChannelId = guild.members.me?.voice.channelId
+  ?? guild.voiceStates.cache.get(client.user?.id)?.channelId
+  ?? manager.get(guild.id)?.userdata?.voiceChannelId
+  ?? null;
+
+ if (isBotOwner(userId)) {
+  if (botChannelId) {
+   const activeBotChannel = guild.channels.cache.get(botChannelId);
+   if (activeBotChannel?.type === 2) return activeBotChannel;
+  }
+  if (!channel || channel.type !== 2) throw new Error('Hãy vào một kênh thoại thường trước để bot biết phòng cần vào.');
+  return channel;
+ }
+
  if (!channel || channel.type !== 2) throw new Error('Hãy vào một kênh thoại thường trước.');
- const botChannel = guild.members.me?.voice.channelId ?? guild.voiceStates.cache.get(client.user?.id)?.channelId;
- if (botChannel && botChannel !== channel.id) throw new Error('Bạn phải ở cùng kênh thoại với bot.');
+ if (botChannelId && botChannelId !== channel.id) throw new Error('Bạn phải ở cùng kênh thoại với bot.');
  return channel;
 }
 

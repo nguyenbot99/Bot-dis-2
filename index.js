@@ -9,6 +9,7 @@ import { buildHelpEmbed, commands } from './src/commands.js';
 import {
  buildAddSongModal,
  buildEndedPayload,
+ buildIdle247Payload,
  buildNowPlayingEmbed,
  buildPlayerPayload,
  buildQueueEmbed,
@@ -97,10 +98,16 @@ function apply247State(player, enabled) {
   player.runtimeGraph.lifecycleController.leaveOnEmpty = !enabled;
  }
  if (enabled) {
+  if (!player.queue?.currentTrack && (player.upcomingTracks?.length ?? 0) === 0) {
+   player.userdata.idleOpen = true;
+  }
   player.clearLeaveTimeout?.();
   clearEmptyTimer(player);
- } else if (!player.queue?.currentTrack && (player.upcomingTracks?.length ?? 0) === 0) {
-  player.scheduleLeave?.();
+ } else {
+  player.userdata.idleOpen = false;
+  if (!player.queue?.currentTrack && (player.upcomingTracks?.length ?? 0) === 0) {
+   player.scheduleLeave?.();
+  }
  }
 }
 
@@ -141,15 +148,28 @@ function schedulePanelUpdate(player, overrides = {}) {
  ud.panelTimer.unref?.();
 }
 
-// Đóng khung điều khiển của bài hiện tại (giữ nguyên kết nối nếu đang bật 24/7).
-async function closeCurrentPanel(player, reason) {
+// Đóng khung điều khiển của bài hiện tại (hoặc chuyển sang khung chờ 24/7 nếu đang bật 24/7).
+async function closeCurrentPanel(player, reason, { keepIdle247 = false } = {}) {
  const ud = player?.userdata;
  if (!ud) return;
  ud.ending = true;
  clearPanelTimer(player);
+ const payload = keepIdle247 && ud.stay247 && !ud.manualDisconnect
+  ? buildIdle247Payload(player, reason)
+  : buildEndedPayload(reason);
  const msg = ud.panelMessage;
+ if (keepIdle247 && ud.stay247 && !ud.manualDisconnect) {
+  if (msg) {
+   await msg.edit(payload).catch(() => {});
+   return;
+  }
+  if (ud.textChannel?.send) {
+   ud.panelMessage = await ud.textChannel.send(payload).catch(() => null);
+  }
+  return;
+ }
  ud.panelMessage = null;
- if (msg) await msg.edit(buildEndedPayload(reason)).catch(() => {});
+ if (msg) await msg.edit(payload).catch(() => {});
 }
 
 // Đóng toàn bộ phiên phát, xóa mọi bộ hẹn giờ/tham chiếu và cho bot rời khỏi kênh thoại.
@@ -178,16 +198,20 @@ manager.on('queueEnd', player => {
  if (player.userdata?.stay247) {
   player.userdata.idleOpen = true;
   player.clearLeaveTimeout?.();
-  void closeCurrentPanel(player, 'Đã phát hết hàng đợi — Bot vẫn đang treo trong kênh thoại 24/7.');
+  void closeCurrentPanel(player, 'Đã phát hết hàng đợi — Bot vẫn đang treo trong kênh thoại 24/7.', { keepIdle247: true });
   return;
  }
  void closeCurrentPanel(player, 'Đã phát hết toàn bộ danh sách nhạc.');
 });
 manager.on('playerStop', player => {
+ if (player.userdata?.skipNextStopEvent) {
+  player.userdata.skipNextStopEvent = false;
+  return;
+ }
  if (player.userdata?.stay247) {
   player.userdata.idleOpen = true;
   player.clearLeaveTimeout?.();
-  void closeCurrentPanel(player, 'Đã dừng phát nhạc — Bot vẫn đang giữ kết nối kênh thoại 24/7.');
+  void closeCurrentPanel(player, 'Đã dừng phát nhạc — Bot vẫn đang giữ kết nối kênh thoại 24/7.', { keepIdle247: true });
   return;
  }
  void closeCurrentPanel(player, 'Đã dừng phát nhạc.');
@@ -201,9 +225,10 @@ manager.on('playerError', (player, error) => {
  console.error('[lỗi-phát-nhạc]', error?.name ?? 'Error');
  if (player.userdata?.stay247) {
   player.userdata.idleOpen = true;
+  player.userdata.skipNextStopEvent = true;
   player.stop();
   player.clearLeaveTimeout?.();
-  void closeCurrentPanel(player, 'Nguồn bài hát gặp sự cố — Bot vẫn giữ kết nối kênh thoại 24/7.');
+  void closeCurrentPanel(player, 'Nguồn bài hát gặp sự cố — Bot vẫn giữ kết nối kênh thoại 24/7.', { keepIdle247: true });
   return;
  }
  void destroyPlayerSession(player.guildId, 'Nguồn nhạc gặp sự cố nên phiên phát đã tự đóng để bảo vệ tài nguyên.');
@@ -241,7 +266,7 @@ async function ensureVoiceSession({ guild, voiceChannel, textChannel, userId, in
     textChannel,
     voiceChannelId: voiceChannel.id,
     stay247: initial247,
-    idleOpen: false,
+    idleOpen: Boolean(initial247),
     panelMessage: null,
     panelTimer: null,
     emptyTimer: null,
@@ -418,12 +443,15 @@ async function handlePlayerComponent(i) {
  const p = manager.get(i.guildId);
 
  // Trường hợp mở hộp thoại thêm bài hát mới: phải gọi showModal trước khi defer.
- if (i.isStringSelectMenu() && i.customId === 'player_menu' && i.values[0] === 'add_song') {
+ if (
+  (i.isStringSelectMenu() && i.customId === 'player_menu' && i.values[0] === 'add_song')
+  || (i.isButton() && i.customId === 'player_open_add')
+ ) {
   if (!p) throw new Error('Chưa có phiên phát nhạc nào.');
   await requireSameVoiceChannel(i.guild, i.user.id);
   assertMusicAccess('play', i.user.id, p);
   await i.showModal(buildAddSongModal());
-  schedulePanelUpdate(p);
+  if (p.queue.currentTrack) schedulePanelUpdate(p);
   return;
  }
 
@@ -509,16 +537,30 @@ async function handlePlayerComponent(i) {
      p.skip();
      return;
     }
+    case 'player_leave': {
+     if (p.userdata) {
+      p.userdata.manualDisconnect = true;
+      p.userdata.stay247 = false;
+      p.userdata.ending = true;
+      clearPanelTimer(p);
+      clearEmptyTimer(p);
+      p.userdata.panelMessage = null;
+      p.userdata.textChannel = null;
+     }
+     await i.update(buildEndedPayload('Đã tắt chế độ 24/7 và rời khỏi kênh thoại.'));
+     manager.delete(i.guildId);
+     return;
+    }
     case 'player_stop': {
      if (p.userdata?.stay247) {
       p.userdata.ending = true;
       p.userdata.idleOpen = true;
+      p.userdata.skipNextStopEvent = true;
       clearPanelTimer(p);
-      p.userdata.panelMessage = null;
       p.queue.reset();
       p.stop();
       p.clearLeaveTimeout?.();
-      await i.update(buildEndedPayload('Đã dừng phát nhạc và xóa hàng đợi — Bot vẫn đang giữ kết nối 24/7 (dùng `/leave` nếu muốn bot rời kênh).'));
+      await i.update(buildIdle247Payload(p, 'Đã dừng phát nhạc và xóa hàng đợi — Bot vẫn đang giữ kết nối 24/7.'));
       return;
      }
      if (p.userdata) {
@@ -618,12 +660,20 @@ client.on(Events.InteractionCreate, async i => {
    const chosen = i.options.getString('mode');
    if (!p) {
     if (chosen === 'off') return await reply('Chế độ 24/7 hiện đang tắt (bot chưa ở trong kênh thoại).');
-    await ensureVoiceSession({ guild: i.guild, voiceChannel: channel, textChannel: i.channel, userId: i.user.id, initial247: true });
+    const { player: createdPlayer } = await ensureVoiceSession({ guild: i.guild, voiceChannel: channel, textChannel: i.channel, userId: i.user.id, initial247: true });
+    await closeCurrentPanel(createdPlayer, 'Bot đang treo trong kênh thoại 24/7 và sẵn sàng phát nhạc.', { keepIdle247: true });
     return await reply(`🌙 Đã tham gia <#${channel.id}> và **BẬT** chế độ treo kênh thoại 24/7.`);
    }
    const next247 = chosen ? chosen === 'on' : !p.userdata?.stay247;
+   if (p.userdata) p.userdata.textChannel = i.channel;
    apply247State(p, next247);
-   schedulePanelUpdate(p, { stay247: next247 });
+   if (p.queue.currentTrack) {
+    schedulePanelUpdate(p, { stay247: next247 });
+   } else if (next247) {
+    await closeCurrentPanel(p, 'Bot đang treo trong kênh thoại 24/7 và sẵn sàng phát nhạc.', { keepIdle247: true });
+   } else {
+    await closeCurrentPanel(p, 'Đã tắt chế độ 24/7 — bot sẽ tự rời kênh thoại sau 30 giây nếu không phát nhạc.');
+   }
    return await reply(
     next247
      ? `🌙 Đã **BẬT** chế độ 24/7 — bot sẽ giữ kết nối trong <#${channel.id}> ngay cả khi hết nhạc hoặc vắng người.`
@@ -687,10 +737,11 @@ client.on(Events.InteractionCreate, async i => {
    case 'stop':
     if (p.userdata?.stay247) {
      p.userdata.idleOpen = true;
+     p.userdata.skipNextStopEvent = true;
      p.queue.reset();
      p.stop();
      p.clearLeaveTimeout?.();
-     await closeCurrentPanel(p, 'Đã dừng phát nhạc và xóa hàng đợi — Bot vẫn đang giữ kết nối 24/7 (dùng `/leave` nếu muốn bot rời kênh).');
+     await closeCurrentPanel(p, 'Đã dừng phát nhạc và xóa hàng đợi — Bot vẫn đang giữ kết nối 24/7.', { keepIdle247: true });
      return await reply('⏹️ Đã dừng nhạc và xóa hàng đợi (bot vẫn ở lại kênh thoại do đang bật `/247`; dùng `/leave` nếu muốn rời kênh).');
     }
     await destroyPlayerSession(i.guildId, 'Đã dừng phát nhạc, xóa hàng đợi và rời kênh thoại.');

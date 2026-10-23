@@ -227,6 +227,47 @@ export function buildPlayerPayload(player, overrides = {}) {
  };
 }
 
+// Khung chờ tương tác khi bot đang treo kênh thoại 24/7 và hiện không phát bài nào.
+export function buildIdle247Payload(player, reason = 'Bot đang giữ kết nối 24/7 trong kênh thoại và sẵn sàng phát nhạc.') {
+ const voiceChannelId = player?.userdata?.voiceChannelId ?? null;
+ const ownerId = player?.userdata?.ownerId ?? null;
+ const roomLine = [
+  voiceChannelId ? `🎙️ Kênh thoại: <#${voiceChannelId}>` : '🎙️ Kênh thoại đang kết nối',
+  ownerId ? `👑 Chủ phiên 24/7: <@${ownerId}>` : null,
+ ].filter(Boolean).join(' • ');
+
+ const buttonRow = new ActionRowBuilder().addComponents(
+  new ButtonBuilder()
+   .setCustomId('player_open_add')
+   .setEmoji('➕')
+   .setLabel('Thêm bài hát')
+   .setStyle(ButtonStyle.Success),
+  new ButtonBuilder()
+   .setCustomId('player_leave')
+   .setEmoji('👋')
+   .setLabel('Rời kênh thoại')
+   .setStyle(ButtonStyle.Danger),
+ );
+
+ const container = new ContainerBuilder()
+  .setAccentColor(0x57f287)
+  .addTextDisplayComponents(
+   new TextDisplayBuilder().setContent([
+    '### 🌙 Chế độ 24/7 đang hoạt động',
+    reason,
+    roomLine,
+    '-# Bấm **Thêm bài hát** bên dưới hoặc gõ `/play` để mở nhạc • dùng `/247 mode:Tắt 24/7` hoặc `/leave` nếu muốn bot rời kênh.',
+   ].join('\n')),
+  )
+  .addActionRowComponents(buttonRow);
+
+ return {
+  flags: MessageFlags.IsComponentsV2,
+  components: [container],
+  allowedMentions: { parse: [] },
+ };
+}
+
 // Khung trạng thái gọn gàng khi phiên phát nhạc kết thúc hoặc bị dừng (vô hiệu hóa các nút cũ).
 export function buildEndedPayload(reason = 'Hàng đợi đã phát hết, bot đã rời kênh thoại.') {
  const container = new ContainerBuilder()

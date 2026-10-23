@@ -4,6 +4,7 @@ import { MessageFlags } from 'discord.js';
 import {
  buildAddSongModal,
  buildEndedPayload,
+ buildIdle247Payload,
  buildNowPlayingEmbed,
  buildPlayerPayload,
  buildQueueEmbed,
@@ -68,6 +69,11 @@ test('buildEndedPayload, modal, and embeds serialize cleanly', () => {
  const ended = buildEndedPayload('Đã dừng.');
  assert.equal(ended.flags, MessageFlags.IsComponentsV2);
  assert.equal(ended.components[0].toJSON().type, 17);
+
+ const idle247 = buildIdle247Payload(samplePlayer, 'Đang treo 24/7.');
+ assert.equal(idle247.flags, MessageFlags.IsComponentsV2);
+ assert.ok(JSON.stringify(idle247.components[0].toJSON()).includes('player_open_add'));
+ assert.ok(JSON.stringify(idle247.components[0].toJSON()).includes('player_leave'));
 
  const modal = buildAddSongModal().toJSON();
  assert.equal(modal.custom_id, 'player_add_modal');

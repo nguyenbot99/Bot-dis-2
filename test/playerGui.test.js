@@ -9,6 +9,7 @@ import {
  buildPlayerPayload,
  buildQueueEmbed,
  formatDuration,
+ renderSyncedProgress,
  safeHttpUrl,
 } from '../src/playerGui.js';
 
@@ -47,7 +48,7 @@ test('buildPlayerPayload generates valid Components V2 container with artwork, l
  const raw = JSON.stringify(json);
  assert.ok(raw.includes('-t500x500.jpg'), 'upgrades SoundCloud artwork resolution');
  assert.ok(!raw.includes('@everyone'), 'strips mention tokens from title');
- assert.ok(raw.includes('0:42 ▬▬▬▬🔘▬▬▬▬▬▬▬▬▬▬▬ 3:56'));
+ assert.ok(raw.includes('0:42 ▬▬▬🔘▬▬▬▬▬▬▬▬▬▬▬▬ 3:56'));
  assert.ok(/<t:\d+:R>/.test(raw), 'includes Discord live relative end timestamp while playing');
  assert.ok(raw.includes('player_menu'));
  assert.ok(raw.includes('player_pause'));
@@ -91,4 +92,22 @@ test('buildEndedPayload, modal, and embeds serialize cleanly', () => {
  assert.ok(npEmbed.title.includes('Night Lights'));
  assert.equal(formatDuration(236000), '3:56');
  assert.equal(safeHttpUrl('ftp://bad'), null);
+});
+
+test('renderSyncedProgress never lets current exceed total (fixes 5:40 / 4:21 desync)', () => {
+ const trailing = renderSyncedProgress(
+  { getTime: () => ({ current: 263000, total: 261000 }) },
+  { duration: 261000 },
+  false,
+ );
+ assert.equal(trailing.barText, '4:21 ▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬🔘 4:21');
+
+ const trackObj = { duration: 261000 };
+ const longerStream = renderSyncedProgress(
+  { getTime: () => ({ current: 340000, total: 261000 }) },
+  trackObj,
+  false,
+ );
+ assert.equal(longerStream.barText, '5:40 ▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬🔘 5:40');
+ assert.equal(trackObj.duration, 340000);
 });

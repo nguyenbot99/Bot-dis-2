@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseSeekTime, resolveConfig, resolveMusicQuery, validateQuery } from '../src/policy.js';
+import { parseSeekTime, pickBestMatchingTrack, resolveConfig, resolveMusicQuery, validateQuery } from '../src/policy.js';
 import { buildHelpEmbed, commands } from '../src/commands.js';
 
 test('valid search, SoundCloud/Spotify normalization, and mobile share text extraction', () => {
@@ -53,6 +53,20 @@ test('parseSeekTime parses seconds and mm:ss / hh:mm:ss cleanly', () => {
  assert.equal(parseSeekTime('01:02:03'), 3723000);
  assert.throws(() => parseSeekTime('1:75'), /nhỏ hơn 60/);
  assert.throws(() => parseSeekTime('abc'), /không hợp lệ/);
+});
+
+test('pickBestMatchingTrack prefers exact 4:21 audio over 6-minute MV or slowed remix', () => {
+ const candidates = [
+  { id: 'mv', title: 'Nơi Này Có Anh (Slowed + Reverb)', duration: 365000, metadata: { author: 'Channel A' } },
+  { id: 'orig', title: 'Sơn Tùng M-TP - Nơi Này Có Anh (Official Audio)', duration: 261000, metadata: { author: 'Sơn Tùng M-TP - Topic' } },
+  { id: 'hour', title: 'Nơi Này Có Anh 1 Hour Loop', duration: 3600000, metadata: { author: 'Loop' } },
+ ];
+ const best = pickBestMatchingTrack(candidates, {
+  title: 'Nơi Này Có Anh',
+  artist: 'Sơn Tùng M-TP',
+  durationMs: 261000,
+ });
+ assert.equal(best.id, 'orig');
 });
 
 test('reject dangerous URLs and playlists', () => {

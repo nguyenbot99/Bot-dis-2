@@ -1,6 +1,6 @@
 import spotifyUrlInfo from 'spotify-url-info';
 
-const { getPreview: defaultSpotifyGetPreview } = spotifyUrlInfo(fetch);
+const { getPreview: defaultSpotifyGetPreview, getDetails: defaultSpotifyGetDetails } = spotifyUrlInfo(fetch);
 
 // Đọc và kiểm tra cấu hình môi trường; chỉ bắt buộc có Token, còn GUILD_ID là tùy chọn.
 export function resolveConfig(env = process.env) {
@@ -96,10 +96,10 @@ export function validateQuery(input) {
  return q;
 }
 
-// Giải mã link rút gọn (on.soundcloud.com / spotify.link) và chuyển link bài hát Spotify sang truy vấn phát nhạc.
-export async function resolveMusicQuery(input, fetchImpl = fetch, spotifyPreviewFn = defaultSpotifyGetPreview) {
+// Giải mã link rút gọn (on.soundcloud.com / spotify.link) và lấy cả thông tin chuẩn (tên, ca sĩ, độ dài gốc) của bài Spotify.
+export async function resolveMusicRequest(input, fetchImpl = fetch, spotifyResolverFn = null) {
  const q = validateQuery(input);
- if (!q.startsWith('https://')) return q;
+ if (!q.startsWith('https://')) return { query: q, spotifyMeta: null };
 
  let current = new URL(q);
  for (let hop = 0; hop < 3 && SHORT_REDIRECT_HOSTS.has(current.hostname.toLowerCase()); hop++) {
@@ -136,15 +136,96 @@ export async function resolveMusicQuery(input, fetchImpl = fetch, spotifyPreview
  const normalized = validateQuery(current.toString());
  if (SPOTIFY_HOSTS.has(new URL(normalized).hostname.toLowerCase())) {
   try {
-   const meta = await spotifyPreviewFn(normalized);
-   const combined = [meta?.title, meta?.artist].filter(Boolean).join(' - ').trim();
+   if (spotifyResolverFn) {
+    const meta = await spotifyResolverFn(normalized);
+    const combined = [meta?.title, meta?.artist].filter(Boolean).join(' - ').trim();
+    if (!combined) throw new Error('Empty metadata');
+    return {
+     query: combined.slice(0, 300),
+     spotifyMeta: {
+      title: meta?.title ?? '',
+      artist: meta?.artist ?? '',
+      durationMs: Number(meta?.durationMs ?? meta?.duration ?? 0) || 0,
+      thumbnail: meta?.image ?? null,
+     },
+    };
+   }
+   const details = await defaultSpotifyGetDetails(normalized).catch(() => null);
+   const preview = details?.preview ?? await defaultSpotifyGetPreview(normalized);
+   const combined = [preview?.title, preview?.artist].filter(Boolean).join(' - ').trim();
    if (!combined) throw new Error('Empty metadata');
-   return combined.slice(0, 300);
+   return {
+    query: combined.slice(0, 300),
+    spotifyMeta: {
+     title: preview?.title ?? '',
+     artist: preview?.artist ?? '',
+     durationMs: Number(details?.tracks?.[0]?.duration ?? 0) || 0,
+     thumbnail: preview?.image ?? null,
+    },
+   };
   } catch {
    throw new Error('Không thể đọc thông tin bài hát từ link Spotify này.');
   }
  }
- return normalized;
+ return { query: normalized, spotifyMeta: null };
+}
+
+export async function resolveMusicQuery(input, fetchImpl = fetch, spotifyPreviewFn = null) {
+ const { query } = await resolveMusicRequest(input, fetchImpl, spotifyPreviewFn);
+ return query;
+}
+
+const UNWANTED_VARIANT_WORDS = ['slowed', 'reverb', 'nightcore', 'sped up', '8d', '1 hour', '1 giờ', 'karaoke', 'instrumental', 'beat chuẩn'];
+
+// Chọn bản nhạc khớp nhất theo tên, ca sĩ và đặc biệt là độ dài gốc (tránh chọn nhầm MV dài có đoạn phim mở đầu hoặc bản remix/slowed).
+export function pickBestMatchingTrack(tracks = [], hint = {}) {
+ const valid = (Array.isArray(tracks) ? tracks : []).filter(t => t && !t.isLive && !(t.duration > 10800000));
+ if (!valid.length) return tracks?.[0] ?? null;
+
+ const targetTitle = String(hint?.title ?? '').toLowerCase().trim();
+ const targetArtist = String(hint?.artist ?? hint?.author ?? '').toLowerCase().trim();
+ const targetDurationMs = Number(hint?.durationMs ?? 0);
+ if (!targetTitle && !targetArtist && !(targetDurationMs > 0)) return valid[0];
+
+ const refText = `${targetTitle} ${targetArtist}`;
+ let best = valid[0];
+ let bestScore = -Infinity;
+
+ valid.slice(0, 10).forEach((cand, idx) => {
+  let score = Math.max(0, 12 - idx * 2); // Ưu tiên nhẹ thứ hạng đầu của bộ tìm kiếm.
+  const cTitle = String(cand.title ?? '').toLowerCase();
+  const cAuthor = String(cand.metadata?.author ?? '').toLowerCase();
+  const cCombined = `${cTitle} ${cAuthor}`;
+
+  if (targetTitle && cTitle.includes(targetTitle)) score += 25;
+  if (targetArtist && (cCombined.includes(targetArtist) || targetArtist.includes(cAuthor && cAuthor.length > 2 ? cAuthor : '\0'))) {
+   score += 30;
+  }
+  if (/\b(official\s+audio|audio)\b/i.test(cTitle) || /-\s*topic$/i.test(cAuthor)) {
+   score += 15;
+  }
+
+  for (const word of UNWANTED_VARIANT_WORDS) {
+   if (cTitle.includes(word) && !refText.includes(word)) score -= 50;
+  }
+
+  const candDur = Number(cand.duration ?? 0);
+  const cMs = candDur > 1000 ? candDur : candDur * 1000;
+  if (targetDurationMs > 0 && cMs > 0) {
+   const diffSec = Math.abs(cMs - targetDurationMs) / 1000;
+   if (diffSec <= 5) score += 65;
+   else if (diffSec <= 15) score += 45;
+   else if (diffSec <= 35) score += 15;
+   else if (diffSec > 60) score -= Math.min(140, Math.round(diffSec));
+  }
+
+  if (score > bestScore) {
+   bestScore = score;
+   best = cand;
+  }
+ });
+
+ return best;
 }
 
 // Chuyển đổi chuỗi thời gian tua nhạc (ví dụ "90", "1:30", "01:05:20") sang mili-giây hợp lệ.

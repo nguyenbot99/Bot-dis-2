@@ -60,6 +60,47 @@ export function formatDuration(ms) {
  return hours > 0 ? `${hours}:${String(minutes).padStart(2, '0')}:${seconds}` : `${minutes}:${seconds}`;
 }
 
+// Dựng thanh tiến trình chuẩn xác 100%: chặn hiện tượng số giây hiện tại vượt quá tổng thời lượng bài hát (như 5:40 / 4:21).
+export function renderSyncedProgress(player, track = player?.queue?.currentTrack ?? player?.currentTrack, isPaused = Boolean(player?.isPaused)) {
+ const size = 15;
+ const timeInfo = typeof player?.getTime === 'function' ? player.getTime() : null;
+ const rawTrackDur = Number(track?.duration ?? 0);
+ const fallbackTotal = rawTrackDur > 0 ? (rawTrackDur > 1000 ? rawTrackDur : rawTrackDur * 1000) : 0;
+
+ if (!timeInfo && typeof player?.getProgressBar === 'function') {
+  const customBar = player.getProgressBar({ size, barChar: '▬', progressChar: '🔘' });
+  if (customBar) return { barText: customBar, endUnix: null };
+ }
+
+ let totalMs = Math.max(0, Number(timeInfo?.total ?? fallbackTotal) || fallbackTotal);
+ let currentMs = Math.max(0, Number(timeInfo?.current ?? 0) || 0);
+
+ if (totalMs > 0 && currentMs > totalMs) {
+  // Nếu lệch vài giây cuối bài do đuôi khoảng lặng của file âm thanh -> kẹp gọn về đúng độ dài bài;
+  // nếu luồng phát thực tế dài hơn hẳn metadata -> tự nới tổng thời lượng theo luồng thật để không bao giờ in 5:40 > 4:21.
+  if (currentMs - totalMs <= 4000) {
+   currentMs = totalMs;
+  } else {
+   totalMs = currentMs;
+   if (track && typeof track === 'object') track.duration = totalMs;
+  }
+ }
+
+ const ratio = totalMs > 0 ? Math.min(1, Math.max(0, currentMs / totalMs)) : 0;
+ const filledCount = Math.round(ratio * size);
+ const bar = `${'▬'.repeat(filledCount)}🔘${'▬'.repeat(Math.max(0, size - filledCount))}`;
+ const barText = totalMs > 0
+  ? `${formatDuration(currentMs)} ${bar} ${formatDuration(totalMs)}`
+  : `${formatDuration(currentMs)} 🔘${'▬'.repeat(size)} 0:00`;
+
+ const remainingMs = totalMs - currentMs;
+ const endUnix = !isPaused && totalMs > 0 && remainingMs > 1500
+  ? Math.floor((Date.now() + remainingMs) / 1000)
+  : null;
+
+ return { barText, endUnix, currentMs, totalMs };
+}
+
 function resolveSourceLabel(source) {
  const key = String(source ?? '').toLowerCase();
  return SOURCE_LABELS[key] ?? (cleanText(source, 24) || 'Nguồn nhạc');
@@ -129,17 +170,7 @@ export function buildPlayerPayload(player, overrides = {}) {
  container.addSeparatorComponents(new SeparatorBuilder().setDivider(true).setSpacing(1));
 
  // Thanh tiến trình thời gian thực (tự đồng bộ theo từng khung âm thanh Opus của @discordjs/voice) + đồng hồ đếm ngược trực tiếp của Discord.
- const rawBar = typeof player?.getProgressBar === 'function'
-  ? player.getProgressBar({ size: 15, barChar: '▬', progressChar: '🔘' })
-  : '';
- const progressText = rawBar || `0:00 🔘▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬ ${formatDuration(track?.duration)}`;
- const timeInfo = typeof player?.getTime === 'function' ? player.getTime() : null;
- const rawTrackDuration = Number(track?.duration ?? 0);
- const totalMs = Number(timeInfo?.total ?? (rawTrackDuration > 1000 ? rawTrackDuration : rawTrackDuration * 1000));
- const currentMs = Math.max(0, Number(timeInfo?.current ?? 0));
- const endUnix = !isPaused && totalMs > 0 && currentMs < totalMs
-  ? Math.floor((Date.now() + (totalMs - currentMs)) / 1000)
-  : null;
+ const { barText: progressText, endUnix } = renderSyncedProgress(player, track, isPaused);
  const statusBadge = isPaused
   ? '⏸️ **Đang tạm dừng**'
   : (endUnix ? `▶️ **Đang phát nhạc** • ⏳ hết bài <t:${endUnix}:R>` : '▶️ **Đang phát nhạc**');
@@ -383,16 +414,7 @@ export function buildNowPlayingEmbed(player, botUser) {
  const thumbUrl = resolveArtworkUrl(current?.thumbnail);
  const trackUrl = safeHttpUrl(current?.url);
  const ownerId = resolveOwnerId(player, current);
- const bar = typeof player?.getProgressBar === 'function'
-  ? player.getProgressBar({ size: 15, barChar: '▬', progressChar: '🔘' })
-  : '';
- const timeInfo = typeof player?.getTime === 'function' ? player.getTime() : null;
- const rawDur = Number(current?.duration ?? 0);
- const totalMs = Number(timeInfo?.total ?? (rawDur > 1000 ? rawDur : rawDur * 1000));
- const currentMs = Math.max(0, Number(timeInfo?.current ?? 0));
- const endUnix = !player?.isPaused && totalMs > 0 && currentMs < totalMs
-  ? Math.floor((Date.now() + (totalMs - currentMs)) / 1000)
-  : null;
+ const { barText, endUnix } = renderSyncedProgress(player, current, Boolean(player?.isPaused));
 
  const embed = new EmbedBuilder()
   .setColor(player?.isPaused ? 0xfee75c : 0x7c4dff)
@@ -408,7 +430,7 @@ export function buildNowPlayingEmbed(player, botUser) {
    player?.isPaused
     ? '⏸️ **Tạm dừng**'
     : (endUnix ? `▶️ **Đang phát** • ⏳ hết bài <t:${endUnix}:R>` : '▶️ **Đang phát**'),
-   `\`${bar || `0:00 🔘▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬ ${formatDuration(current?.duration)}`}\``,
+   `\`${barText}\``,
   ].filter(Boolean).join('\n'))
   .setFooter({ text: `Âm lượng: ${player?.volume ?? 100}% • Lặp: ${LOOP_LABELS[loopMode] ?? 'Tắt lặp'} • Chờ: ${(player?.upcomingTracks ?? []).length} bài` })
   .setTimestamp();

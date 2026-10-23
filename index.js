@@ -3,7 +3,7 @@ import express from 'express';
 import { Client, Events, GatewayIntentBits, MessageFlags, Options, PermissionFlagsBits, Routes } from 'discord.js';
 import { PlayerManager } from 'ziplayer';
 import ffmpeg from 'ffmpeg-static';
-import { parseSeekTime, resolveConfig, resolveMusicQuery } from './src/policy.js';
+import { parseSeekTime, pickBestMatchingTrack, resolveConfig, resolveMusicRequest } from './src/policy.js';
 import { getNextSoundPreset, installAudioEnhancer, setAudioEnhancement, SOUND_PRESETS } from './src/audioEnhancer.js';
 import { assertMusicAccess, resolveHumanRequester } from './src/access.js';
 import { fetchTrackLyrics } from './src/lyrics.js';
@@ -20,6 +20,7 @@ import {
  cleanText,
  formatDuration,
  LOOP_LABELS,
+ renderSyncedProgress,
 } from './src/playerGui.js';
 
 // Kiểm tra phiên bản Node tối thiểu do thư viện voice yêu cầu Node >= 22.12.0.
@@ -47,7 +48,8 @@ const client = new Client({
  }),
 });
 
-// Khởi tạo SoundCloud plugin có cơ chế tự hồi phục client_id nếu mạng khởi động ban đầu chập chờn.
+// Khởi tạo plugin YouTube & SoundCloud kèm cơ chế đồng bộ lại độ dài/nguồn bài hát nếu ZiPlayer tự chuyển sang luồng dự phòng (fallback).
+const youtubePlugin = new YouTubePlugin();
 const soundCloudPlugin = new SoundCloudPlugin();
 soundCloudPlugin.ready = soundCloudPlugin.ready.catch(() => {});
 const rawSoundCloudSearch = soundCloudPlugin.search.bind(soundCloudPlugin);
@@ -56,15 +58,61 @@ soundCloudPlugin.search = async (query, requestedBy) => {
  return rawSoundCloudSearch(query, requestedBy);
 };
 
+// Sửa lỗi gốc của ZiPlayer: khi luồng chính lỗi và chuyển sang bài dự phòng (ví dụ bài dự phòng dài 5:50 khác bài 4:21 ban đầu),
+// chọn bản khớp độ dài nhất và đồng bộ lại track.duration + nguồn phát để thanh tiến trình luôn chuẩn 100%.
+function installSmartFallback(plugin, notifySynced) {
+ plugin.getFallback = async function patchedFallback(track) {
+  const searchQuery = [track?.title, track?.metadata?.author].filter(Boolean).join(' ').trim() || track?.title;
+  const res = await this.search(searchQuery, track?.requestedBy || 'fallback');
+  const candidates = (res?.tracks ?? []).filter(c => c && !c.isLive && !(c.duration > 10800000));
+  if (!candidates.length) throw new Error(`Không tìm thấy luồng dự phòng từ ${this.name}`);
+
+  const best = pickBestMatchingTrack(candidates, {
+   title: track?.title,
+   artist: track?.metadata?.author,
+   durationMs: track?.duration,
+  });
+  const ordered = [best, ...candidates.filter(c => c !== best)].filter(Boolean).slice(0, 2);
+
+  let lastErr;
+  for (const cand of ordered) {
+   try {
+    const streamInfo = await this.getStream(cand);
+    if (streamInfo?.stream) {
+     if (cand.duration > 0) track.duration = cand.duration;
+     if (cand.url) track.url = cand.url;
+     if (cand.id) track.id = cand.id;
+     if (!track.thumbnail && cand.thumbnail) track.thumbnail = cand.thumbnail;
+     track.source = this.name;
+     track.metadata = { ...track.metadata, ...cand.metadata };
+     notifySynced?.(track);
+     return streamInfo;
+    }
+   } catch (err) {
+    lastErr = err;
+   }
+  }
+  throw lastErr ?? new Error(`Không thể tải luồng dự phòng từ ${this.name}`);
+ };
+}
+
 // Khởi tạo trình quản lý phát nhạc ZiPlayer ở cấu hình nhẹ, tắt bộ đệm tìm kiếm và thống kê.
 const manager = new PlayerManager({
- plugins: [new YouTubePlugin(), soundCloudPlugin],
+ plugins: [youtubePlugin, soundCloudPlugin],
  enableSearchCache: false,
  enableStatsCollection: false,
  autoCleanup: true,
  cleanupInterval: 60000,
  extractorTimeout: 15000,
 });
+
+for (const plug of [youtubePlugin, soundCloudPlugin]) {
+ installSmartFallback(plug, syncedTrack => {
+  for (const p of manager.getAll()) {
+   if (p?.queue?.currentTrack === syncedTrack) schedulePanelUpdate(p, { track: syncedTrack });
+  }
+ });
+}
 
 // Máy chủ HTTP nhẹ phục vụ kiểm tra trạng thái hoạt động (/healthz).
 const app = express();
@@ -107,9 +155,7 @@ function markPanelTouched(player) {
  const ud = player?.userdata;
  if (!ud) return;
  ud.lastPanelEditAt = Date.now();
- ud.lastProgressText = typeof player?.getProgressBar === 'function'
-  ? player.getProgressBar({ size: 15, barChar: '▬', progressChar: '🔘' })
-  : '';
+ ud.lastProgressText = renderSyncedProgress(player).barText;
 }
 
 // Kiểm tra trong kênh thoại có ít nhất 1 người nghe thật (để không tốn API cập nhật thanh nhạc khi phòng trống).
@@ -188,9 +234,7 @@ function startProgressTicker(player) {
   if (player.isPaused || !player.isPlaying || ud.panelEditInFlight || ud.panelTimer) return;
   if (Date.now() - (ud.lastPanelEditAt ?? 0) < 4000) return;
   if (!hasHumanListener(player)) return;
-  const nextBar = typeof player.getProgressBar === 'function'
-   ? player.getProgressBar({ size: 15, barChar: '▬', progressChar: '🔘' })
-   : '';
+  const nextBar = renderSyncedProgress(player).barText;
   if (!nextBar || nextBar === ud.lastProgressText) return;
   void editPanelSafely(player);
  }, PROGRESS_TICK_MS);
@@ -421,7 +465,7 @@ async function ensureVoiceSession({ guild, voiceChannel, textChannel, userId, in
 async function enqueueAndPlay({ guild, voiceChannel, textChannel, rawQuery, userId, playNext = false }) {
  const now = Date.now();
  if (now - (cooldown.get(userId) ?? 0) < 3000) throw new Error('Chờ 3 giây giữa hai lần thêm nhạc.');
- const q = await resolveMusicQuery(rawQuery);
+ const { query: q, spotifyMeta } = await resolveMusicRequest(rawQuery);
  if (cooldown.size >= 100) cooldown.clear();
  cooldown.set(userId, Date.now());
 
@@ -439,8 +483,11 @@ async function enqueueAndPlay({ guild, voiceChannel, textChannel, rawQuery, user
     if (matched) result = { tracks: [matched] };
    }
   }
-  const track = result?.tracks?.[0];
+  const track = spotifyMeta
+   ? pickBestMatchingTrack(result?.tracks ?? [], spotifyMeta)
+   : result?.tracks?.[0];
   if (!track) throw new Error('Không tìm thấy bài hát phù hợp (link bị ẩn, giới hạn vùng/Go+ hoặc không tồn tại).');
+  if (spotifyMeta?.thumbnail && !track.thumbnail) track.thumbnail = spotifyMeta.thumbnail;
   if (track.isLive || track.duration > 10800000) {
    throw new Error('Chỉ nhận bài tối đa 180 phút, không nhận phát trực tiếp (livestream).');
   }

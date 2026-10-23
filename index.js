@@ -7,6 +7,7 @@ import { parseSeekTime, pickBestMatchingTrack, resolveConfig, resolveMusicReques
 import { getNextSoundPreset, installAudioEnhancer, setAudioEnhancement, SOUND_PRESETS } from './src/audioEnhancer.js';
 import { assertMusicAccess, resolveHumanRequester } from './src/access.js';
 import { fetchTrackLyrics, sanitizeLyricsTitle } from './src/lyrics.js';
+import { buildVoiceGuardEmbed, evaluateBotVoiceTransition } from './src/voiceGuard.js';
 import { buildHelpEmbed, commands } from './src/commands.js';
 import {
  buildAddSongModal,
@@ -382,6 +383,32 @@ async function closeCurrentPanel(player, reason, { keepIdle247 = false } = {}) {
  if (msg) await msg.edit(payload).catch(() => {});
 }
 
+// Gửi hoặc cập nhật thông báo trạng thái mic / kick khỏi phòng gọn gàng (chống spam kênh chat).
+async function sendVoiceGuardAlert(textChannel, userdata, event) {
+ const embed = buildVoiceGuardEmbed(event);
+ if (!embed || !textChannel?.send) return;
+ const payload = { embeds: [embed], allowedMentions: { parse: [] } };
+
+ // Khi mở lại mic, ưu tiên sửa đè ngay lên khung báo tắt mic trước đó để kênh chat luôn sạch sẽ.
+ if (event.action === 'unmuted' && userdata?.voiceAlertMessage) {
+  const edited = await userdata.voiceAlertMessage.edit(payload).catch(() => null);
+  if (edited) return;
+ }
+
+ const isKickEvent = String(event.action).startsWith('kicked_');
+ const now = Date.now();
+ if (!isKickEvent && userdata && now - (userdata.lastVoiceAlertAt ?? 0) < 3000) return;
+ if (userdata) {
+  userdata.lastVoiceAlertAt = now;
+  if (userdata.voiceAlertMessage) {
+   userdata.voiceAlertMessage.delete().catch(() => {});
+   userdata.voiceAlertMessage = null;
+  }
+ }
+ const sent = await textChannel.send(payload).catch(() => null);
+ if (userdata && sent && !isKickEvent) userdata.voiceAlertMessage = sent;
+}
+
 // Đóng toàn bộ phiên phát, xóa mọi bộ hẹn giờ/tham chiếu và cho bot rời khỏi kênh thoại.
 async function destroyPlayerSession(guildId, reason) {
  const p = manager.get(guildId);
@@ -390,6 +417,7 @@ async function destroyPlayerSession(guildId, reason) {
  if (ud) {
   ud.manualDisconnect = true;
   ud.stay247 = false;
+  ud.voiceAlertMessage = null;
   stopProgressTicker(p);
   clearEmptyTimer(p);
   await closeCurrentPanel(p, reason);
@@ -404,6 +432,17 @@ manager.on('trackStart', (player, track) => {
  if (humanOwner && player?.userdata) player.userdata.ownerId = humanOwner;
  if (Array.isArray(player?.queue?.history) && player.queue.history.length > 25) {
   player.queue.history.splice(0, player.queue.history.length - 25);
+ }
+ // Nếu bot đã bị tắt mic sẵn từ trước khi bắt đầu bài, tự tạm dừng ngay để không trôi mất bài hát trong im lặng.
+ const botVs = client.guilds.cache.get(player.guildId)?.voiceStates?.cache?.get(client.user?.id);
+ if ((botVs?.serverMute || botVs?.suppress) && player?.userdata) {
+  player.userdata.voiceMuted = true;
+  player.userdata.muteReason = botVs.serverMute ? 'server_mute' : 'stage_suppress';
+  player.userdata.autoPausedByMute = true;
+  const pauseTimer = setTimeout(() => {
+   if (!player.destroyed && player.userdata?.voiceMuted && !player.isPaused) player.pause();
+  }, 250);
+  pauseTimer.unref?.();
  }
  void postFreshPanel(player, track);
 });
@@ -499,6 +538,12 @@ async function ensureVoiceSession({ guild, voiceChannel, textChannel, userId, in
     ending: false,
     manualDisconnect: false,
     lastReconnectAt: 0,
+    voiceMuted: false,
+    muteReason: null,
+    autoPausedByMute: false,
+    kickTimestamps: [],
+    voiceAlertMessage: null,
+    lastVoiceAlertAt: 0,
    },
    selfDeaf: true,
    volume: 100,
@@ -590,36 +635,96 @@ async function enqueueAndPlay({ guild, voiceChannel, textChannel, rawQuery, user
  }
 }
 
-// Theo dõi biến động kênh thoại để tự rời khi kênh trống (nếu tắt 24/7) hoặc tự giữ kết nối khi bật 24/7.
+// Theo dõi biến động kênh thoại: phát hiện bị tắt mic (Server Mute / Stage), bị kick khỏi phòng, chuyển kênh AFK, hoặc kênh trống.
 client.on(Events.VoiceStateUpdate, (oldState, newState) => {
  const guild = newState.guild ?? oldState.guild;
  const p = manager.get(guild.id);
  if (!p || p.destroyed || !p.userdata) return;
 
- // Trường hợp trạng thái thoại của chính bot thay đổi.
- if (oldState.id === client.user?.id) {
-  if (newState.channelId) {
-   p.userdata.voiceChannelId = newState.channelId;
-   if (newState.channel?.bitrate) setAudioEnhancement({ channelBitrate: newState.channel.bitrate });
-   schedulePanelUpdate(p);
+ // Trường hợp trạng thái thoại của chính bot thay đổi (vào phòng, bị tắt/mở mic, bị kéo phòng hoặc bị kick).
+ if ((newState.id ?? oldState.id) === client.user?.id) {
+  const ev = evaluateBotVoiceTransition(oldState, newState, p.userdata, {
+   afkChannelId: guild.afkChannelId,
+   isPlaying: Boolean(p.isPlaying || p.queue?.currentTrack),
+   isPaused: Boolean(p.isPaused),
+  });
+
+  if (ev.action === 'manual_leave') return;
+
+  if (ev.action === 'kicked_stop') {
+   const alertChannel = p.userdata.textChannel;
+   void destroyPlayerSession(guild.id, `👢 Bot đã bị kick (ngắt kết nối) khỏi kênh thoại <#${ev.oldChannelId}>.`);
+   void sendVoiceGuardAlert(alertChannel, null, ev);
    return;
   }
-  if (oldState.channelId && !newState.channelId) {
-   if (p.userdata.stay247 && !p.userdata.manualDisconnect && Date.now() - p.userdata.lastReconnectAt > 15000) {
+
+  if (ev.action === 'kicked_abort_247') {
+   const alertChannel = p.userdata.textChannel;
+   void destroyPlayerSession(
+    guild.id,
+    `👢 Phát hiện bot bị kick khỏi kênh <#${ev.oldChannelId}> liên tiếp — đã tự tắt 24/7 và rời phòng.`,
+   );
+   void sendVoiceGuardAlert(alertChannel, null, ev);
+   return;
+  }
+
+  if (ev.action === 'kicked_reconnect_247') {
+   void sendVoiceGuardAlert(p.userdata.textChannel, p.userdata, ev);
+   if (Date.now() - p.userdata.lastReconnectAt > 4000) {
     p.userdata.lastReconnectAt = Date.now();
     const target = guild.channels.cache.get(p.userdata.voiceChannelId);
     const timer = setTimeout(() => {
      if (!p.destroyed && p.userdata?.stay247 && !p.userdata.manualDisconnect && target) {
-      p.connect(target).catch(() => {});
+      p.connect(target).catch(() => {
+       const ch = p.userdata?.textChannel;
+       void destroyPlayerSession(guild.id, `🚫 Bot không còn quyền vào lại kênh thoại <#${ev.oldChannelId}>.`);
+       ch?.send?.({ content: `🚫 Bot không còn quyền kết nối lại vào kênh <#${ev.oldChannelId}> — đã dừng chế độ 24/7.` }).catch(() => {});
+      });
      }
     }, 3000);
     timer.unref?.();
-    return;
    }
-   if (!p.userdata.stay247 && !p.userdata.manualDisconnect) {
-    void destroyPlayerSession(guild.id, 'Bot đã ngắt kết nối khỏi kênh thoại.');
-   }
+   return;
   }
+
+  if (newState.channelId) {
+   p.userdata.voiceChannelId = newState.channelId;
+   if (newState.channel?.bitrate) setAudioEnhancement({ channelBitrate: newState.channel.bitrate });
+  }
+
+  if (ev.action === 'muted' || ev.action === 'joined_muted') {
+   if (ev.muteReason === 'stage_suppress') {
+    newState.setSuppressed?.(false).catch(() => newState.requestToSpeak?.().catch(() => {}));
+   }
+   if (ev.shouldPause && !p.isPaused) p.pause();
+   if (p.userdata.idleOpen && !p.queue?.currentTrack) {
+    void closeCurrentPanel(p, undefined, { keepIdle247: true });
+   } else {
+    schedulePanelUpdate(p, { paused: Boolean(p.isPaused), voiceMuted: true, muteReason: ev.muteReason });
+   }
+   void sendVoiceGuardAlert(p.userdata.textChannel, p.userdata, ev);
+   return;
+  }
+
+  if (ev.action === 'unmuted') {
+   if (ev.shouldResume && p.isPaused) p.resume();
+   if (p.userdata.idleOpen && !p.queue?.currentTrack) {
+    void closeCurrentPanel(p, undefined, { keepIdle247: true });
+   } else {
+    schedulePanelUpdate(p, { paused: Boolean(p.isPaused), voiceMuted: false, muteReason: null });
+   }
+   void sendVoiceGuardAlert(p.userdata.textChannel, p.userdata, ev);
+   return;
+  }
+
+  if (ev.action === 'moved_afk') {
+   if (ev.shouldPause && !p.isPaused) p.pause();
+   schedulePanelUpdate(p, { paused: Boolean(p.isPaused) });
+   void sendVoiceGuardAlert(p.userdata.textChannel, p.userdata, ev);
+   return;
+  }
+
+  schedulePanelUpdate(p);
   return;
  }
 
@@ -795,6 +900,7 @@ async function handlePlayerComponent(i) {
    switch (i.customId) {
     case 'player_pause': {
      const nextPaused = !p.isPaused;
+     if (p.userdata) p.userdata.autoPausedByMute = false;
      if (nextPaused) {
       p.pause();
       stopProgressTicker(p);
@@ -1114,8 +1220,16 @@ client.on(Events.InteractionCreate, async i => {
     if (!(await p.previous())) throw new Error('Không thể quay lại bài trước.');
     return await reply('⏮️ Đã quay lại bài hát trước đó.');
    }
-   case 'pause': p.pause(); schedulePanelUpdate(p, { paused: true }); return await reply('Đã tạm dừng phát nhạc.');
-   case 'resume': p.resume(); schedulePanelUpdate(p, { paused: false }); return await reply('Đã tiếp tục phát nhạc.');
+   case 'pause':
+    if (p.userdata) p.userdata.autoPausedByMute = false;
+    p.pause();
+    schedulePanelUpdate(p, { paused: true });
+    return await reply('Đã tạm dừng phát nhạc.');
+   case 'resume':
+    if (p.userdata) p.userdata.autoPausedByMute = false;
+    p.resume();
+    schedulePanelUpdate(p, { paused: false });
+    return await reply('Đã tiếp tục phát nhạc.');
    case 'skip': {
     const jumpTo = i.options.getInteger('to');
     if (jumpTo !== null) {

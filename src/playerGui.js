@@ -130,6 +130,8 @@ export function buildPlayerPayload(player, overrides = {}) {
  const volume = overrides.volume ?? player?.volume ?? 100;
  const upcoming = player?.upcomingTracks ?? [];
  const stay247 = overrides.stay247 ?? Boolean(player?.userdata?.stay247);
+ const voiceMuted = overrides.voiceMuted ?? Boolean(player?.userdata?.voiceMuted);
+ const muteReason = overrides.muteReason ?? player?.userdata?.muteReason ?? null;
  const soundPreset = overrides.soundPreset ?? player?.userdata?.soundPreset ?? 'hd';
  const soundLabel = SOUND_PRESETS[soundPreset]?.label ?? SOUND_PRESETS.hd.label;
  const ownerId = resolveOwnerId(player, track);
@@ -140,7 +142,8 @@ export function buildPlayerPayload(player, overrides = {}) {
  const author = cleanText(track?.metadata?.author ?? 'Nghệ sĩ', 45);
  const sourceName = resolveSourceLabel(track?.source);
 
- const container = new ContainerBuilder().setAccentColor(isPaused ? 0xfee75c : 0x7c4dff);
+ const accentColor = voiceMuted ? 0xed4245 : (isPaused ? 0xfee75c : 0x7c4dff);
+ const container = new ContainerBuilder().setAccentColor(accentColor);
 
  // Phần đầu khung: Tiêu đề bài hát, nghệ sĩ, thông số phát và nút mở bài gốc.
  const titleLine = trackUrl ? `### 🎵 [**${title}**](${trackUrl})` : `### 🎵 **${title}**`;
@@ -171,9 +174,16 @@ export function buildPlayerPayload(player, overrides = {}) {
 
  // Thanh tiến trình thời gian thực (tự đồng bộ theo từng khung âm thanh Opus của @discordjs/voice) + đồng hồ đếm ngược trực tiếp của Discord.
  const { barText: progressText, endUnix } = renderSyncedProgress(player, track, isPaused);
- const statusBadge = isPaused
-  ? '⏸️ **Đang tạm dừng**'
-  : (endUnix ? `▶️ **Đang phát nhạc** • ⏳ hết bài <t:${endUnix}:R>` : '▶️ **Đang phát nhạc**');
+ let statusBadge;
+ if (voiceMuted) {
+  statusBadge = muteReason === 'stage_suppress'
+   ? '🔇 **Đang bị khóa mic Sân khấu (Stage) — hãy mời bot lên phát biểu!**'
+   : `🔇 **Bot đang bị tắt mic máy chủ (Server Mute)${isPaused ? ' — đã tự tạm dừng' : ''}!**`;
+ } else if (isPaused) {
+  statusBadge = '⏸️ **Đang tạm dừng**';
+ } else {
+  statusBadge = endUnix ? `▶️ **Đang phát nhạc** • ⏳ hết bài <t:${endUnix}:R>` : '▶️ **Đang phát nhạc**';
+ }
  const nextLine = upcoming.length > 0
   ? `\n⏭️ Tiếp theo: **${cleanText(upcoming[0].title, 70)}** (\`${formatDuration(upcoming[0].duration)}\`)${upcoming.length > 1 ? ` *(+${upcoming.length - 1} bài chờ)*` : ''}`
   : '\n-# 💡 Hàng đợi trống — chọn **Thêm bài hát mới** ở menu bên dưới hoặc gõ `/play`.';
@@ -318,15 +328,21 @@ export function buildIdle247Payload(player, reason = 'Bot đang giữ kết nố
    .setStyle(ButtonStyle.Danger),
  );
 
+ const voiceMuted = Boolean(player?.userdata?.voiceMuted);
+ const muteNotice = voiceMuted
+  ? '🔇 **Cảnh báo:** Bot hiện đang bị **Tắt mic máy chủ (Server Mute)** — hãy mở lại mic cho bot để nghe được nhạc.'
+  : null;
+
  const container = new ContainerBuilder()
-  .setAccentColor(0x57f287)
+  .setAccentColor(voiceMuted ? 0xed4245 : 0x57f287)
   .addTextDisplayComponents(
    new TextDisplayBuilder().setContent([
     '### 🌙 Chế độ 24/7 đang hoạt động',
     reason,
+    muteNotice,
     roomLine,
     '-# Bấm **Thêm bài hát** bên dưới hoặc gõ `/play` để mở nhạc • dùng `/247 mode:Tắt 24/7` hoặc `/leave` nếu muốn bot rời kênh.',
-   ].join('\n')),
+   ].filter(Boolean).join('\n')),
   )
   .addActionRowComponents(buttonRow);
 

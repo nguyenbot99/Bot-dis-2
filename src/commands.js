@@ -99,7 +99,7 @@ export const commands = definitions.map(([name, description]) => {
    .setName('query')
    .setDescription('Nhập tên bài hát hoặc đường dẫn HTTPS của YouTube / SoundCloud')
    .setRequired(true)
-   .setMaxLength(200));
+   .setMaxLength(400));
  }
  if (name === '247') {
   c.addStringOption(o => o

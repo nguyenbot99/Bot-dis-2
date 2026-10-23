@@ -294,9 +294,9 @@ export function buildAddSongModal() {
      .setCustomId('query')
      .setLabel('Tên bài hát hoặc link YouTube / SoundCloud')
      .setStyle(TextInputStyle.Short)
-     .setPlaceholder('Nhập tên bài hát hoặc dán link HTTPS...')
+     .setPlaceholder('Nhập tên bài hát hoặc dán link HTTPS YouTube / SoundCloud...')
      .setRequired(true)
-     .setMaxLength(200),
+     .setMaxLength(400),
    ),
   );
 }

@@ -3,7 +3,7 @@ import express from 'express';
 import { Client, Events, GatewayIntentBits, MessageFlags, Options, PermissionFlagsBits, Routes } from 'discord.js';
 import { PlayerManager } from 'ziplayer';
 import ffmpeg from 'ffmpeg-static';
-import { resolveConfig, validateQuery } from './src/policy.js';
+import { resolveConfig, resolveMusicQuery } from './src/policy.js';
 import { assertMusicAccess } from './src/access.js';
 import { buildHelpEmbed, commands } from './src/commands.js';
 import {
@@ -41,9 +41,18 @@ const client = new Client({
  }),
 });
 
+// Khởi tạo SoundCloud plugin có cơ chế tự hồi phục client_id nếu mạng khởi động ban đầu chập chờn.
+const soundCloudPlugin = new SoundCloudPlugin();
+soundCloudPlugin.ready = soundCloudPlugin.ready.catch(() => {});
+const rawSoundCloudSearch = soundCloudPlugin.search.bind(soundCloudPlugin);
+soundCloudPlugin.search = async (query, requestedBy) => {
+ await soundCloudPlugin.client.ensureReady();
+ return rawSoundCloudSearch(query, requestedBy);
+};
+
 // Khởi tạo trình quản lý phát nhạc ZiPlayer ở cấu hình nhẹ, tắt bộ đệm tìm kiếm và thống kê.
 const manager = new PlayerManager({
- plugins: [new YouTubePlugin(), new SoundCloudPlugin()],
+ plugins: [new YouTubePlugin(), soundCloudPlugin],
  enableSearchCache: false,
  enableStatsCollection: false,
  autoCleanup: true,
@@ -71,7 +80,7 @@ server.on('error', e => {
 let busy = false, closing = false;
 const cooldown = new Map();
 const refreshCooldown = new Map();
-const KNOWN_ERROR_RE = /^(Hãy|Bạn|Bot|Chờ|Chỉ|Hàng|Không|Chưa|Tên|URL|Lệnh|Bản)/;
+const KNOWN_ERROR_RE = /^(Hãy|Bạn|Bot|Chờ|Chỉ|Hàng|Không|Chưa|Tên|URL|Lệnh|Bản|Link)/;
 
 function clearPanelTimer(player) {
  if (player?.userdata?.panelTimer) {
@@ -304,20 +313,30 @@ async function ensureVoiceSession({ guild, voiceChannel, textChannel, userId, in
 
 // Dùng chung logic kiểm tra, tìm kiếm và thêm bài hát cho cả lệnh /play lẫn hộp thoại "Thêm bài hát mới".
 async function enqueueAndPlay({ guild, voiceChannel, textChannel, rawQuery, userId }) {
- const q = validateQuery(rawQuery);
  const now = Date.now();
- if (now - (cooldown.get(userId) ?? 0) < 5000) throw new Error('Chờ 5 giây giữa hai lần thêm nhạc.');
+ if (now - (cooldown.get(userId) ?? 0) < 3000) throw new Error('Chờ 3 giây giữa hai lần thêm nhạc.');
+ const q = await resolveMusicQuery(rawQuery);
  if (cooldown.size >= 100) cooldown.clear();
- cooldown.set(userId, now);
+ cooldown.set(userId, Date.now());
 
  const { player: p, created } = await ensureVoiceSession({ guild, voiceChannel, textChannel, userId });
  try {
   if (p.queue.size >= 20) throw new Error('Hàng đợi đã đủ 20 bài.');
-  const result = await p.search(q, userId);
-  const track = result.tracks?.[0];
-  if (!track) throw new Error('Không tìm thấy bài hát phù hợp.');
-  if (track.isLive || track.duration > 600000) {
-   throw new Error('Chỉ nhận bài tối đa 10 phút, không nhận phát trực tiếp (livestream).');
+  let result = await p.search(q, userId).catch(() => null);
+  // Dự phòng cho link SoundCloud nếu API /resolve bị kén định dạng slug của bài hát.
+  if (!result?.tracks?.length && q.startsWith('https://soundcloud.com/')) {
+   const parts = new URL(q).pathname.split('/').filter(Boolean);
+   if (parts.length >= 2) {
+    const slugQuery = `sc:${parts[0].replace(/[-_]+/g, ' ')} ${parts[1].replace(/[-_]+/g, ' ')}`;
+    const fallback = await p.search(slugQuery, userId).catch(() => null);
+    const matched = fallback?.tracks?.find(t => t.url?.toLowerCase() === q.toLowerCase()) ?? fallback?.tracks?.[0];
+    if (matched) result = { tracks: [matched] };
+   }
+  }
+  const track = result?.tracks?.[0];
+  if (!track) throw new Error('Không tìm thấy bài hát phù hợp (link bị ẩn, giới hạn vùng/Go+ hoặc không tồn tại).');
+  if (track.isLive || track.duration > 10800000) {
+   throw new Error('Chỉ nhận bài tối đa 180 phút, không nhận phát trực tiếp (livestream).');
   }
   const hadCurrent = Boolean(p.queue.currentTrack);
   if (!hadCurrent && p.userdata) {
@@ -328,6 +347,7 @@ async function enqueueAndPlay({ guild, voiceChannel, textChannel, rawQuery, user
   if (hadCurrent) schedulePanelUpdate(p);
   return { track, queued: hadCurrent };
  } catch (e) {
+  cooldown.delete(userId);
   if (created && !p.userdata?.stay247) manager.delete(guild.id);
   throw e;
  }
@@ -429,7 +449,7 @@ async function replyInteractionError(i, e) {
   console.error('[CẢNH BÁO] Lệnh đã bị một nơi khác (ví dụ BMH) phản hồi trước! Token bot đang bị dùng trùng — hãy vào Discord Developer Portal bấm Reset Token rồi cập nhật lại trên Botkeep.');
   return;
  }
- console.error('[lỗi-tương-tác]', i.commandName ?? i.customId, e?.name);
+ console.error('[lỗi-tương-tác]', i.commandName ?? i.customId, e?.name ?? 'Error', '-', String(e?.message ?? '').slice(0, 160));
  const content = KNOWN_ERROR_RE.test(e?.message ?? '') ? e.message : 'Nguồn nhạc hoặc kết nối gặp lỗi. Vui lòng thử lại sau.';
  if (i.deferred || i.replied) {
   await i.editReply({ content, allowedMentions: { parse: [] } }).catch(() => {});
@@ -442,16 +462,15 @@ async function replyInteractionError(i, e) {
 async function handlePlayerComponent(i) {
  const p = manager.get(i.guildId);
 
- // Trường hợp mở hộp thoại thêm bài hát mới: phải gọi showModal trước khi defer.
+ // Trường hợp mở hộp thoại thêm bài hát mới: phải gọi showModal trước khi defer (hoạt động cả khi bot vừa restart).
  if (
   (i.isStringSelectMenu() && i.customId === 'player_menu' && i.values[0] === 'add_song')
   || (i.isButton() && i.customId === 'player_open_add')
  ) {
-  if (!p) throw new Error('Chưa có phiên phát nhạc nào.');
   await requireSameVoiceChannel(i.guild, i.user.id);
-  assertMusicAccess('play', i.user.id, p);
+  if (p) assertMusicAccess('play', i.user.id, p);
   await i.showModal(buildAddSongModal());
-  if (p.queue.currentTrack) schedulePanelUpdate(p);
+  if (p?.queue.currentTrack) schedulePanelUpdate(p);
   return;
  }
 

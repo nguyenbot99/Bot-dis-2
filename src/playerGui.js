@@ -16,6 +16,7 @@ import {
  TextInputBuilder,
  TextInputStyle,
 } from 'discord.js';
+import { SOUND_PRESETS } from './audioEnhancer.js';
 
 export const LOOP_LABELS = {
  off: 'Tắt lặp',
@@ -82,6 +83,8 @@ export function buildPlayerPayload(player, overrides = {}) {
  const volume = overrides.volume ?? player?.volume ?? 100;
  const upcoming = player?.upcomingTracks ?? [];
  const stay247 = overrides.stay247 ?? Boolean(player?.userdata?.stay247);
+ const soundPreset = overrides.soundPreset ?? player?.userdata?.soundPreset ?? 'hd';
+ const soundLabel = SOUND_PRESETS[soundPreset]?.label ?? SOUND_PRESETS.hd.label;
  const ownerId = resolveOwnerId(player, track);
  const voiceChannelId = player?.userdata?.voiceChannelId ?? null;
  const trackUrl = safeHttpUrl(track?.url);
@@ -94,7 +97,7 @@ export function buildPlayerPayload(player, overrides = {}) {
 
  // Phần đầu khung: Tiêu đề bài hát, nghệ sĩ, thông số phát và nút mở bài gốc.
  const titleLine = trackUrl ? `### 🎵 [**${title}**](${trackUrl})` : `### 🎵 **${title}**`;
- const metaLine = `👤 Nghệ sĩ: **${author}** • 📡 Nguồn: **${sourceName}**`;
+ const metaLine = `👤 Nghệ sĩ: **${author}** • 📡 Nguồn: **${sourceName}** • 🎧 Chất âm: **${soundLabel}**`;
  const stateLine = `🔊 Âm lượng: **${volume}%** • 🔁 Chế độ: **${LOOP_LABELS[loopMode] ?? LOOP_LABELS.off}** • 🌙 24/7: **${stay247 ? 'Bật' : 'Tắt'}** • 📌 Chờ: **${upcoming.length}**`;
  const roomLine = [
   voiceChannelId ? `🎙️ Kênh: <#${voiceChannelId}>` : '🎙️ Kênh thoại đang kết nối',
@@ -158,6 +161,11 @@ export function buildPlayerPayload(player, overrides = {}) {
      .setDescription('Xem danh sách các bài tiếp theo (mọi người đều xem được)')
      .setValue('view_queue')
      .setEmoji('📋'),
+    new StringSelectMenuOptionBuilder()
+     .setLabel(`Đổi chất âm (hiện tại: ${soundLabel})`)
+     .setDescription('Chuyển vòng: Rõ nét HD → Rõ lời & Sáng tiếng → Bass ấm → Nguyên bản')
+     .setValue('cycle_sound')
+     .setEmoji('🎧'),
     new StringSelectMenuOptionBuilder()
      .setLabel('Đổi chế độ lặp')
      .setDescription(`Chuyển vòng: Tắt lặp → Một bài → Hàng đợi (hiện tại: ${LOOP_LABELS[loopMode] ?? 'Tắt lặp'})`)

@@ -4,6 +4,7 @@ import { Client, Events, GatewayIntentBits, MessageFlags, Options, PermissionFla
 import { PlayerManager } from 'ziplayer';
 import ffmpeg from 'ffmpeg-static';
 import { resolveConfig, resolveMusicQuery } from './src/policy.js';
+import { getNextSoundPreset, installAudioEnhancer, setAudioEnhancement, SOUND_PRESETS } from './src/audioEnhancer.js';
 import { assertMusicAccess } from './src/access.js';
 import { buildHelpEmbed, commands } from './src/commands.js';
 import {
@@ -21,6 +22,7 @@ import {
 const [major, minor] = process.versions.node.split('.').map(Number);
 if (major < 22 || (major === 22 && minor < 12)) throw new Error('Cần Node >=22.12.0');
 const { token: DISCORD_TOKEN, guildId: GUILD_ID, autoRegister } = resolveConfig(process.env);
+installAudioEnhancer(ffmpeg);
 
 // Chỉ nạp trực tiếp 2 plugin nguồn nhạc cần dùng để tiết kiệm RAM, không nạp Spotify, TTS hay extension phụ.
 const pluginRoot = new URL('./node_modules/@ziplayer/plugin/dist/', import.meta.url);
@@ -275,6 +277,7 @@ async function ensureVoiceSession({ guild, voiceChannel, textChannel, userId, in
     textChannel,
     voiceChannelId: voiceChannel.id,
     stay247: initial247,
+    soundPreset: 'hd',
     idleOpen: Boolean(initial247),
     panelMessage: null,
     panelTimer: null,
@@ -285,7 +288,7 @@ async function ensureVoiceSession({ guild, voiceChannel, textChannel, userId, in
    },
    selfDeaf: true,
    volume: 100,
-   quality: 'low',
+   quality: 'high',
    ffmpegPath: ffmpeg,
    lowPerformance: true,
    preload: { enabled: false },
@@ -303,6 +306,10 @@ async function ensureVoiceSession({ guild, voiceChannel, textChannel, userId, in
  }
 
  try {
+  setAudioEnhancement({
+   preset: p.userdata?.soundPreset ?? 'hd',
+   channelBitrate: voiceChannel.bitrate,
+  });
   if (!p.connection) await p.connect(voiceChannel);
   return { player: p, created };
  } catch (e) {
@@ -363,6 +370,7 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
  if (oldState.id === client.user?.id) {
   if (newState.channelId) {
    p.userdata.voiceChannelId = newState.channelId;
+   if (newState.channel?.bitrate) setAudioEnhancement({ channelBitrate: newState.channel.bitrate });
    schedulePanelUpdate(p);
    return;
   }
@@ -599,6 +607,18 @@ async function handlePlayerComponent(i) {
 
   if (i.isStringSelectMenu() && i.customId === 'player_menu') {
    switch (i.values[0]) {
+    case 'cycle_sound': {
+     const nextPreset = getNextSoundPreset(p.userdata?.soundPreset ?? 'hd');
+     if (p.userdata) p.userdata.soundPreset = nextPreset;
+     setAudioEnhancement({ preset: nextPreset });
+     await i.update(buildPlayerPayload(p, { soundPreset: nextPreset }));
+     const presetInfo = SOUND_PRESETS[nextPreset];
+     await i.followUp({
+      content: `🎧 Đã chuyển chất âm sang **${presetInfo.label}** (*${presetInfo.description}*) — sẽ áp dụng mượt từ bài kế tiếp để không ngắt nhạc đang phát.`,
+      flags: MessageFlags.Ephemeral,
+     }).catch(() => {});
+     return;
+    }
     case 'cycle_loop': {
      const order = ['off', 'track', 'queue'];
      const nextMode = order[(order.indexOf(p.loop()) + 1) % order.length];

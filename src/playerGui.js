@@ -17,6 +17,7 @@ import {
  TextInputStyle,
 } from 'discord.js';
 import { SOUND_PRESETS } from './audioEnhancer.js';
+import { resolveHumanRequester } from './access.js';
 
 export const LOOP_LABELS = {
  off: 'Tắt lặp',
@@ -72,7 +73,11 @@ function resolveArtworkUrl(thumbnail) {
 }
 
 function resolveOwnerId(player, track) {
- return track?.requestedBy || player?.queue?.currentTrack?.requestedBy || player?.previousTrack?.requestedBy || player?.userdata?.ownerId || null;
+ return resolveHumanRequester(track?.requestedBy)
+  || resolveHumanRequester(player?.queue?.currentTrack?.requestedBy)
+  || resolveHumanRequester(player?.previousTrack?.requestedBy)
+  || resolveHumanRequester(player?.userdata?.ownerId)
+  || null;
 }
 
 // Tạo khung điều khiển nhạc tương tác theo phong cách Ziji Bot V10 (Components V2).
@@ -80,6 +85,7 @@ export function buildPlayerPayload(player, overrides = {}) {
  const track = overrides.track ?? player?.queue?.currentTrack ?? player?.currentTrack ?? player?.previousTrack ?? null;
  const isPaused = overrides.paused ?? Boolean(player?.isPaused);
  const loopMode = overrides.loopMode ?? (typeof player?.loop === 'function' ? player.loop() : 'off') ?? 'off';
+ const autoPlay = overrides.autoPlay ?? (typeof player?.autoPlay === 'function' ? Boolean(player.autoPlay()) : false);
  const volume = overrides.volume ?? player?.volume ?? 100;
  const upcoming = player?.upcomingTracks ?? [];
  const stay247 = overrides.stay247 ?? Boolean(player?.userdata?.stay247);
@@ -98,7 +104,7 @@ export function buildPlayerPayload(player, overrides = {}) {
  // Phần đầu khung: Tiêu đề bài hát, nghệ sĩ, thông số phát và nút mở bài gốc.
  const titleLine = trackUrl ? `### 🎵 [**${title}**](${trackUrl})` : `### 🎵 **${title}**`;
  const metaLine = `👤 Nghệ sĩ: **${author}** • 📡 Nguồn: **${sourceName}** • 🎧 Chất âm: **${soundLabel}**`;
- const stateLine = `🔊 Âm lượng: **${volume}%** • 🔁 Chế độ: **${LOOP_LABELS[loopMode] ?? LOOP_LABELS.off}** • 🌙 24/7: **${stay247 ? 'Bật' : 'Tắt'}** • 📌 Chờ: **${upcoming.length}**`;
+ const stateLine = `🔊 **${volume}%** • 🔁 **${LOOP_LABELS[loopMode] ?? LOOP_LABELS.off}** • ✨ Tự phát: **${autoPlay ? 'Bật' : 'Tắt'}** • 🌙 24/7: **${stay247 ? 'Bật' : 'Tắt'}** • 📌 Chờ: **${upcoming.length}**`;
  const roomLine = [
   voiceChannelId ? `🎙️ Kênh: <#${voiceChannelId}>` : '🎙️ Kênh thoại đang kết nối',
   ownerId ? `👑 Điều khiển: <@${ownerId}>` : '👑 Điều khiển: Người gọi bài',
@@ -153,7 +159,7 @@ export function buildPlayerPayload(player, overrides = {}) {
    .addOptions(
     new StringSelectMenuOptionBuilder()
      .setLabel('Thêm bài hát mới')
-     .setDescription('Mở hộp thoại nhập tên bài hoặc link YouTube / SoundCloud')
+     .setDescription('Mở hộp thoại nhập tên bài hoặc link YouTube / SoundCloud / Spotify')
      .setValue('add_song')
      .setEmoji('➕'),
     new StringSelectMenuOptionBuilder()
@@ -161,6 +167,16 @@ export function buildPlayerPayload(player, overrides = {}) {
      .setDescription('Xem danh sách các bài tiếp theo (mọi người đều xem được)')
      .setValue('view_queue')
      .setEmoji('📋'),
+    new StringSelectMenuOptionBuilder()
+     .setLabel('Xem lời bài hát')
+     .setDescription('Tìm và hiển thị lời bài hát đang phát (ai cũng xem được)')
+     .setValue('view_lyrics')
+     .setEmoji('📝'),
+    new StringSelectMenuOptionBuilder()
+     .setLabel(autoPlay ? 'Tắt tự động phát (AutoPlay)' : 'Bật tự động phát (AutoPlay)')
+     .setDescription(autoPlay ? 'Dừng tự tìm nhạc liên quan khi hết hàng đợi' : 'Tự động tìm & phát nhạc cùng gu khi hết hàng đợi')
+     .setValue('toggle_autoplay')
+     .setEmoji('✨'),
     new StringSelectMenuOptionBuilder()
      .setLabel(`Đổi chất âm (hiện tại: ${soundLabel})`)
      .setDescription('Chuyển vòng: Rõ nét HD → Rõ lời & Sáng tiếng → Bass ấm → Nguyên bản')
@@ -181,6 +197,11 @@ export function buildPlayerPayload(player, overrides = {}) {
      .setDescription('Xáo trộn ngẫu nhiên thứ tự các bài đang chờ')
      .setValue('shuffle_queue')
      .setEmoji('🔀'),
+    new StringSelectMenuOptionBuilder()
+     .setLabel('Xóa sạch hàng đợi chờ')
+     .setDescription('Xóa toàn bộ bài đang chờ mà không dừng bài hiện tại')
+     .setValue('clear_queue')
+     .setEmoji('🗑️'),
     new StringSelectMenuOptionBuilder()
      .setLabel('Giảm âm lượng (-20%)')
      .setDescription(`Giảm bớt 20% âm lượng (hiện tại: ${volume}%)`)
@@ -300,9 +321,9 @@ export function buildAddSongModal() {
    new ActionRowBuilder().addComponents(
     new TextInputBuilder()
      .setCustomId('query')
-     .setLabel('Tên bài hát hoặc link YouTube / SoundCloud')
+     .setLabel('Tên bài hoặc link YouTube/SoundCloud/Spotify')
      .setStyle(TextInputStyle.Short)
-     .setPlaceholder('Nhập tên bài hát hoặc dán link HTTPS YouTube / SoundCloud...')
+     .setPlaceholder('Nhập tên bài hát hoặc dán link bài lẻ HTTPS...')
      .setRequired(true)
      .setMaxLength(400),
    ),
@@ -373,3 +394,43 @@ export function buildNowPlayingEmbed(player, botUser) {
  if (thumbUrl) embed.setThumbnail(thumbUrl);
  return embed;
 }
+
+// Khung Embed hiển thị danh sách 10 bài hát đã phát gần đây cho lệnh /history.
+export function buildHistoryEmbed(player, botUser) {
+ const past = [...(player?.previousTracks ?? [])].reverse().slice(0, 10);
+ const avatarUrl = botUser?.displayAvatarURL?.({ size: 128 }) ?? undefined;
+ const rows = past.map((t, idx) => {
+  const whoId = resolveHumanRequester(t.requestedBy);
+  const who = whoId ? ` • <@${whoId}>` : ' • *AutoPlay*';
+  return `\`${String(idx + 1).padStart(2, '0')}.\` **${cleanText(t.title, 65)}** (\`${formatDuration(t.duration)}\`)${who}`;
+ });
+
+ return new EmbedBuilder()
+  .setColor(0x5865f2)
+  .setAuthor({
+   name: `${botUser?.username ?? 'Music Bot'} • Lịch sử phát nhạc`,
+   ...(avatarUrl ? { iconURL: avatarUrl } : {}),
+  })
+  .setDescription(rows.length > 0 ? rows.join('\n') : '*Chưa có bài hát nào trong lịch sử của phiên này.*')
+  .setFooter({ text: 'Dùng /previous hoặc nút ⏮️ trên khung để quay lại bài vừa phát' })
+  .setTimestamp();
+}
+
+// Khung Embed hiển thị lời bài hát gọn gàng (tự cắt an toàn dưới giới hạn 4096 ký tự của Discord).
+export function buildLyricsEmbed(lyricsData, botUser) {
+ const avatarUrl = botUser?.displayAvatarURL?.({ size: 128 }) ?? undefined;
+ const rawText = String(lyricsData?.text ?? '').trim();
+ const safeLyrics = rawText.length > 3800 ? `${rawText.slice(0, 3800).trimEnd()}\n\n*... (đã rút gọn cho vừa khung Discord)*` : rawText;
+
+ return new EmbedBuilder()
+  .setColor(0xeb459e)
+  .setAuthor({
+   name: `${botUser?.username ?? 'Music Bot'} • Lời bài hát`,
+   ...(avatarUrl ? { iconURL: avatarUrl } : {}),
+  })
+  .setTitle(`📝 ${cleanText(lyricsData?.title ?? 'Bài hát', 90)} — ${cleanText(lyricsData?.artist ?? 'Không rõ', 60)}`)
+  .setDescription(safeLyrics || '*Không có dữ liệu lời bài hát.*')
+  .setFooter({ text: `Nguồn lời bài hát: ${lyricsData?.source ?? 'LRCLIB'}` })
+  .setTimestamp();
+}
+

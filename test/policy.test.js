@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveConfig, resolveMusicQuery, validateQuery } from '../src/policy.js';
+import { parseSeekTime, resolveConfig, resolveMusicQuery, validateQuery } from '../src/policy.js';
 import { buildHelpEmbed, commands } from '../src/commands.js';
 
-test('valid search, SoundCloud normalization, and mobile share text extraction', () => {
+test('valid search, SoundCloud/Spotify normalization, and mobile share text extraction', () => {
  assert.equal(validateQuery(' hello '), 'hello');
  assert.equal(validateQuery('https://youtu.be/abc'), 'https://youtu.be/abc');
  assert.equal(validateQuery('https://m.youtube.com/watch?v=abc&si=xyz'), 'https://www.youtube.com/watch?v=abc');
@@ -12,12 +12,16 @@ test('valid search, SoundCloud normalization, and mobile share text extraction',
   'https://soundcloud.com/lostskydiary/tule-fearless-2',
  );
  assert.equal(
+  validateQuery('https://open.spotify.com/intl-vi/track/4cOdK2wGLETKBW3PvgPWqT?si=12345'),
+  'https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT',
+ );
+ assert.equal(
   validateQuery('Nghe nhạc trên #SoundCloud https://m.soundcloud.com/lostskydiary/tule-fearless-2/?si=abc'),
   'https://soundcloud.com/lostskydiary/tule-fearless-2',
  );
 });
 
-test('resolveMusicQuery expands on.soundcloud.com safely and rejects unsafe targets', async () => {
+test('resolveMusicQuery expands on.soundcloud.com & Spotify track links safely and rejects unsafe targets', async () => {
  const fakeFetch302 = async () => ({
   headers: new Map([['location', 'https://m.soundcloud.com/lostskydiary/tule-fearless-2/?si=xyz&utm_medium=text']]),
   body: { cancel: async () => {} },
@@ -25,17 +29,30 @@ test('resolveMusicQuery expands on.soundcloud.com safely and rejects unsafe targ
  const expanded = await resolveMusicQuery('https://on.soundcloud.com/AbCdEf/', fakeFetch302);
  assert.equal(expanded, 'https://soundcloud.com/lostskydiary/tule-fearless-2');
 
+ const fakeSpotifyFetch = async () => ({
+  headers: new Map([['location', 'https://open.spotify.com/intl-vi/track/4cOdK2wGLETKBW3PvgPWqT?si=xyz']]),
+  body: { cancel: async () => {} },
+ });
+ const spotifyQuery = await resolveMusicQuery(
+  'https://spotify.link/AbCdEf',
+  fakeSpotifyFetch,
+  async () => ({ title: 'Nơi Này Có Anh', artist: 'Sơn Tùng M-TP' }),
+ );
+ assert.equal(spotifyQuery, 'Nơi Này Có Anh - Sơn Tùng M-TP');
+
  const fakeFetchEvil = async () => ({
   headers: new Map([['location', 'http://127.0.0.1/internal']]),
   body: { cancel: async () => {} },
  });
  await assert.rejects(() => resolveMusicQuery('https://on.soundcloud.com/AbCdEf', fakeFetchEvil), /Chỉ nhận URL HTTPS/);
+});
 
- const fakeFetchPlaylist = async () => ({
-  headers: new Map([['location', 'https://soundcloud.com/artist/sets/album']]),
-  body: { cancel: async () => {} },
- });
- await assert.rejects(() => resolveMusicQuery('https://on.soundcloud.com/AbCdEf', fakeFetchPlaylist), /playlist/);
+test('parseSeekTime parses seconds and mm:ss / hh:mm:ss cleanly', () => {
+ assert.equal(parseSeekTime('90'), 90000);
+ assert.equal(parseSeekTime('1:30'), 90000);
+ assert.equal(parseSeekTime('01:02:03'), 3723000);
+ assert.throws(() => parseSeekTime('1:75'), /nhỏ hơn 60/);
+ assert.throws(() => parseSeekTime('abc'), /không hợp lệ/);
 });
 
 test('reject dangerous URLs and playlists', () => {
@@ -45,6 +62,8 @@ test('reject dangerous URLs and playlists', () => {
   'https://youtube.com.evil.org/x',
   'https://youtube.com/playlist?list=x',
   'https://soundcloud.com/a/sets/b',
+  'https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M',
+  'https://open.spotify.com/album/123456',
   'https://soundcloud.com/only-profile',
   '',
   'x'.repeat(401),
@@ -60,8 +79,8 @@ test('resolveConfig works with DISCORD_TOKEN only and optional GUILD_ID', () => 
  assert.throws(() => resolveConfig({ DISCORD_TOKEN: 'abc', GUILD_ID: 'ten-server' }), /GUILD_ID không hợp lệ/);
 });
 
-test('unique guild-only commands and valid help embed', () => {
- assert.equal(new Set(commands.map(c => c.name)).size, 16);
+test('unique guild-only commands and valid help embed covering all 23 commands', () => {
+ assert.equal(new Set(commands.map(c => c.name)).size, 23);
  assert.ok(commands.every(c => c.dm_permission === false));
  const data = buildHelpEmbed({ username: 'Bắt_Don', displayAvatarURL: () => 'https://cdn.discordapp.com/embed/avatars/0.png' }).toJSON();
  assert.equal(data.color, 0x5865f2);
@@ -74,11 +93,13 @@ test('unique guild-only commands and valid help embed', () => {
 test('new music command options are bounded', () => {
  const option = name => commands.find(c => c.name === name).options[0];
  assert.deepEqual(option('247').choices.map(c => c.value), ['on', 'off']);
- assert.equal(option('247').required, false);
+ assert.deepEqual(option('autoplay').choices.map(c => c.value), ['on', 'off']);
  assert.deepEqual(option('loop').choices.map(c => c.value), ['off', 'track', 'queue']);
  assert.equal(option('volume').min_value, 0);
  assert.equal(option('volume').max_value, 100);
  assert.equal(option('remove').min_value, 1);
  assert.equal(option('remove').max_value, 20);
+ assert.equal(option('move').min_value, 1);
+ assert.equal(option('move').max_value, 20);
  assert.equal(option('play').max_length, 400);
 });

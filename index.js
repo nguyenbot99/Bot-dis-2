@@ -3,18 +3,22 @@ import express from 'express';
 import { Client, Events, GatewayIntentBits, MessageFlags, Options, PermissionFlagsBits, Routes } from 'discord.js';
 import { PlayerManager } from 'ziplayer';
 import ffmpeg from 'ffmpeg-static';
-import { resolveConfig, resolveMusicQuery } from './src/policy.js';
+import { parseSeekTime, resolveConfig, resolveMusicQuery } from './src/policy.js';
 import { getNextSoundPreset, installAudioEnhancer, setAudioEnhancement, SOUND_PRESETS } from './src/audioEnhancer.js';
-import { assertMusicAccess } from './src/access.js';
+import { assertMusicAccess, resolveHumanRequester } from './src/access.js';
+import { fetchTrackLyrics } from './src/lyrics.js';
 import { buildHelpEmbed, commands } from './src/commands.js';
 import {
  buildAddSongModal,
  buildEndedPayload,
+ buildHistoryEmbed,
  buildIdle247Payload,
+ buildLyricsEmbed,
  buildNowPlayingEmbed,
  buildPlayerPayload,
  buildQueueEmbed,
  cleanText,
+ formatDuration,
  LOOP_LABELS,
 } from './src/playerGui.js';
 
@@ -82,7 +86,7 @@ server.on('error', e => {
 let busy = false, closing = false;
 const cooldown = new Map();
 const refreshCooldown = new Map();
-const KNOWN_ERROR_RE = /^(Hãy|Bạn|Bot|Chờ|Chỉ|Hàng|Không|Chưa|Tên|URL|Lệnh|Bản|Link)/;
+const KNOWN_ERROR_RE = /^(Hãy|Bạn|Bot|Chờ|Chỉ|Hàng|Không|Chưa|Tên|URL|Lệnh|Bản|Link|Thời|Số|Định|Vị)/;
 
 function clearPanelTimer(player) {
  if (player?.userdata?.panelTimer) {
@@ -199,7 +203,14 @@ async function destroyPlayerSession(guildId, reason) {
 }
 
 // Gắn sự kiện vòng đời từ ZiPlayer để tự động đồng bộ khung điều khiển nhạc trên kênh chat.
-manager.on('trackStart', (player, track) => { void postFreshPanel(player, track); });
+manager.on('trackStart', (player, track) => {
+ const humanOwner = resolveHumanRequester(track?.requestedBy);
+ if (humanOwner && player?.userdata) player.userdata.ownerId = humanOwner;
+ if (Array.isArray(player?.queue?.history) && player.queue.history.length > 25) {
+  player.queue.history.splice(0, player.queue.history.length - 25);
+ }
+ void postFreshPanel(player, track);
+});
 manager.on('playerPause', player => schedulePanelUpdate(player, { paused: true }));
 manager.on('playerResume', player => schedulePanelUpdate(player, { paused: false }));
 manager.on('volumeChange', player => schedulePanelUpdate(player));
@@ -297,7 +308,14 @@ async function ensureVoiceSession({ guild, voiceChannel, textChannel, userId, in
    loudnessNormalization: { enabled: false },
    maxStreamStore: 1,
    extractorTimeout: 15000,
-   antiStuck: { enabled: false },
+   antiStuck: {
+    enabled: true,
+    maxRetries: 2,
+    retryDelayMs: 1500,
+    reusePreloadFirst: false,
+    reduceQualityOnRetry: false,
+    controlledSkipThreshold: 2,
+   },
   });
   created = true;
  } else if (p.userdata) {
@@ -319,7 +337,7 @@ async function ensureVoiceSession({ guild, voiceChannel, textChannel, userId, in
 }
 
 // Dùng chung logic kiểm tra, tìm kiếm và thêm bài hát cho cả lệnh /play lẫn hộp thoại "Thêm bài hát mới".
-async function enqueueAndPlay({ guild, voiceChannel, textChannel, rawQuery, userId }) {
+async function enqueueAndPlay({ guild, voiceChannel, textChannel, rawQuery, userId, playNext = false }) {
  const now = Date.now();
  if (now - (cooldown.get(userId) ?? 0) < 3000) throw new Error('Chờ 3 giây giữa hai lần thêm nhạc.');
  const q = await resolveMusicQuery(rawQuery);
@@ -350,9 +368,14 @@ async function enqueueAndPlay({ guild, voiceChannel, textChannel, rawQuery, user
    p.userdata.ownerId = userId;
    p.userdata.idleOpen = false;
   }
+  if (hadCurrent && playNext) {
+   p.queue.insert(track, 0);
+   schedulePanelUpdate(p);
+   return { track, queued: true, insertedNext: true };
+  }
   if (!(await p.play(track, userId))) throw new Error('Không thể phát bài hát này.');
   if (hadCurrent) schedulePanelUpdate(p);
-  return { track, queued: hadCurrent };
+  return { track, queued: hadCurrent, insertedNext: false };
  } catch (e) {
   cooldown.delete(userId);
   if (created && !p.userdata?.stay247) manager.delete(guild.id);
@@ -490,6 +513,21 @@ async function handlePlayerComponent(i) {
   return;
  }
 
+ // Trường hợp xem lời bài hát trực tiếp từ menu (ai trong máy chủ cũng xem được).
+ if (i.isStringSelectMenu() && i.customId === 'player_menu' && i.values[0] === 'view_lyrics') {
+  const cur = p?.queue?.currentTrack;
+  if (!cur) throw new Error('Hiện chưa phát bài hát nào để tìm lời.');
+  await i.deferReply({ flags: MessageFlags.Ephemeral });
+  schedulePanelUpdate(p);
+  const lyricsData = await fetchTrackLyrics({
+   title: cur.title,
+   artist: cur.metadata?.author,
+   durationMs: cur.duration,
+  });
+  await i.editReply({ embeds: [buildLyricsEmbed(lyricsData, client.user)], allowedMentions: { parse: [] } });
+  return;
+ }
+
  // Trường hợp làm mới thanh tiến trình (chỉ cập nhật hiển thị thời gian, có giới hạn chống bấm liên tục).
  if (i.isButton() && i.customId === 'player_refresh') {
   if (!p || !p.queue.currentTrack) return void await i.update(buildEndedPayload());
@@ -607,6 +645,12 @@ async function handlePlayerComponent(i) {
 
   if (i.isStringSelectMenu() && i.customId === 'player_menu') {
    switch (i.values[0]) {
+    case 'toggle_autoplay': {
+     const nextAuto = !p.autoPlay();
+     p.autoPlay(nextAuto);
+     await i.update(buildPlayerPayload(p, { autoPlay: nextAuto }));
+     return;
+    }
     case 'cycle_sound': {
      const nextPreset = getNextSoundPreset(p.userdata?.soundPreset ?? 'hd');
      if (p.userdata) p.userdata.soundPreset = nextPreset;
@@ -635,6 +679,12 @@ async function handlePlayerComponent(i) {
     case 'shuffle_queue': {
      if (p.upcomingTracks.length < 2) throw new Error('Hàng đợi cần ít nhất 2 bài để trộn.');
      p.shuffle();
+     await i.update(buildPlayerPayload(p));
+     return;
+    }
+    case 'clear_queue': {
+     if (p.upcomingTracks.length === 0) throw new Error('Hàng đợi chờ hiện đang trống.');
+     p.clearQueue();
      await i.update(buildPlayerPayload(p));
      return;
     }
@@ -680,9 +730,24 @@ client.on(Events.InteractionCreate, async i => {
    if (!p) return await reply('Chưa có phiên phát nhạc nào.');
    return await i.editReply({ embeds: [buildQueueEmbed(p, client.user)], allowedMentions: { parse: [] } });
   }
+  if (i.commandName === 'history') {
+   if (!p) return await reply('Chưa có phiên phát nhạc nào.');
+   return await i.editReply({ embeds: [buildHistoryEmbed(p, client.user)], allowedMentions: { parse: [] } });
+  }
   if (i.commandName === 'nowplaying') {
    if (!p || !p.queue.currentTrack) return await reply('Hiện chưa phát bài hát nào.');
    return await i.editReply({ embeds: [buildNowPlayingEmbed(p, client.user)], allowedMentions: { parse: [] } });
+  }
+  if (i.commandName === 'lyrics') {
+   const customQuery = i.options.getString('query')?.trim();
+   const cur = p?.queue?.currentTrack;
+   if (!customQuery && !cur) return await reply('Hiện chưa phát bài nào — hãy nhập tên bài vào tham số `query` (ví dụ `/lyrics query: Nơi này có anh`).');
+   const lyricsData = await fetchTrackLyrics(
+    customQuery
+     ? { title: customQuery }
+     : { title: cur.title, artist: cur.metadata?.author, durationMs: cur.duration },
+   );
+   return await i.editReply({ embeds: [buildLyricsEmbed(lyricsData, client.user)], allowedMentions: { parse: [] } });
   }
 
   const channel = await requireSameVoiceChannel(i.guild, i.user.id);
@@ -727,22 +792,36 @@ client.on(Events.InteractionCreate, async i => {
   }
 
   if (i.commandName === 'play') {
-   const { track, queued } = await enqueueAndPlay({
+   const { track, queued, insertedNext } = await enqueueAndPlay({
     guild: i.guild,
     voiceChannel: channel,
     textChannel: i.channel,
     rawQuery: i.options.getString('query', true),
     userId: i.user.id,
+    playNext: Boolean(i.options.getBoolean('next')),
    });
    return await reply(
-    queued
-     ? `✅ Đã thêm vào hàng đợi: **${cleanText(track.title, 90)}**`
-     : `▶️ Đang phát: **${cleanText(track.title, 90)}** — dùng khung điều khiển bên dưới kênh chat để thao tác nhanh!`,
+    insertedNext
+     ? `⏭️ Đã chèn lên đầu hàng đợi (phát ngay kế tiếp): **${cleanText(track.title, 90)}**`
+     : queued
+      ? `✅ Đã thêm vào hàng đợi: **${cleanText(track.title, 90)}**`
+      : `▶️ Đang phát: **${cleanText(track.title, 90)}** — dùng khung điều khiển bên dưới kênh chat để thao tác nhanh!`,
    );
   }
 
   if (!p) throw new Error('Chưa có phiên phát nhạc nào.');
   switch (i.commandName) {
+   case 'autoplay': {
+    const chosen = i.options.getString('mode');
+    const nextAuto = chosen ? chosen === 'on' : !p.autoPlay();
+    p.autoPlay(nextAuto);
+    schedulePanelUpdate(p, { autoPlay: nextAuto });
+    return await reply(
+     nextAuto
+      ? '✨ Đã **BẬT** tự động phát (AutoPlay) — khi hết hàng đợi, bot sẽ tự tìm và phát tiếp nhạc cùng gu.'
+      : '✨ Đã **TẮT** tự động phát (AutoPlay).',
+    );
+   }
    case 'loop': {
     const mode = i.options.getString('mode', true);
     if (!LOOP_LABELS[mode]) throw new Error('Lệnh lặp không hợp lệ.');
@@ -755,6 +834,25 @@ client.on(Events.InteractionCreate, async i => {
     p.shuffle();
     schedulePanelUpdate(p);
     return await reply('Đã trộn ngẫu nhiên các bài đang chờ.');
+   case 'move': {
+    const from = i.options.getInteger('from', true);
+    const to = i.options.getInteger('to', true);
+    const len = p.upcomingTracks.length;
+    if (from < 1 || from > len || to < 1 || to > len) {
+     throw new Error('Vị trí bài trong hàng đợi không tồn tại (dùng `/queue` để xem số thứ tự).');
+    }
+    const movingTitle = cleanText(p.upcomingTracks[from - 1]?.title, 80);
+    if (!p.queue.move(from - 1, to - 1)) throw new Error('Không thể đổi vị trí bài hát này.');
+    schedulePanelUpdate(p);
+    return await reply(`🔀 Đã chuyển **${movingTitle}** từ vị trí **#${from}** sang **#${to}**.`);
+   }
+   case 'clear': {
+    const count = p.upcomingTracks.length;
+    if (count === 0) throw new Error('Hàng đợi chờ hiện đang trống.');
+    p.clearQueue();
+    schedulePanelUpdate(p);
+    return await reply(`🗑️ Đã xóa sạch **${count}** bài đang chờ trong hàng đợi.`);
+   }
    case 'volume': {
     const percent = i.options.getInteger('percent', true);
     if (percent < 0 || percent > 100) throw new Error('Lệnh âm lượng chỉ nhận 0–100.');
@@ -770,9 +868,38 @@ client.on(Events.InteractionCreate, async i => {
     schedulePanelUpdate(p);
     return await reply(`Đã xóa khỏi hàng đợi: ${cleanText(removed.title, 90)}`);
    }
+   case 'seek': {
+    const cur = p.queue.currentTrack;
+    if (!cur) throw new Error('Hiện chưa phát bài hát nào để tua.');
+    const targetMs = parseSeekTime(i.options.getString('time', true));
+    const durationMs = cur.duration > 1000 ? cur.duration : cur.duration * 1000;
+    if (durationMs > 0 && targetMs >= durationMs) {
+     throw new Error(`Thời gian tua vượt quá độ dài bài hát (${formatDuration(durationMs)}).`);
+    }
+    if (!(await p.seek(targetMs))) throw new Error('Không thể tua bài hát lúc này.');
+    schedulePanelUpdate(p);
+    return await reply(`⏩ Đã tua bài hát tới mốc **${formatDuration(targetMs)}**.`);
+   }
+   case 'previous': {
+    if (!p.previousTrack) throw new Error('Không có bài hát trước đó để quay lại.');
+    if (!(await p.previous())) throw new Error('Không thể quay lại bài trước.');
+    return await reply('⏮️ Đã quay lại bài hát trước đó.');
+   }
    case 'pause': p.pause(); schedulePanelUpdate(p, { paused: true }); return await reply('Đã tạm dừng phát nhạc.');
    case 'resume': p.resume(); schedulePanelUpdate(p, { paused: false }); return await reply('Đã tiếp tục phát nhạc.');
-   case 'skip': p.skip(); return await reply('Đã bỏ qua bài hiện tại.');
+   case 'skip': {
+    const jumpTo = i.options.getInteger('to');
+    if (jumpTo !== null) {
+     if (jumpTo < 1 || jumpTo > p.upcomingTracks.length) {
+      throw new Error('Hàng đợi không có vị trí này để nhảy tới.');
+     }
+     const targetTitle = cleanText(p.upcomingTracks[jumpTo - 1]?.title, 85);
+     if (!(await p.skip(jumpTo - 1))) throw new Error('Không thể nhảy tới bài hát này.');
+     return await reply(`⏭️ Đã nhảy thẳng tới bài **#${jumpTo}**: **${targetTitle}**.`);
+    }
+    await p.skip();
+    return await reply('Đã bỏ qua bài hiện tại.');
+   }
    case 'stop':
     if (p.userdata?.stay247) {
      p.userdata.idleOpen = true;

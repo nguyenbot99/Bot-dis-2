@@ -7,17 +7,24 @@ const definitions = [
  ['join', 'Gọi bot tham gia vào kênh thoại hiện tại của bạn'],
  ['leave', 'Cho bot dừng nhạc, tắt chế độ 24/7 và rời khỏi kênh thoại'],
  ['247', 'Bật hoặc tắt chế độ treo kênh thoại 24/7 (không tự rời khi hết nhạc)'],
- ['play', 'Phát nhạc từ tên bài hát hoặc link YouTube/SoundCloud (không nhận danh sách phát)'],
+ ['play', 'Phát nhạc từ tên bài hoặc link lẻ YouTube / SoundCloud / Spotify'],
  ['pause', 'Tạm dừng bài hát đang phát'],
  ['resume', 'Tiếp tục phát bài hát đang tạm dừng'],
- ['skip', 'Bỏ qua bài hát hiện tại để sang bài tiếp theo'],
+ ['skip', 'Bỏ qua bài hiện tại (hoặc nhảy thẳng tới bài ở vị trí chọn trong hàng đợi)'],
+ ['previous', 'Quay lại bài hát vừa phát trước đó'],
+ ['seek', 'Tua bài hát đang phát tới mốc thời gian mong muốn (ví dụ 1:30 hoặc 90)'],
  ['stop', 'Dừng phát nhạc và xóa toàn bộ hàng đợi'],
+ ['autoplay', 'Bật hoặc tắt tự động phát nhạc liên quan khi hết hàng đợi'],
  ['loop', 'Chỉnh chế độ lặp nhạc (tắt, lặp một bài hoặc lặp hàng đợi)'],
  ['shuffle', 'Trộn ngẫu nhiên thứ tự các bài đang chờ trong hàng đợi'],
- ['volume', 'Điều chỉnh âm lượng phát nhạc từ 0% đến 100%'],
+ ['move', 'Đổi vị trí một bài hát đang chờ trong hàng đợi'],
  ['remove', 'Xóa một bài hát khỏi hàng đợi theo số thứ tự trong /queue'],
+ ['clear', 'Xóa toàn bộ các bài đang chờ mà không dừng bài hiện tại'],
+ ['volume', 'Điều chỉnh âm lượng phát nhạc từ 0% đến 100%'],
  ['queue', 'Xem danh sách tối đa 10 bài hát tiếp theo trong hàng đợi'],
- ['nowplaying', 'Xem tên bài hát đang được phát hiện tại'],
+ ['history', 'Xem danh sách tối đa 10 bài hát vừa phát gần đây'],
+ ['nowplaying', 'Xem thông tin chi tiết bài hát đang được phát'],
+ ['lyrics', 'Tìm và xem lời bài hát đang phát hoặc theo tên bài nhập vào'],
  ['ping', 'Kiểm tra độ trễ kết nối và mức bộ nhớ Node của bot'],
 ];
 
@@ -34,8 +41,8 @@ export function buildHelpEmbed(botUser) {
   })
   .setTitle('🎵 Bảng Lệnh & Hướng Dẫn Sử Dụng')
   .setDescription([
-   'Hãy vào một **kênh thoại thường** rồi nhập `/play` — bot sẽ hiện **khung Music Player tương tác** kèm nút bấm & menu ngay tại kênh chat!',
-   '> 🔒 *Chỉ **người yêu cầu bài đang phát** (cùng kênh thoại) mới bấm hoặc gõ lệnh điều khiển nhạc được.*',
+   'Hãy vào một **kênh thoại thường** rồi nhập `/play` — bot sẽ hiện **khung Music Player tương tác HD** kèm nút bấm & menu ngay tại kênh chat!',
+   '> 🔒 *Chỉ **người yêu cầu bài đang phát** (cùng kênh thoại) mới bấm hoặc gõ lệnh thay đổi nhạc được.*',
   ].join('\n'))
   .addFields(
    {
@@ -44,15 +51,17 @@ export function buildHelpEmbed(botUser) {
      '`/join` — Gọi bot vào kênh thoại hiện tại của bạn',
      '`/leave` — Dừng nhạc, tắt 24/7 và cho bot rời khỏi kênh thoại',
      '`/247` `[mode]` — Bật / tắt chế độ treo kênh thoại 24/7 không tự thoát',
+     '`/autoplay` `[mode]` — Tự động phát tiếp nhạc cùng gu khi hết hàng đợi',
     ].join('\n'),
    },
    {
     name: '▶️ Phát & Điều khiển chính',
     value: [
-     '`/play` `query` — Phát nhạc từ tên bài hoặc link YouTube / SoundCloud',
-     '`/pause` — Tạm dừng bài hát đang phát',
-     '`/resume` — Tiếp tục phát bài đang tạm dừng',
-     '`/skip` — Bỏ qua bài hiện tại để sang bài kế tiếp',
+     '`/play` `query` `[next]` — Phát từ tên bài hoặc link lẻ YouTube / SoundCloud / Spotify (`next` = chèn phát kế tiếp)',
+     '`/pause` • `/resume` — Tạm dừng hoặc tiếp tục bài đang phát',
+     '`/skip` `[to]` — Bỏ qua bài hiện tại (hoặc nhảy thẳng tới vị trí `to`)',
+     '`/previous` — Quay lại bài hát vừa phát trước đó',
+     '`/seek` `time` — Tua nhanh tới mốc thời gian (ví dụ `1:30` hoặc `90`)',
      '`/stop` — Dừng nhạc và xóa toàn bộ hàng đợi',
     ].join('\n'),
    },
@@ -60,32 +69,35 @@ export function buildHelpEmbed(botUser) {
     name: '🎛️ Hàng đợi & Âm thanh',
     value: [
      '`/loop` `mode` — Lặp nhạc: `off` (Tắt) • `track` (Một bài) • `queue` (Hàng đợi)',
-     '`/shuffle` — Trộn ngẫu nhiên thứ tự các bài đang chờ',
+     '`/shuffle` — Trộn ngẫu nhiên các bài đang chờ',
+     '`/move` `from` `to` — Đổi vị trí bài chờ trong `/queue` (`1` – `20`)',
+     '`/remove` `position` — Xóa một bài chờ theo số thứ tự (`1` – `20`)',
+     '`/clear` — Xóa sạch danh sách chờ mà không dừng bài đang phát',
      '`/volume` `percent` — Chỉnh mức âm lượng phát (`0%` – `100%`)',
-     '`/remove` `position` — Xóa bài chờ theo số thứ tự trong `/queue` (`1` – `20`)',
     ].join('\n'),
    },
    {
-    name: '📋 Xem thông tin (Mọi người đều dùng được)',
+    name: '📋 Tra cứu & Lời bài hát (Ai cũng dùng được)',
     value: [
-     '`/nowplaying` — Xem tên bài hát đang phát hiện tại',
+     '`/nowplaying` — Xem chi tiết bài hát đang phát hiện tại',
+     '`/lyrics` `[query]` — Xem lời bài hát đang phát (hoặc tìm theo tên bài)',
      '`/queue` — Xem danh sách tối đa 10 bài tiếp theo',
-     '`/ping` — Kiểm tra độ trễ mạng và bộ nhớ Node hiện tại',
-     '`/help` — Mở khung hướng dẫn sử dụng này',
+     '`/history` — Xem 10 bài hát đã phát gần đây nhất',
+     '`/ping` • `/help` — Kiểm tra độ trễ/RAM hoặc mở bảng hướng dẫn này',
     ].join('\n'),
    },
    {
-    name: '🎧 Nguồn nhạc',
-    value: 'YouTube & SoundCloud\n*(Không nhận playlist / live)*',
+    name: '🎧 Nguồn & Chất âm',
+    value: 'YouTube, SoundCloud & link bài Spotify\nChuẩn **SoX 24-bit + Opus Music HD**',
     inline: true,
    },
    {
     name: '⚙️ Giới hạn phiên',
-    value: 'Tối đa **20 bài** chờ\nThời lượng **≤ 10 phút/bài**',
+    value: 'Tối đa **20 bài** chờ\nThời lượng **≤ 180 phút/bài**',
     inline: true,
    },
   )
-  .setFooter({ text: 'Quyền điều khiển tự chuyển cho người gọi bài kế tiếp • Chỉ hiển thị với bạn' })
+  .setFooter({ text: 'Đổi chế độ Chất âm, AutoPlay, 24/7 & Lời bài hát ngay trên menu của khung Music Player!' })
   .setTimestamp();
 
  if (avatarUrl) embed.setThumbnail(avatarUrl);
@@ -97,9 +109,28 @@ export const commands = definitions.map(([name, description]) => {
  if (name === 'play') {
   c.addStringOption(o => o
    .setName('query')
-   .setDescription('Nhập tên bài hát hoặc đường dẫn HTTPS của YouTube / SoundCloud')
+   .setDescription('Tên bài hát hoặc link HTTPS bài lẻ YouTube / SoundCloud / Spotify')
    .setRequired(true)
    .setMaxLength(400));
+  c.addBooleanOption(o => o
+   .setName('next')
+   .setDescription('Đặt true để chèn bài này lên đầu hàng đợi (phát ngay sau bài hiện tại)')
+   .setRequired(false));
+ }
+ if (name === 'skip') {
+  c.addIntegerOption(o => o
+   .setName('to')
+   .setDescription('Nhảy cóc thẳng tới số thứ tự bài trong /queue (để trống nếu chỉ qua 1 bài)')
+   .setRequired(false)
+   .setMinValue(1)
+   .setMaxValue(20));
+ }
+ if (name === 'seek') {
+  c.addStringOption(o => o
+   .setName('time')
+   .setDescription('Mốc thời gian muốn tua tới (ví dụ: 1:30 hoặc 90)')
+   .setRequired(true)
+   .setMaxLength(12));
  }
  if (name === '247') {
   c.addStringOption(o => o
@@ -109,6 +140,16 @@ export const commands = definitions.map(([name, description]) => {
    .addChoices(
     { name: 'Bật 24/7', value: 'on' },
     { name: 'Tắt 24/7', value: 'off' },
+   ));
+ }
+ if (name === 'autoplay') {
+  c.addStringOption(o => o
+   .setName('mode')
+   .setDescription('Chọn bật hoặc tắt tự động phát nhạc liên quan (để trống để tự đảo)')
+   .setRequired(false)
+   .addChoices(
+    { name: 'Bật AutoPlay', value: 'on' },
+    { name: 'Tắt AutoPlay', value: 'off' },
    ));
  }
  if (name === 'loop') {
@@ -121,6 +162,20 @@ export const commands = definitions.map(([name, description]) => {
     { name: 'Lặp một bài', value: 'track' },
     { name: 'Lặp hàng đợi', value: 'queue' },
    ));
+ }
+ if (name === 'move') {
+  c.addIntegerOption(o => o
+   .setName('from')
+   .setDescription('Vị trí hiện tại của bài hát trong /queue (1–20)')
+   .setRequired(true)
+   .setMinValue(1)
+   .setMaxValue(20));
+  c.addIntegerOption(o => o
+   .setName('to')
+   .setDescription('Vị trí mới muốn chuyển tới trong /queue (1–20)')
+   .setRequired(true)
+   .setMinValue(1)
+   .setMaxValue(20));
  }
  if (name === 'volume') {
   c.addIntegerOption(o => o
@@ -137,6 +192,13 @@ export const commands = definitions.map(([name, description]) => {
    .setRequired(true)
    .setMinValue(1)
    .setMaxValue(20));
+ }
+ if (name === 'lyrics') {
+  c.addStringOption(o => o
+   .setName('query')
+   .setDescription('Tên bài hát muốn tìm lời (để trống để lấy lời bài đang phát)')
+   .setRequired(false)
+   .setMaxLength(150));
  }
  return c.toJSON();
 });

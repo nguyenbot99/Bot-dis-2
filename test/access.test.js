@@ -1,7 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { assertMusicAccess } from '../src/access.js';
-const mutations = ['join', 'leave', '247', 'play', 'pause', 'resume', 'skip', 'stop', 'loop', 'shuffle', 'volume', 'remove'];
+import { assertMusicAccess, resolveHumanRequester } from '../src/access.js';
+
+const mutations = [
+ 'join', 'leave', '247', 'autoplay', 'play', 'pause', 'resume',
+ 'skip', 'previous', 'seek', 'stop', 'loop', 'shuffle', 'move', 'clear', 'volume', 'remove',
+];
 const player = { queue: { currentTrack: { requestedBy: 'alice' } }, userdata: { ownerId: 'creator' } };
 
 test('only current track requester may mutate music', () => {
@@ -13,15 +17,25 @@ test('only current track requester may mutate music', () => {
 });
 
 test('read-only commands stay public', () => {
- for (const command of ['help', 'queue', 'nowplaying', 'ping']) {
+ for (const command of ['help', 'queue', 'history', 'nowplaying', 'lyrics', 'ping']) {
   assert.doesNotThrow(() => assertMusicAccess(command, 'bob', player));
  }
 });
 
-test('ownership follows next track', () => {
+test('ownership follows next track and ignores synthetic AutoPlay requester ids', () => {
  const next = { ...player, queue: { currentTrack: { requestedBy: 'bob' } } };
  assert.doesNotThrow(() => assertMusicAccess('skip', 'bob', next));
  assert.throws(() => assertMusicAccess('skip', 'alice', next));
+
+ assert.equal(resolveHumanRequester('auto'), null);
+ assert.equal(resolveHumanRequester('Unknown'), null);
+ const autoPlaying = {
+  queue: { currentTrack: { requestedBy: 'auto' } },
+  previousTrack: { requestedBy: 'alice' },
+  userdata: { ownerId: 'alice' },
+ };
+ assert.doesNotThrow(() => assertMusicAccess('skip', 'alice', autoPlaying));
+ assert.throws(() => assertMusicAccess('skip', 'bob', autoPlaying));
 });
 
 test('gaps use previous requester, then session creator; idle 24/7 allows new /play while protecting /leave and /247', () => {

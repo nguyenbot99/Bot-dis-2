@@ -6,7 +6,7 @@ import ffmpeg from 'ffmpeg-static';
 import { parseSeekTime, pickBestMatchingTrack, resolveConfig, resolveMusicRequest } from './src/policy.js';
 import { getNextSoundPreset, installAudioEnhancer, setAudioEnhancement, SOUND_PRESETS } from './src/audioEnhancer.js';
 import { assertMusicAccess, resolveHumanRequester } from './src/access.js';
-import { fetchTrackLyrics } from './src/lyrics.js';
+import { fetchTrackLyrics, sanitizeLyricsTitle } from './src/lyrics.js';
 import { buildHelpEmbed, commands } from './src/commands.js';
 import {
  buildAddSongModal,
@@ -29,9 +29,9 @@ if (major < 22 || (major === 22 && minor < 12)) throw new Error('Cần Node >=22
 const { token: DISCORD_TOKEN, guildId: GUILD_ID, autoRegister } = resolveConfig(process.env);
 installAudioEnhancer(ffmpeg);
 
-// Chỉ nạp trực tiếp 2 plugin nguồn nhạc cần dùng để tiết kiệm RAM, không nạp Spotify, TTS hay extension phụ.
+// Chỉ nạp trực tiếp SoundCloudPlugin siêu nhẹ (~80–140MB RAM, không nạp YouTubePlugin/jsdom vốn ngốn >300MB & bị chặn LOGIN_REQUIRED trên VPS).
+// Mọi link YouTube & Spotify đều được giải mã metadata qua HTTP/oEmbed gọn nhẹ ở src/policy.js rồi phát luồng âm thanh chuẩn từ SoundCloud.
 const pluginRoot = new URL('./node_modules/@ziplayer/plugin/dist/', import.meta.url);
-const { YouTubePlugin } = await import(new URL('YouTubePlugin.js', pluginRoot));
 const { SoundCloudPlugin } = await import(new URL('SoundCloudPlugin.js', pluginRoot));
 
 // Khởi tạo Discord client với bộ nhớ đệm tối thiểu để giảm mức tiêu thụ RAM.
@@ -48,31 +48,111 @@ const client = new Client({
  }),
 });
 
-// Khởi tạo plugin YouTube & SoundCloud kèm cơ chế đồng bộ lại độ dài/nguồn bài hát nếu ZiPlayer tự chuyển sang luồng dự phòng (fallback).
-const youtubePlugin = new YouTubePlugin();
+// Kiểm tra bản nhạc SoundCloud có luồng phát trọn bài không bị khóa DRM (cbc/ctr-encrypted-hls), không bị nhá hàng 30s Go+ (SNIP) hay chặn vùng (BLOCK).
+function isPlayableSoundCloudRaw(item) {
+ if (!item) return false;
+ if (item.policy === 'SNIP' || item.policy === 'BLOCK') return false;
+ if (item.duration === 30000 && Number(item.full_duration) > 45000) return false;
+ const transcodings = item.media?.transcodings;
+ if (!Array.isArray(transcodings) || !transcodings.length) return true;
+ return transcodings.some(
+  t => !t?.snipped && (t?.format?.protocol === 'progressive' || t?.format?.protocol === 'hls')
+ );
+}
+
+function mapSoundCloudRawTrack(item, requestedBy) {
+ const artwork = typeof item.artwork_url === 'string'
+  ? item.artwork_url.replace('-large.', '-t500x500.')
+  : undefined;
+ return {
+  id: String(item.id),
+  title: item.title,
+  url: item.permalink_url,
+  duration: item.duration,
+  thumbnail: artwork,
+  requestedBy,
+  source: 'soundcloud',
+  metadata: {
+   author: item.user?.username,
+   plays: item.playback_count,
+  },
+ };
+}
+
+// Khởi tạo SoundCloudPlugin đã tối ưu: lọc bỏ bản 30s Go+ SNIP khi tìm kiếm & AutoPlay để luôn phát trọn bài ổn định trên VPS.
 const soundCloudPlugin = new SoundCloudPlugin();
+soundCloudPlugin.priority = 20;
 soundCloudPlugin.ready = soundCloudPlugin.ready.catch(() => {});
 const rawSoundCloudSearch = soundCloudPlugin.search.bind(soundCloudPlugin);
-soundCloudPlugin.search = async (query, requestedBy) => {
- await soundCloudPlugin.client.ensureReady();
- return rawSoundCloudSearch(query, requestedBy);
+
+soundCloudPlugin.search = async function patchedSoundCloudSearch(query, requestedBy) {
+ await this.client.ensureReady();
+ const trimmed = String(query ?? '').trim();
+ if (/^https?:\/\//i.test(trimmed)) {
+  const direct = await rawSoundCloudSearch(trimmed, requestedBy);
+  if (Array.isArray(direct?.tracks)) {
+   direct.tracks.forEach(t => {
+    if (typeof t?.thumbnail === 'string') t.thumbnail = t.thumbnail.replace('-large.', '-t500x500.');
+   });
+  }
+  return direct;
+ }
+ const cleanQ = trimmed.replace(/^(?:sc|soundcloud):\s*/i, '').trim();
+ if (!cleanQ) return { tracks: [] };
+ const results = await this.client.search({ query: cleanQ, limit: 25 });
+ const playable = (Array.isArray(results) ? results : []).filter(isPlayableSoundCloudRaw);
+ const chosen = (playable.length ? playable : results ?? []).slice(0, 15);
+ return { tracks: chosen.map(item => mapSoundCloudRawTrack(item, requestedBy)) };
 };
 
-// Sửa lỗi gốc của ZiPlayer: khi luồng chính lỗi và chuyển sang bài dự phòng (ví dụ bài dự phòng dài 5:50 khác bài 4:21 ban đầu),
-// chọn bản khớp độ dài nhất và đồng bộ lại track.duration + nguồn phát để thanh tiến trình luôn chuẩn 100%.
+soundCloudPlugin.getRelatedTracks = async function patchedRelatedTracks(track, opts = {}) {
+ await this.client.ensureReady();
+ try {
+  const wantLimit = opts?.limit || 1;
+  const trackURL = track?.url ?? track;
+  const trackTitle = track?.title ?? track;
+  let rawItems = this.validate(trackURL)
+   ? await this.client.getRelatedTracks(trackURL, { limit: 30 }).catch(() => [])
+   : [];
+  if (!rawItems?.length && trackTitle) {
+   const searched = await this.search(String(trackTitle), 'SoundCloud_Related').catch(() => null);
+   if (searched?.tracks?.[0]?.url) {
+    rawItems = await this.client.getRelatedTracks(searched.tracks[0].url, { limit: 30 }).catch(() => []);
+   }
+  }
+  const historyUrls = new Set((opts?.history ?? []).map(h => h?.url).filter(Boolean));
+  return (Array.isArray(rawItems) ? rawItems : [])
+   .filter(item => isPlayableSoundCloudRaw(item) && item.duration > 35000 && item.duration <= 10800000 && !historyUrls.has(item.permalink_url))
+   .slice(opts?.offset || 0, (opts?.offset || 0) + wantLimit)
+   .map(item => mapSoundCloudRawTrack(item, 'auto'));
+ } catch {
+  return [];
+ }
+};
+
+// Khi một link SoundCloud trực tiếp bị khóa luồng hoặc chỉ cho nghe thử Go+, tự tìm bản đầy đủ tương ứng và đồng bộ lại thời lượng.
 function installSmartFallback(plugin, notifySynced) {
  plugin.getFallback = async function patchedFallback(track) {
-  const searchQuery = [track?.title, track?.metadata?.author].filter(Boolean).join(' ').trim() || track?.title;
-  const res = await this.search(searchQuery, track?.requestedBy || 'fallback');
-  const candidates = (res?.tracks ?? []).filter(c => c && !c.isLive && !(c.duration > 10800000));
+  const rawQuery = [track?.title, track?.metadata?.author].filter(Boolean).join(' ').trim() || track?.title;
+  let res = await this.search(rawQuery, track?.requestedBy || 'fallback').catch(() => null);
+  let candidates = (res?.tracks ?? []).filter(c => c && !c.isLive && !(c.duration > 10800000) && c.url !== track?.url);
+
+  if (!candidates.length && track?.title) {
+   const cleaned = sanitizeLyricsTitle(track.title, track?.metadata?.author);
+   const cleanQuery = [cleaned.title, cleaned.artist].filter(Boolean).join(' ').trim();
+   if (cleanQuery && cleanQuery !== rawQuery) {
+    res = await this.search(cleanQuery, track?.requestedBy || 'fallback').catch(() => null);
+    candidates = (res?.tracks ?? []).filter(c => c && !c.isLive && !(c.duration > 10800000) && c.url !== track?.url);
+   }
+  }
   if (!candidates.length) throw new Error(`Không tìm thấy luồng dự phòng từ ${this.name}`);
 
   const best = pickBestMatchingTrack(candidates, {
    title: track?.title,
    artist: track?.metadata?.author,
-   durationMs: track?.duration,
+   durationMs: track?.duration > 35000 ? track?.duration : 0,
   });
-  const ordered = [best, ...candidates.filter(c => c !== best)].filter(Boolean).slice(0, 2);
+  const ordered = [best, ...candidates.filter(c => c !== best)].filter(Boolean).slice(0, 3);
 
   let lastErr;
   for (const cand of ordered) {
@@ -98,7 +178,7 @@ function installSmartFallback(plugin, notifySynced) {
 
 // Khởi tạo trình quản lý phát nhạc ZiPlayer ở cấu hình nhẹ, tắt bộ đệm tìm kiếm và thống kê.
 const manager = new PlayerManager({
- plugins: [youtubePlugin, soundCloudPlugin],
+ plugins: [soundCloudPlugin],
  enableSearchCache: false,
  enableStatsCollection: false,
  autoCleanup: true,
@@ -106,13 +186,11 @@ const manager = new PlayerManager({
  extractorTimeout: 15000,
 });
 
-for (const plug of [youtubePlugin, soundCloudPlugin]) {
- installSmartFallback(plug, syncedTrack => {
-  for (const p of manager.getAll()) {
-   if (p?.queue?.currentTrack === syncedTrack) schedulePanelUpdate(p, { track: syncedTrack });
-  }
- });
-}
+installSmartFallback(soundCloudPlugin, syncedTrack => {
+ for (const p of manager.getAll()) {
+  if (p?.queue?.currentTrack === syncedTrack) schedulePanelUpdate(p, { track: syncedTrack });
+ }
+});
 
 // Máy chủ HTTP nhẹ phục vụ kiểm tra trạng thái hoạt động (/healthz).
 const app = express();
@@ -473,8 +551,9 @@ async function enqueueAndPlay({ guild, voiceChannel, textChannel, rawQuery, user
  try {
   if (p.queue.size >= 20) throw new Error('Hàng đợi đã đủ 20 bài.');
   let result = await p.search(q, userId).catch(() => null);
+  const isDirectScUrl = q.startsWith('https://soundcloud.com/');
   // Dự phòng cho link SoundCloud nếu API /resolve bị kén định dạng slug của bài hát.
-  if (!result?.tracks?.length && q.startsWith('https://soundcloud.com/')) {
+  if (!result?.tracks?.length && isDirectScUrl) {
    const parts = new URL(q).pathname.split('/').filter(Boolean);
    if (parts.length >= 2) {
     const slugQuery = `sc:${parts[0].replace(/[-_]+/g, ' ')} ${parts[1].replace(/[-_]+/g, ' ')}`;
@@ -483,9 +562,9 @@ async function enqueueAndPlay({ guild, voiceChannel, textChannel, rawQuery, user
     if (matched) result = { tracks: [matched] };
    }
   }
-  const track = spotifyMeta
-   ? pickBestMatchingTrack(result?.tracks ?? [], spotifyMeta)
-   : result?.tracks?.[0];
+  const track = isDirectScUrl
+   ? result?.tracks?.[0]
+   : pickBestMatchingTrack(result?.tracks ?? [], spotifyMeta ?? { title: q });
   if (!track) throw new Error('Không tìm thấy bài hát phù hợp (link bị ẩn, giới hạn vùng/Go+ hoặc không tồn tại).');
   if (spotifyMeta?.thumbnail && !track.thumbnail) track.thumbnail = spotifyMeta.thumbnail;
   if (track.isLive || track.duration > 10800000) {

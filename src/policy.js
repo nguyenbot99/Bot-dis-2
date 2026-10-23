@@ -27,6 +27,27 @@ function isSupportedHost(host) {
  return YOUTUBE_HOSTS.has(host) || SOUNDCLOUD_HOSTS.has(host) || SHORT_REDIRECT_HOSTS.has(host) || SPOTIFY_HOSTS.has(host);
 }
 
+// Tách mã video 11 ký tự hợp lệ từ link YouTube / YouTube Music / Shorts / youtu.be.
+export function extractYouTubeVideoId(rawUrl) {
+ let u;
+ try { u = new URL(rawUrl); } catch { return null; }
+ const host = u.hostname.toLowerCase();
+ if (!YOUTUBE_HOSTS.has(host)) return null;
+ if (/^\/(?:live|channel|c|user|@)/i.test(u.pathname)) {
+  throw new Error('Bản tiết kiệm RAM không nhận livestream hoặc trang kênh YouTube — hãy dán link bài hát cụ thể.');
+ }
+ let id = '';
+ if (host === 'youtu.be' || host === 'www.youtu.be') {
+  id = u.pathname.split('/').filter(Boolean)[0] ?? '';
+ } else if (u.pathname === '/watch') {
+  id = u.searchParams.get('v') ?? '';
+ } else {
+  const m = u.pathname.match(/^\/(?:shorts|embed|v)\/([A-Za-z0-9_-]{3,20})(?:\/|$)/);
+  id = m?.[1] ?? '';
+ }
+ return /^[A-Za-z0-9_-]{3,20}$/.test(id) ? id : null;
+}
+
 // Chuẩn hóa đường dẫn YouTube / SoundCloud / Spotify về định dạng chuẩn mà bộ giải mã nhạc xử lý ổn định nhất.
 function normalizeMusicUrl(rawUrl) {
  let u;
@@ -65,10 +86,13 @@ function normalizeMusicUrl(rawUrl) {
  } else if (SHORT_REDIRECT_HOSTS.has(host)) {
   u.pathname = u.pathname.replace(/\/+$/, '') || '/';
   if (u.pathname === '/') throw new Error('Link rút gọn không hợp lệ.');
- } else if (host === 'm.youtube.com') {
-  u.hostname = 'www.youtube.com';
- } else if (host === 'www.youtu.be') {
-  u.hostname = 'youtu.be';
+ } else if (YOUTUBE_HOSTS.has(host)) {
+  if (host === 'm.youtube.com') u.hostname = 'www.youtube.com';
+  else if (host === 'www.youtu.be') u.hostname = 'youtu.be';
+  const videoId = extractYouTubeVideoId(u.toString());
+  if (!videoId) {
+   throw new Error('Link YouTube không hợp lệ — hãy dán link một video bài hát cụ thể.');
+  }
  }
 
  return u.toString();
@@ -96,7 +120,75 @@ export function validateQuery(input) {
  return q;
 }
 
-// Giải mã link rút gọn (on.soundcloud.com / spotify.link) và lấy cả thông tin chuẩn (tên, ca sĩ, độ dài gốc) của bài Spotify.
+function foldSearchText(str) {
+ return String(str ?? '')
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .replace(/đ/gi, 'd')
+  .toLowerCase();
+}
+
+function compactAlnum(str) {
+ return foldSearchText(str).replace(/[^a-z0-9]+/g, '');
+}
+
+// Làm sạch tiêu đề & tên kênh từ YouTube oEmbed để tìm đúng bản nhạc gốc trên SoundCloud mà không bị nhiễu chữ "Official MV / 4K".
+export function cleanYouTubeMetadata(rawTitle = '', rawAuthor = '') {
+ const channelArtist = String(rawAuthor ?? '')
+  .replace(/\s*(?:-\s*Topic|Official(?:\s+Channel|\s+Music)?|VEVO|Music|Channel)\s*$/gi, '')
+  .replace(/✅/g, '')
+  .trim();
+
+ const noisePipeRe = /^(?:official\s*(?:music\s*)?(?:video|mv|audio|lyric\s*video|visualizer)|mv\s*official|audio\s*official|lyric\s*video|lyrics?|4k(?:\s*remaster(?:ed)?)?|hd|full\s*mv)$/i;
+ const bracketNoiseRe = /\s*[\[(][^\]\)]*(?:official|music\s*video|\bmv\b|lyric|visualizer|audio|4k|hd|remaster|prod\.?|vietsub|sub|karaoke|tiktok)[^\]\)]*[\])]/gi;
+
+ const pipeSegments = String(rawTitle ?? '')
+  .replace(bracketNoiseRe, ' ')
+  .split('|')
+  .map(s => s.replace(/\s+/g, ' ').trim())
+  .filter(s => s && !noisePipeRe.test(s));
+
+ const authorCompact = compactAlnum(channelArtist);
+ let artist = channelArtist;
+ let coreTitle = pipeSegments.join(' - ');
+
+ if (pipeSegments.length >= 2 && authorCompact.length >= 3) {
+  const withoutAuthor = pipeSegments.filter(seg => {
+   const c = compactAlnum(seg);
+   return !(c && (c === authorCompact || c.includes(authorCompact) || authorCompact.includes(c)));
+  });
+  if (withoutAuthor.length && withoutAuthor.length < pipeSegments.length) {
+   coreTitle = withoutAuthor.join(' - ');
+  }
+ }
+
+ const dashParts = coreTitle.split(/\s+[-–—]\s+/).map(s => s.trim()).filter(Boolean);
+ if (dashParts.length === 2 && authorCompact.length >= 3) {
+  const [left, right] = dashParts;
+  const leftC = compactAlnum(left);
+  const rightC = compactAlnum(right);
+  if (leftC && (leftC.includes(authorCompact) || authorCompact.includes(leftC))) {
+   artist = left;
+   coreTitle = right;
+  } else if (rightC && (rightC.includes(authorCompact) || authorCompact.includes(rightC))) {
+   artist = right;
+   coreTitle = left;
+  }
+ }
+
+ coreTitle = coreTitle
+  .replace(/\b(?:official\s+(?:music\s+)?(?:video|mv|audio|lyric\s*video)|mv\s+official|4k\s+remaster(?:ed)?)\b/gi, ' ')
+  .replace(/\s+/g, ' ')
+  .replace(/^[-–—|:\s]+|[-–—|:\s]+$/g, '')
+  .trim();
+
+ return {
+  title: coreTitle || String(rawTitle ?? '').trim(),
+  artist,
+ };
+}
+
+// Giải mã link rút gọn, link Spotify và link YouTube nhẹ qua HTTP/oEmbed (0 MB JSDOM, không bị chặn LOGIN_REQUIRED trên VPS).
 export async function resolveMusicRequest(input, fetchImpl = fetch, spotifyResolverFn = null) {
  const q = validateQuery(input);
  if (!q.startsWith('https://')) return { query: q, spotifyMeta: null };
@@ -124,7 +216,7 @@ export async function resolveMusicRequest(input, fetchImpl = fetch, spotifyResol
   }
 
   const html = (await res.text?.().catch(() => ''))?.slice(0, 16384) ?? '';
-  const match = html.match(/https:\/\/(?:(?:www\.|m\.)?soundcloud\.com|open\.spotify\.com)\/[A-Za-z0-9._~:/?#[\]@!$&'()*+,;=%-]+/i)?.[0];
+  const match = html.match(/https:\/\/(?:(?:www\.|m\.)?soundcloud\.com|open\.spotify\.com|(?:www\.|music\.)?youtube\.com|youtu\.be)\/[A-Za-z0-9._~:/?#[\]@!$&'()*+,;=%-]+/i)?.[0];
   if (!match) throw new Error('Không thể giải mã link rút gọn này — hãy thử dán link bài hát đầy đủ.');
   current = new URL(validateQuery(match));
  }
@@ -134,7 +226,9 @@ export async function resolveMusicRequest(input, fetchImpl = fetch, spotifyResol
  }
 
  const normalized = validateQuery(current.toString());
- if (SPOTIFY_HOSTS.has(new URL(normalized).hostname.toLowerCase())) {
+ const normHost = new URL(normalized).hostname.toLowerCase();
+
+ if (SPOTIFY_HOSTS.has(normHost)) {
   try {
    if (spotifyResolverFn) {
     const meta = await spotifyResolverFn(normalized);
@@ -167,6 +261,36 @@ export async function resolveMusicRequest(input, fetchImpl = fetch, spotifyResol
    throw new Error('Không thể đọc thông tin bài hát từ link Spotify này.');
   }
  }
+
+ if (YOUTUBE_HOSTS.has(normHost)) {
+  const videoId = extractYouTubeVideoId(normalized);
+  if (!videoId) throw new Error('Link YouTube không hợp lệ.');
+  const watchUrl = `https://www.youtube.com/watch?v=${videoId}`;
+  let oembed;
+  try {
+   const res = await fetchImpl(`https://www.youtube.com/oembed?url=${encodeURIComponent(watchUrl)}&format=json`, {
+    signal: AbortSignal.timeout(6000),
+    headers: { 'User-Agent': 'Mozilla/5.0' },
+   });
+   if (!res?.ok) throw new Error(`HTTP ${res?.status}`);
+   oembed = await res.json();
+  } catch {
+   throw new Error('Không thể đọc thông tin bài hát từ link YouTube này (video bị ẩn hoặc không tồn tại).');
+  }
+  const cleaned = cleanYouTubeMetadata(oembed?.title, oembed?.author_name);
+  const combined = [cleaned.title, cleaned.artist].filter(Boolean).join(' ').trim();
+  if (!combined) throw new Error('Không thể đọc tên bài hát từ link YouTube này.');
+  return {
+   query: combined.slice(0, 300),
+   spotifyMeta: {
+    title: cleaned.title,
+    artist: cleaned.artist,
+    durationMs: 0,
+    thumbnail: oembed?.thumbnail_url || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+   },
+  };
+ }
+
  return { query: normalized, spotifyMeta: null };
 }
 
@@ -175,42 +299,61 @@ export async function resolveMusicQuery(input, fetchImpl = fetch, spotifyPreview
  return query;
 }
 
-const UNWANTED_VARIANT_WORDS = ['slowed', 'reverb', 'nightcore', 'sped up', '8d', '1 hour', '1 giờ', 'karaoke', 'instrumental', 'beat chuẩn'];
+const VARIANT_REGEX = /\b(?:slowed|reverb|nightcore|sped\s*up|8d|1\s*hour|1\s*gio|karaoke|instrumental|beat\s*chuan|piano\s*beat|mv\s*cut|remix|rmx|cover|mashup|bootleg|rework|flip|edit|demo|teaser|trailer)\b/i;
 
-// Chọn bản nhạc khớp nhất theo tên, ca sĩ và đặc biệt là độ dài gốc (tránh chọn nhầm MV dài có đoạn phim mở đầu hoặc bản remix/slowed).
+// Chọn bản nhạc khớp nhất theo tên, ca sĩ và độ dài gốc (tránh chọn nhầm bản cover/remix/slowed hoặc đoạn cắt ngắn khi người dùng không yêu cầu).
 export function pickBestMatchingTrack(tracks = [], hint = {}) {
  const valid = (Array.isArray(tracks) ? tracks : []).filter(t => t && !t.isLive && !(t.duration > 10800000));
  if (!valid.length) return tracks?.[0] ?? null;
 
- const targetTitle = String(hint?.title ?? '').toLowerCase().trim();
- const targetArtist = String(hint?.artist ?? hint?.author ?? '').toLowerCase().trim();
+ const targetTitle = foldSearchText(hint?.title).trim();
+ const targetArtist = foldSearchText(hint?.artist ?? hint?.author).trim();
  const targetDurationMs = Number(hint?.durationMs ?? 0);
  if (!targetTitle && !targetArtist && !(targetDurationMs > 0)) return valid[0];
 
- const refText = `${targetTitle} ${targetArtist}`;
+ const refText = `${targetTitle} ${targetArtist}`.trim();
+ const askedVariant = VARIANT_REGEX.test(refText);
+ const titleTokens = targetTitle.split(/[^a-z0-9]+/).filter(w => w.length >= 2);
+ const artistTokens = targetArtist.split(/[^a-z0-9]+/).filter(w => w.length >= 2);
+
  let best = valid[0];
  let bestScore = -Infinity;
 
- valid.slice(0, 10).forEach((cand, idx) => {
-  let score = Math.max(0, 12 - idx * 2); // Ưu tiên nhẹ thứ hạng đầu của bộ tìm kiếm.
-  const cTitle = String(cand.title ?? '').toLowerCase();
-  const cAuthor = String(cand.metadata?.author ?? '').toLowerCase();
+ valid.slice(0, 15).forEach((cand, idx) => {
+  let score = Math.max(0, 12 - idx); // Giữ ưu tiên nhẹ cho thứ hạng tìm kiếm gốc.
+  const cTitle = foldSearchText(cand.title);
+  const cAuthor = foldSearchText(cand.metadata?.author);
   const cCombined = `${cTitle} ${cAuthor}`;
 
-  if (targetTitle && cTitle.includes(targetTitle)) score += 25;
-  if (targetArtist && (cCombined.includes(targetArtist) || targetArtist.includes(cAuthor && cAuthor.length > 2 ? cAuthor : '\0'))) {
-   score += 30;
-  }
-  if (/\b(official\s+audio|audio)\b/i.test(cTitle) || /-\s*topic$/i.test(cAuthor)) {
-   score += 15;
+  if (targetTitle && cTitle.includes(targetTitle)) score += 24;
+  for (const w of titleTokens) {
+   if (cTitle.includes(w)) score += 10;
+   else if (cCombined.includes(w)) score += 5;
   }
 
-  for (const word of UNWANTED_VARIANT_WORDS) {
-   if (cTitle.includes(word) && !refText.includes(word)) score -= 50;
+  if (targetArtist && (cAuthor.includes(targetArtist) || cCombined.includes(targetArtist))) {
+   score += 26;
+  }
+  for (const w of artistTokens) {
+   if (cAuthor.includes(w)) score += 12;
+   else if (cTitle.includes(w)) score += 8;
+  }
+
+  if (/\b(?:official\s+audio|ban\s+chuan)\b/i.test(cTitle) || /-\s*topic$/i.test(cAuthor)) {
+   score += 12;
+  }
+
+  if (!askedVariant && VARIANT_REGEX.test(cCombined)) {
+   score -= 55;
+  } else if (askedVariant && VARIANT_REGEX.test(cCombined)) {
+   score += 30;
   }
 
   const candDur = Number(cand.duration ?? 0);
   const cMs = candDur > 1000 ? candDur : candDur * 1000;
+  if (cMs > 0 && cMs < 75_000 && (!targetDurationMs || targetDurationMs >= 90_000)) {
+   score -= 45;
+  }
   if (targetDurationMs > 0 && cMs > 0) {
    const diffSec = Math.abs(cMs - targetDurationMs) / 1000;
    if (diffSec <= 5) score += 65;

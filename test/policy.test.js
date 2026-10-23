@@ -1,6 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseSeekTime, pickBestMatchingTrack, resolveConfig, resolveMusicQuery, validateQuery } from '../src/policy.js';
+import {
+ cleanYouTubeMetadata,
+ extractYouTubeVideoId,
+ parseSeekTime,
+ pickBestMatchingTrack,
+ resolveConfig,
+ resolveMusicQuery,
+ resolveMusicRequest,
+ validateQuery,
+} from '../src/policy.js';
 import { buildHelpEmbed, commands } from '../src/commands.js';
 
 test('valid search, SoundCloud/Spotify normalization, and mobile share text extraction', () => {
@@ -58,6 +67,7 @@ test('parseSeekTime parses seconds and mm:ss / hh:mm:ss cleanly', () => {
 test('pickBestMatchingTrack prefers exact 4:21 audio over 6-minute MV or slowed remix', () => {
  const candidates = [
   { id: 'mv', title: 'Nơi Này Có Anh (Slowed + Reverb)', duration: 365000, metadata: { author: 'Channel A' } },
+  { id: 'cover', title: 'Branime Studios - Nơi Này Có Anh (Cover)', duration: 260000, metadata: { author: 'Ruan Elias' } },
   { id: 'orig', title: 'Sơn Tùng M-TP - Nơi Này Có Anh (Official Audio)', duration: 261000, metadata: { author: 'Sơn Tùng M-TP - Topic' } },
   { id: 'hour', title: 'Nơi Này Có Anh 1 Hour Loop', duration: 3600000, metadata: { author: 'Loop' } },
  ];
@@ -67,6 +77,38 @@ test('pickBestMatchingTrack prefers exact 4:21 audio over 6-minute MV or slowed 
   durationMs: 261000,
  });
  assert.equal(best.id, 'orig');
+
+ // Nhưng nếu người dùng chủ động gõ từ khóa "cover", vẫn cho phép chọn bản cover.
+ const wantCover = pickBestMatchingTrack(candidates, { title: 'Nơi Này Có Anh cover' });
+ assert.equal(wantCover.id, 'cover');
+});
+
+test('resolveMusicRequest resolves YouTube links via lightweight oEmbed without JSDOM', async () => {
+ assert.equal(extractYouTubeVideoId('https://www.youtube.com/shorts/FN7ALfpGxiI?feature=share'), 'FN7ALfpGxiI');
+ assert.throws(() => validateQuery('https://www.youtube.com/live/FN7ALfpGxiI'), /livestream/);
+
+ const cleaned = cleanYouTubeMetadata(
+  'NƠI NÀY CÓ ANH | OFFICIAL MUSIC VIDEO | SƠN TÙNG M-TP',
+  'Sơn Tùng M-TP Official',
+ );
+ assert.deepEqual(cleaned, { title: 'NƠI NÀY CÓ ANH', artist: 'Sơn Tùng M-TP' });
+
+ const fakeOembedFetch = async url => {
+  assert.ok(String(url).startsWith('https://www.youtube.com/oembed?url='));
+  return {
+   ok: true,
+   json: async () => ({
+    title: 'Rick Astley - Never Gonna Give You Up (Official Video) (4K Remaster)',
+    author_name: 'Rick Astley',
+    thumbnail_url: 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg',
+   }),
+  };
+ };
+ const resolved = await resolveMusicRequest('https://youtu.be/dQw4w9WgXcQ?si=123', fakeOembedFetch);
+ assert.equal(resolved.query, 'Never Gonna Give You Up Rick Astley');
+ assert.equal(resolved.spotifyMeta?.title, 'Never Gonna Give You Up');
+ assert.equal(resolved.spotifyMeta?.artist, 'Rick Astley');
+ assert.equal(resolved.spotifyMeta?.thumbnail, 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg');
 });
 
 test('reject dangerous URLs and playlists', () => {

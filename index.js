@@ -223,6 +223,8 @@ server.on('error', e => {
 let busy = false, closing = false;
 const cooldown = new Map();
 const refreshCooldown = new Map();
+const guildKickAlerts = new Map();
+const guildLastRejoinAt = new Map();
 const PROGRESS_TICK_MS = 5000; // Chu kỳ cập nhật thanh tiến trình (5 giây/lần: chuẩn mượt, không bao giờ chạm giới hạn rate-limit Discord).
 const KNOWN_ERROR_RE = /^(Hãy|Bạn|Bot|Chờ|Chỉ|Hàng|Không|Chưa|Tên|URL|Lệnh|Bản|Link|Thời|Số|Định|Vị)/;
 
@@ -436,8 +438,20 @@ async function closeCurrentPanel(player, reason, { keepIdle247 = false } = {}) {
  }
 }
 
+// Tự động xóa thông báo bị kick khỏi phòng ngay khi bot được gọi vào lại kênh thoại.
+function clearKickAlertsOnRejoin(guildId) {
+ if (!guildId) return;
+ guildLastRejoinAt.set(guildId, Date.now());
+ const msgs = guildKickAlerts.get(guildId);
+ if (!msgs?.length) return;
+ guildKickAlerts.delete(guildId);
+ for (const m of msgs) {
+  m?.delete?.().catch(() => {});
+ }
+}
+
 // Gửi hoặc cập nhật thông báo trạng thái mic / kick khỏi phòng gọn gàng (chống spam kênh chat).
-async function sendVoiceGuardAlert(textChannel, userdata, event) {
+async function sendVoiceGuardAlert(textChannel, userdata, event, guildId = textChannel?.guildId) {
  const embed = buildVoiceGuardEmbed(event);
  if (!embed || !textChannel?.send) return;
  const payload = { embeds: [embed], allowedMentions: { parse: [] } };
@@ -449,17 +463,34 @@ async function sendVoiceGuardAlert(textChannel, userdata, event) {
  }
 
  const isKickEvent = String(event.action).startsWith('kicked_');
- const now = Date.now();
- if (!isKickEvent && userdata && now - (userdata.lastVoiceAlertAt ?? 0) < 3000) return;
+ const startedAt = Date.now();
+ if (!isKickEvent && userdata && startedAt - (userdata.lastVoiceAlertAt ?? 0) < 3000) return;
  if (userdata) {
-  userdata.lastVoiceAlertAt = now;
+  userdata.lastVoiceAlertAt = startedAt;
   if (userdata.voiceAlertMessage) {
    userdata.voiceAlertMessage.delete().catch(() => {});
    userdata.voiceAlertMessage = null;
   }
  }
+ if (isKickEvent && guildId) {
+  const prevKickMsgs = guildKickAlerts.get(guildId);
+  if (prevKickMsgs?.length) {
+   guildKickAlerts.delete(guildId);
+   for (const m of prevKickMsgs) m?.delete?.().catch(() => {});
+  }
+ }
  const sent = await textChannel.send(payload).catch(() => null);
- if (userdata && sent && !isKickEvent) userdata.voiceAlertMessage = sent;
+ if (!sent) return;
+ if (isKickEvent && guildId) {
+  if ((guildLastRejoinAt.get(guildId) ?? 0) >= startedAt) {
+   sent.delete().catch(() => {});
+   return;
+  }
+  if (guildKickAlerts.size >= 50) guildKickAlerts.clear();
+  guildKickAlerts.set(guildId, [sent]);
+  return;
+ }
+ if (userdata && !isKickEvent) userdata.voiceAlertMessage = sent;
 }
 
 // Cập nhật dòng trạng thái dưới tên bot trong Discord để mọi thành viên thấy tên bài đang phát & địa chỉ Website Now Playing.
@@ -490,7 +521,10 @@ async function destroyPlayerSession(guildId, reason) {
  if (ud) {
   ud.manualDisconnect = true;
   ud.stay247 = false;
-  ud.voiceAlertMessage = null;
+  if (ud.voiceAlertMessage) {
+   ud.voiceAlertMessage.delete().catch(() => {});
+   ud.voiceAlertMessage = null;
+  }
   stopProgressTicker(p);
   clearEmptyTimer(p);
   await closeCurrentPanel(p, reason);
@@ -668,6 +702,7 @@ async function ensureVoiceSession({ guild, voiceChannel, textChannel, userId, in
    channelBitrate: voiceChannel.bitrate,
   });
   if (!p.connection) await p.connect(voiceChannel);
+  clearKickAlertsOnRejoin(guild.id);
   return { player: p, created };
  } catch (e) {
   if (created) manager.delete(guild.id);
@@ -729,6 +764,9 @@ async function enqueueAndPlay({ guild, voiceChannel, textChannel, rawQuery, user
 // Theo dõi biến động kênh thoại: phát hiện bị tắt mic (Server Mute / Stage), bị kick khỏi phòng, chuyển kênh AFK, hoặc kênh trống.
 client.on(Events.VoiceStateUpdate, (oldState, newState) => {
  const guild = newState.guild ?? oldState.guild;
+ if ((newState.id ?? oldState.id) === client.user?.id && !oldState.channelId && newState.channelId) {
+  clearKickAlertsOnRejoin(guild.id);
+ }
  const p = manager.get(guild.id);
  if (!p || p.destroyed || !p.userdata) return;
 
@@ -745,7 +783,7 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
   if (ev.action === 'kicked_stop') {
    const alertChannel = p.userdata.textChannel;
    void destroyPlayerSession(guild.id, `👢 Bot đã bị kick (ngắt kết nối) khỏi kênh thoại <#${ev.oldChannelId}>.`);
-   void sendVoiceGuardAlert(alertChannel, null, ev);
+   void sendVoiceGuardAlert(alertChannel, null, ev, guild.id);
    return;
   }
 
@@ -755,12 +793,12 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
     guild.id,
     `👢 Phát hiện bot bị kick khỏi kênh <#${ev.oldChannelId}> liên tiếp — đã tự tắt 24/7 và rời phòng.`,
    );
-   void sendVoiceGuardAlert(alertChannel, null, ev);
+   void sendVoiceGuardAlert(alertChannel, null, ev, guild.id);
    return;
   }
 
   if (ev.action === 'kicked_reconnect_247') {
-   void sendVoiceGuardAlert(p.userdata.textChannel, p.userdata, ev);
+   void sendVoiceGuardAlert(p.userdata.textChannel, p.userdata, ev, guild.id);
    if (Date.now() - p.userdata.lastReconnectAt > 4000) {
     p.userdata.lastReconnectAt = Date.now();
     const target = guild.channels.cache.get(p.userdata.voiceChannelId);
@@ -779,6 +817,7 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
   }
 
   if (newState.channelId) {
+   if (!oldState.channelId) clearKickAlertsOnRejoin(guild.id);
    p.userdata.voiceChannelId = newState.channelId;
    if (newState.channel?.bitrate) setAudioEnhancement({ channelBitrate: newState.channel.bitrate });
   }

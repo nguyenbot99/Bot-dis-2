@@ -1,5 +1,5 @@
 {
-  "name": "discord-now-playing",
+  "name": "bot-dis-2",
   "main": "cloudflare-worker/worker.js",
   "compatibility_date": "2025-10-01"
 }

@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import express from 'express';
-import { createNowPlayingHub, serializeNowPlayingState } from '../src/nowPlayingHub.js';
-import workerModule from '../cloudflare-worker/worker.js';
+import { createNowPlayingHub, DEFAULT_NOW_PLAYING_PUSH_URL, resolvePushEndpoint, serializeNowPlayingState } from '../src/nowPlayingHub.js';
+import workerModule, { NowPlayingRoom } from '../cloudflare-worker/worker.js';
 
 test('serializeNowPlayingState formats playing, paused, muted, and sanitizes unsafe URLs', () => {
  const fakePlayer = {
@@ -236,4 +236,66 @@ test('Cloudflare Worker relay enforces secret on POST and serves live HTML + JSO
  const getHtml = await workerModule.fetch(new Request('https://demo.workers.dev/'), env, ctx);
  assert.equal(getHtml.status, 200);
  assert.match(getHtml.headers.get('content-type'), /text\/html/);
+
+ // Kiểm tra Durable Object NowPlayingRoom đồng bộ xuyên biên giới giữa VPS và điện thoại người dùng
+ const backingMap = new Map();
+ const roomInstance = new NowPlayingRoom(
+  {
+   storage: {
+    get: async k => backingMap.get(k),
+    put: async (k, v) => backingMap.set(k, v),
+   },
+  },
+  {},
+ );
+ const envWithDO = {
+  NOW_PLAYING_PUSH_SECRET: 'bao123',
+  NOW_PLAYING_ROOM: {
+   idFromName: name => name,
+   get: () => ({
+    fetch: (url, init) => roomInstance.fetch(new Request(url, init)),
+   }),
+  },
+ };
+ const doPost = await workerModule.fetch(
+  new Request('https://bot-dis-2.botmusicvip.workers.dev/api/now-playing', {
+   method: 'POST',
+   headers: { Authorization: 'Bearer bao123', 'Content-Type': 'application/json' },
+   body: JSON.stringify({
+    status: 'playing',
+    statusLabel: '▶️ Đang phát nhạc',
+    serverTimeMs: Date.now() - 1000,
+    track: { title: 'Lạc Trôi', author: 'Sơn Tùng M-TP', positionMs: 5000, durationMs: 240000 },
+    upcoming: [],
+    history: [],
+   }),
+  }),
+  envWithDO,
+  ctx,
+ );
+ assert.equal(doPost.status, 200);
+ assert.equal(backingMap.get('latest')?.track?.title, 'Lạc Trôi');
+
+ const doGet = await workerModule.fetch(
+  new Request('https://bot-dis-2.botmusicvip.workers.dev/api/now-playing'),
+  envWithDO,
+  ctx,
+ );
+ const doJson = await doGet.json();
+ assert.equal(doJson.track.title, 'Lạc Trôi');
+ assert.ok(doJson.track.positionMs >= 5800);
+});
+
+test('resolvePushEndpoint normalizes root Worker URL and defaults when only secret is set', () => {
+ assert.deepEqual(
+  resolvePushEndpoint({ NOW_PLAYING_PUSH_SECRET: 'bao123' }),
+  { pushUrl: DEFAULT_NOW_PLAYING_PUSH_URL, pushSecret: 'bao123' },
+ );
+ assert.deepEqual(
+  resolvePushEndpoint({
+   NOW_PLAYING_PUSH_URL: 'https://bot-dis-2.botmusicvip.workers.dev/',
+   NOW_PLAYING_PUSH_SECRET: 'bao123',
+  }),
+  { pushUrl: 'https://bot-dis-2.botmusicvip.workers.dev/api/now-playing', pushSecret: 'bao123' },
+ );
 });

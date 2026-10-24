@@ -2,5 +2,20 @@
   "name": "bot-dis-2",
   "main": "worker.js",
   "compatibility_date": "2025-10-01",
-  "workers_dev": true
+  "workers_dev": true,
+  "keep_vars": true,
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "NOW_PLAYING_ROOM",
+        "class_name": "NowPlayingRoom"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["NowPlayingRoom"]
+    }
+  ]
 }

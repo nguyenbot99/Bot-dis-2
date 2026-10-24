@@ -1,6 +1,17 @@
+const BaseDO = await import('cloudflare:workers')
+  .then(m => m.DurableObject)
+  .catch(
+    () =>
+      class {
+        constructor(ctx, env) {
+          this.ctx = ctx;
+          this.env = env;
+        }
+      },
+  );
+
 const UI_URL =
   'https://raw.githubusercontent.com/nguyenbot99/Bot-dis-2/main/web/index.html';
-const CACHE_URL = 'https://now-playing-cache.local/state';
 
 let memoryState = null;
 let cachedHtml = null;
@@ -28,17 +39,17 @@ function withLivePosition(state) {
     return {
       bot: { ready: false, name: 'Discord Music Bot', avatarUrl: null },
       status: 'idle',
-      statusLabel: 'Chua phat nhac',
-      reason: 'Dang cho tin hieu dau tien tu bot Discord...',
+      statusLabel: '\uD83D\uDCA4 Ch\u01B0a ph\u00E1t nh\u1EA1c',
+      reason: '\u0110ang ch\u1EDD t\u00EDn hi\u1EC7u \u0111\u1EA7u ti\u00EAn t\u1EEB bot Discord...',
       serverTimeMs: Date.now(),
       voiceChannelName: null,
       settings: {
         volume: 100,
         loopMode: 'off',
-        loopLabel: 'Tat lap',
+        loopLabel: 'T\u1EAFt l\u1EB7p',
         autoPlay: false,
         stay247: false,
-        soundLabel: 'Ro net HD',
+        soundLabel: 'R\u00F5 n\u00E9t HD',
       },
       track: null,
       upcoming: [],
@@ -73,6 +84,35 @@ async function loadHtml() {
   return cachedHtml || '<!doctype html><meta charset="utf-8"><title>Now Playing</title>';
 }
 
+export class NowPlayingRoom extends BaseDO {
+  constructor(ctx, env) {
+    super(ctx, env);
+    this.ctx = ctx;
+    this.env = env;
+    this.state = null;
+    if (ctx?.blockConcurrencyWhile && ctx?.storage?.get) {
+      ctx.blockConcurrencyWhile(async () => {
+        this.state = (await ctx.storage.get('latest').catch(() => null)) || null;
+      });
+    }
+  }
+
+  async fetch(request) {
+    if (request.method === 'POST') {
+      const body = await request.json().catch(() => null);
+      if (!body || typeof body !== 'object') {
+        return Response.json({ error: 'Invalid JSON' }, { status: 400, headers: CORS });
+      }
+      this.state = body;
+      if (this.ctx?.storage?.put) {
+        await this.ctx.storage.put('latest', body).catch(() => {});
+      }
+      return Response.json({ ok: true }, { status: 200, headers: CORS });
+    }
+    return Response.json(withLivePosition(this.state), { status: 200, headers: CORS });
+  }
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -100,30 +140,29 @@ export default {
       }
       memoryState = body;
       const raw = JSON.stringify(body);
-      if (env?.NOW_PLAYING_KV?.put) {
-        ctx.waitUntil(env.NOW_PLAYING_KV.put('latest', raw, { expirationTtl: 86400 }));
-      }
-      if (typeof caches !== 'undefined' && caches.default) {
-        const resp = new Response(raw, {
-          headers: { 'Content-Type': 'application/json', 'Cache-Control': 'max-age=86400' },
+      if (env?.NOW_PLAYING_ROOM?.idFromName) {
+        const stub = env.NOW_PLAYING_ROOM.get(env.NOW_PLAYING_ROOM.idFromName('global'));
+        await stub.fetch('https://now-playing.internal/state', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: raw,
         });
-        ctx.waitUntil(caches.default.put(CACHE_URL, resp));
+      }
+      if (env?.NOW_PLAYING_KV?.put) {
+        ctx?.waitUntil?.(env.NOW_PLAYING_KV.put('latest', raw, { expirationTtl: 86400 }));
       }
       return Response.json({ ok: true }, { status: 200, headers: CORS });
     }
 
     if (url.pathname === '/api/now-playing' && request.method === 'GET') {
+      if (env?.NOW_PLAYING_ROOM?.idFromName) {
+        const stub = env.NOW_PLAYING_ROOM.get(env.NOW_PLAYING_ROOM.idFromName('global'));
+        return stub.fetch('https://now-playing.internal/state');
+      }
       let state = memoryState;
       if (!state && env?.NOW_PLAYING_KV?.get) {
         state = await env.NOW_PLAYING_KV.get('latest', 'json').catch(() => null);
         if (state) memoryState = state;
-      }
-      if (!state && typeof caches !== 'undefined' && caches.default) {
-        const hit = await caches.default.match(CACHE_URL).catch(() => null);
-        if (hit) {
-          state = await hit.json().catch(() => null);
-          if (state) memoryState = state;
-        }
       }
       return Response.json(withLivePosition(state), { status: 200, headers: CORS });
     }

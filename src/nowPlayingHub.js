@@ -2,6 +2,9 @@ import { readFileSync } from 'node:fs';
 import { SOUND_PRESETS } from './audioEnhancer.js';
 import { cleanText, LOOP_LABELS, renderSyncedProgress, safeHttpUrl } from './playerGui.js';
 
+export const DEFAULT_NOW_PLAYING_PUSH_URL =
+ 'https://bot-dis-2.botmusicvip.workers.dev/api/now-playing';
+
 const SOURCE_NAMES = {
  youtube: 'YouTube',
  ytsr: 'YouTube',
@@ -36,6 +39,28 @@ function serializeMiniTrack(track, position = null) {
   sourceLabel: formatSourceLabel(track.source),
   durationMs,
  };
+}
+
+// Chuẩn hóa địa chỉ đẩy dữ liệu lên Cloudflare Worker (tự bù /api/now-playing nếu người dùng dán link gốc trang web).
+export function resolvePushEndpoint(env = process.env) {
+ const rawUrl = safeHttpUrl(env?.NOW_PLAYING_PUSH_URL ?? '');
+ const secret = String(env?.NOW_PLAYING_PUSH_SECRET ?? '').trim();
+ if (rawUrl) {
+  try {
+   const parsed = new URL(rawUrl);
+   const cleanPath = parsed.pathname.replace(/\/+$/, '');
+   if (!cleanPath) {
+    parsed.pathname = '/api/now-playing';
+   }
+   return { pushUrl: parsed.toString(), pushSecret: secret };
+  } catch {
+   return { pushUrl: rawUrl, pushSecret: secret };
+  }
+ }
+ if (secret) {
+  return { pushUrl: DEFAULT_NOW_PLAYING_PUSH_URL, pushSecret: secret };
+ }
+ return { pushUrl: null, pushSecret: '' };
 }
 
 // Chuyển trạng thái hiện tại của trình phát ZiPlayer sang dữ liệu JSON sạch, an toàn cho Website "Now Playing".
@@ -141,14 +166,16 @@ export function createNowPlayingHub({
  htmlPath = new URL('../web/index.html', import.meta.url),
  env = process.env,
  fetchImpl = fetch,
+ logger = console,
 } = {}) {
  const htmlContent = readFileSync(htmlPath, 'utf8');
  const sseClients = new Set();
  let lastOverrides = {};
  let pushTimer = null;
+ let lastPushOk = false;
+ let lastWarnAt = 0;
 
- const rawPushUrl = safeHttpUrl(env?.NOW_PLAYING_PUSH_URL ?? '');
- const pushSecret = String(env?.NOW_PLAYING_PUSH_SECRET ?? '').trim();
+ const { pushUrl: rawPushUrl, pushSecret } = resolvePushEndpoint(env);
 
  const heartbeatTimer = setInterval(() => {
   for (const res of sseClients) {
@@ -157,6 +184,13 @@ export function createNowPlayingHub({
  }, 25000);
  heartbeatTimer.unref?.();
 
+ function warnThrottled(msg) {
+  const now = Date.now();
+  if (now - lastWarnAt < 60000) return;
+  lastWarnAt = now;
+  logger?.warn?.(msg);
+ }
+
  function getSnapshot(overrides = lastOverrides) {
   const activePlayer = Object.prototype.hasOwnProperty.call(overrides, 'player')
    ? overrides.player
@@ -164,25 +198,60 @@ export function createNowPlayingHub({
   return serializeNowPlayingState({ player: activePlayer, client, overrides });
  }
 
+ async function executeOutboundPush() {
+  if (!rawPushUrl) return;
+  const snapshot = getSnapshot();
+  const headers = { 'Content-Type': 'application/json' };
+  if (pushSecret) headers.Authorization = `Bearer ${pushSecret}`;
+  try {
+   const res = await fetchImpl(rawPushUrl, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(snapshot),
+    signal: AbortSignal.timeout(5000),
+   });
+   if (res && res.ok === false) {
+    lastPushOk = false;
+    if (res.status === 503) {
+     warnThrottled('[web-now-playing] ⚠️ Cloudflare Worker báo thiếu NOW_PLAYING_PUSH_SECRET (HTTP 503). Hãy thêm biến Secret này trong Settings -> Variables and Secrets trên Cloudflare.');
+    } else if (res.status === 401) {
+     warnThrottled('[web-now-playing] ⚠️ Sai mật khẩu NOW_PLAYING_PUSH_SECRET (HTTP 401). Hãy kiểm tra mật khẩu ở botkeep.cloud và Cloudflare khớp nhau.');
+    } else {
+     warnThrottled(`[web-now-playing] ⚠️ Không thể đẩy dữ liệu lên Website ngoài (HTTP ${res.status}).`);
+    }
+    return;
+   }
+   if (!lastPushOk) {
+    lastPushOk = true;
+    logger?.log?.(`[web-now-playing] ✅ Đã kết nối & đồng bộ trạng thái nhạc lên Website: ${rawPushUrl}`);
+   }
+  } catch (err) {
+   lastPushOk = false;
+   warnThrottled(`[web-now-playing] ⚠️ Lỗi mạng khi đẩy dữ liệu lên Website ngoài: ${err?.name ?? 'Error'}`);
+  }
+ }
+
  function scheduleOutboundPush() {
   if (!rawPushUrl) return;
   if (pushTimer) clearTimeout(pushTimer);
   pushTimer = setTimeout(() => {
    pushTimer = null;
-   const snapshot = getSnapshot();
-   const headers = { 'Content-Type': 'application/json' };
-   if (pushSecret) headers.Authorization = `Bearer ${pushSecret}`;
-   Promise.resolve(
-    fetchImpl(rawPushUrl, {
-     method: 'POST',
-     headers,
-     body: JSON.stringify(snapshot),
-     signal: AbortSignal.timeout(5000),
-    }),
-   ).catch(() => {});
+   void executeOutboundPush();
   }, 150);
   pushTimer.unref?.();
  }
+
+ // Tự thử đồng bộ lại mỗi 20 giây nếu lần đẩy trước chưa thành công (ví dụ vừa mới thêm Secret trên Cloudflare) hoặc khi đang phát nhạc.
+ const resyncTimer = rawPushUrl
+  ? setInterval(() => {
+     if (!client?.isReady?.()) return;
+     const hasActiveTrack = Boolean(getPlayer?.()?.queue?.currentTrack);
+     if (!lastPushOk || hasActiveTrack) {
+      void executeOutboundPush();
+     }
+    }, 20000)
+  : null;
+ resyncTimer?.unref?.();
 
  function publish(overrides = {}) {
   lastOverrides = overrides;
@@ -203,6 +272,16 @@ export function createNowPlayingHub({
  }
 
  function mountRoutes(app) {
+  if (rawPushUrl) {
+   if (!pushSecret) {
+    logger?.warn?.('[web-now-playing] ⚠️ Đã có NOW_PLAYING_PUSH_URL nhưng thiếu NOW_PLAYING_PUSH_SECRET trong tab Environment!');
+   } else {
+    logger?.log?.(`[web-now-playing] Sẵn sàng đồng bộ ra Cloudflare Worker: ${rawPushUrl}`);
+   }
+  } else {
+   logger?.log?.('[web-now-playing] Chưa cấu hình NOW_PLAYING_PUSH_SECRET trong tab Environment (chỉ chạy Web nội bộ tại cổng HTTP của bot).');
+  }
+
   app.options('/api/now-playing', (req, res) => { applyCors(req, res); res.status(204).end(); });
   app.options('/api/now-playing/events', (req, res) => { applyCors(req, res); res.status(204).end(); });
 
@@ -246,6 +325,7 @@ export function createNowPlayingHub({
 
  function close() {
   clearInterval(heartbeatTimer);
+  if (resyncTimer) clearInterval(resyncTimer);
   if (pushTimer) {
    clearTimeout(pushTimer);
    pushTimer = null;

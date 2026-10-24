@@ -1,0 +1,5 @@
+{
+  "name": "discord-now-playing",
+  "main": "worker.js",
+  "compatibility_date": "2025-10-01"
+}

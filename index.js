@@ -18,6 +18,7 @@ import {
 import { assertMusicAccess, isBotOwner, resolveHumanRequester } from './src/access.js';
 import { fetchTrackLyrics, sanitizeLyricsTitle } from './src/lyrics.js';
 import { createNowPlayingHub } from './src/nowPlayingHub.js';
+import { deleteDiscordMessage, extractMessageRef, sweepChannelStaleNotices } from './src/messageCleaner.js';
 import { buildVoiceGuardEmbed, evaluateBotVoiceTransition } from './src/voiceGuard.js';
 import { buildHelpEmbed, commands } from './src/commands.js';
 import {
@@ -235,10 +236,14 @@ let busy = false, closing = false;
 const cooldown = new Map();
 const refreshCooldown = new Map();
 const guildKickAlerts = new Map();
+const guildLastKickAlertAt = new Map();
 const guildLastRejoinAt = new Map();
 const guildKickSnapshots = new Map();
+const pendingAutoDeletes = new Map();
+const channelLastSweepAt = new Map();
 const KICK_SNAPSHOT_TTL_MS = 30 * 60 * 1000; // Giữ trạng thái bài đang phát & hàng đợi trong 30 phút sau khi bị kick để khôi phục khi /join.
 const PROGRESS_TICK_MS = 5000; // Chu kỳ cập nhật thanh tiến trình (5 giây/lần: chuẩn mượt, không bao giờ chạm giới hạn rate-limit Discord).
+const CHANNEL_SWEEP_COOLDOWN_MS = 180000; // Quét dọn tin nhắn mồ côi tối đa 3 phút/lần mỗi kênh.
 const KNOWN_ERROR_RE = /^(Hãy|Bạn|Bot|Chờ|Chỉ|Hàng|Không|Chưa|Tên|URL|Lệnh|Bản|Link|Thời|Số|Định|Vị|Mức|Âm)/;
 
 function clearPanelTimer(player) {
@@ -256,24 +261,87 @@ function stopProgressTicker(player) {
 }
 
 function clearAutoDeleteTimer(player) {
- if (player?.userdata?.autoDeleteTimer) {
-  clearTimeout(player.userdata.autoDeleteTimer);
-  player.userdata.autoDeleteTimer = null;
+ const ud = player?.userdata;
+ if (!ud) return;
+ if (ud.autoDeleteTimer) {
+  clearTimeout(ud.autoDeleteTimer);
+  ud.autoDeleteTimer = null;
+ }
+ if (ud.autoDeleteKey) {
+  const entry = pendingAutoDeletes.get(ud.autoDeleteKey);
+  if (entry?.timer) clearTimeout(entry.timer);
+  pendingAutoDeletes.delete(ud.autoDeleteKey);
+  ud.autoDeleteKey = null;
  }
 }
 
-// Tự động thu dọn khung chờ 24/7 & khung kết thúc sau 4 phút 30 giây để giữ kênh chat luôn sạch sẽ.
-function schedulePanelAutoDelete(msg, player = null, delayMs = IDLE_PANEL_AUTO_DELETE_MS) {
- if (!msg?.delete || !(delayMs > 0)) return;
+// Tự động thu dọn khung chờ 24/7, khung kết thúc & thông báo kick sau 4 phút 30 giây qua Discord REST API (không phụ thuộc MessageManager cache).
+function schedulePanelAutoDelete(msg, player = null, delayMs = IDLE_PANEL_AUTO_DELETE_MS, fallbackChannelId = null) {
+ const resolvedChannelId = fallbackChannelId ?? player?.userdata?.textChannel?.id ?? null;
+ const ref = extractMessageRef(msg, resolvedChannelId);
+ if (!ref && typeof msg?.delete !== 'function') return;
+ if (!(delayMs > 0)) return;
  clearAutoDeleteTimer(player);
+
+ const key = ref ? `${ref.channelId}:${ref.messageId}` : null;
+ if (key && pendingAutoDeletes.has(key)) {
+  clearTimeout(pendingAutoDeletes.get(key).timer);
+  pendingAutoDeletes.delete(key);
+ }
+
  const ud = player?.userdata ?? null;
  const timer = setTimeout(() => {
-  if (ud?.autoDeleteTimer === timer) ud.autoDeleteTimer = null;
-  if (ud?.panelMessage?.id === msg.id) ud.panelMessage = null;
-  msg.delete().catch(() => {});
+  if (key) pendingAutoDeletes.delete(key);
+  if (ud?.autoDeleteTimer === timer) {
+   ud.autoDeleteTimer = null;
+   ud.autoDeleteKey = null;
+  }
+  if (ud?.panelMessage?.id && ud.panelMessage.id === (ref?.messageId ?? msg?.id)) {
+   ud.panelMessage = null;
+  }
+  void deleteDiscordMessage(client.rest, msg, ref?.channelId ?? resolvedChannelId);
  }, delayMs);
  timer.unref?.();
- if (ud) ud.autoDeleteTimer = timer;
+
+ if (key) {
+  if (pendingAutoDeletes.size >= 80) {
+   const oldestKey = pendingAutoDeletes.keys().next().value;
+   clearTimeout(pendingAutoDeletes.get(oldestKey)?.timer);
+   pendingAutoDeletes.delete(oldestKey);
+  }
+  pendingAutoDeletes.set(key, { channelId: ref.channelId, messageId: ref.messageId, msg, timer });
+ }
+ if (ud) {
+  ud.autoDeleteTimer = timer;
+  ud.autoDeleteKey = key;
+ }
+}
+
+function collectActiveMessageIds() {
+ const ids = new Set();
+ for (const pl of manager.getAll()) {
+  if (pl?.userdata?.panelMessage?.id) ids.add(String(pl.userdata.panelMessage.id));
+  if (pl?.userdata?.voiceAlertMessage?.id) ids.add(String(pl.userdata.voiceAlertMessage.id));
+ }
+ return ids;
+}
+
+// Tự động quét nhẹ và xóa các khung "Phiên phát nhạc đã kết thúc" / "Phát hiện bot bị kick" cũ bị mồ côi (ví dụ sau khi restart bot).
+function triggerChannelSweep(channelId, { clearAllKickAlerts = false, force = false } = {}) {
+ if (!channelId || !client.user?.id) return;
+ const key = String(channelId);
+ const now = Date.now();
+ if (!force && now - (channelLastSweepAt.get(key) ?? 0) < CHANNEL_SWEEP_COOLDOWN_MS) return;
+ if (channelLastSweepAt.size >= 80) channelLastSweepAt.clear();
+ channelLastSweepAt.set(key, now);
+ void sweepChannelStaleNotices({
+  rest: client.rest,
+  channelId: key,
+  botId: client.user.id,
+  activeMessageIds: collectActiveMessageIds(),
+  pendingKeys: new Set(pendingAutoDeletes.keys()),
+  clearAllKickAlerts,
+ }).catch(() => {});
 }
 
 function markPanelTouched(player, overrides = {}) {
@@ -379,13 +447,13 @@ async function postFreshPanel(player, track) {
  clearAutoDeleteTimer(player);
  const oldMsg = ud.panelMessage;
  ud.panelMessage = null;
- if (oldMsg) oldMsg.delete().catch(() => {});
+ if (oldMsg) void deleteDiscordMessage(client.rest, oldMsg, ud.textChannel?.id);
  if (!ud.textChannel?.send) return;
  try {
   const sent = await ud.textChannel.send(buildPlayerPayload(player, { track }));
   if (player.destroyed || ud.ending || ud.manualDisconnect) {
    sent.edit(buildEndedPayload()).catch(() => {});
-   schedulePanelAutoDelete(sent);
+   schedulePanelAutoDelete(sent, null, IDLE_PANEL_AUTO_DELETE_MS, ud.textChannel?.id);
    return;
   }
   ud.panelMessage = sent;
@@ -451,7 +519,7 @@ async function closeCurrentPanel(player, reason, { keepIdle247 = false } = {}) {
  ud.panelMessage = null;
  if (msg) {
   await msg.edit(payload).catch(() => {});
-  schedulePanelAutoDelete(msg);
+  schedulePanelAutoDelete(msg, null, IDLE_PANEL_AUTO_DELETE_MS, ud.textChannel?.id);
  }
 }
 
@@ -569,56 +637,69 @@ async function restoreKickSnapshotIfAny(player, voiceChannel, fallbackUserId) {
  };
 }
 
-// Tự động xóa thông báo bị kick khỏi phòng ngay khi bot được gọi vào lại kênh thoại.
-function clearKickAlertsOnRejoin(guildId) {
+// Tự động xóa thông báo bị kick khỏi phòng ngay khi bot được gọi vào lại kênh thoại (kể cả thông báo cũ trước lúc bot restart).
+function clearKickAlertsOnRejoin(guildId, textChannelId = null) {
  if (!guildId) return;
  guildLastRejoinAt.set(guildId, Date.now());
  const msgs = guildKickAlerts.get(guildId);
- if (!msgs?.length) return;
- guildKickAlerts.delete(guildId);
- for (const m of msgs) {
-  m?.delete?.().catch(() => {});
+ if (msgs?.length) {
+  guildKickAlerts.delete(guildId);
+  for (const m of msgs) {
+   void deleteDiscordMessage(client.rest, m, textChannelId);
+  }
+ }
+ if (textChannelId) {
+  triggerChannelSweep(textChannelId, { clearAllKickAlerts: true, force: true });
  }
 }
 
-// Gửi hoặc cập nhật thông báo trạng thái mic / kick khỏi phòng gọn gàng (chống spam kênh chat).
+// Gửi hoặc cập nhật thông báo trạng thái mic / kick khỏi phòng gọn gàng (chống gửi trùng 2 lần và tự thu dọn sau 4.5 phút).
 async function sendVoiceGuardAlert(textChannel, userdata, event, guildId = textChannel?.guildId) {
- const embed = buildVoiceGuardEmbed(event);
+ const embed = buildVoiceGuardEmbed(event, { autoDeleteMs: IDLE_PANEL_AUTO_DELETE_MS });
  if (!embed || !textChannel?.send) return;
  const payload = { embeds: [embed], allowedMentions: { parse: [] } };
 
  // Khi mở lại mic, ưu tiên sửa đè ngay lên khung báo tắt mic trước đó để kênh chat luôn sạch sẽ.
  if (event.action === 'unmuted' && userdata?.voiceAlertMessage) {
   const edited = await userdata.voiceAlertMessage.edit(payload).catch(() => null);
-  if (edited) return;
+  if (edited) {
+   schedulePanelAutoDelete(edited, null, 60000, textChannel.id);
+   return;
+  }
  }
 
  const isKickEvent = String(event.action).startsWith('kicked_');
  const startedAt = Date.now();
  if (!isKickEvent && userdata && startedAt - (userdata.lastVoiceAlertAt ?? 0) < 3000) return;
- if (userdata) {
-  userdata.lastVoiceAlertAt = startedAt;
-  if (userdata.voiceAlertMessage) {
-   userdata.voiceAlertMessage.delete().catch(() => {});
-   userdata.voiceAlertMessage = null;
-  }
- }
  if (isKickEvent && guildId) {
+  // Khóa chống gửi đúp khi Discord bắn 2 sự kiện VoiceStateUpdate liên tiếp lúc bị kick.
+  if (startedAt - (guildLastKickAlertAt.get(guildId) ?? 0) < 4000) return;
+  guildLastKickAlertAt.set(guildId, startedAt);
   const prevKickMsgs = guildKickAlerts.get(guildId);
   if (prevKickMsgs?.length) {
    guildKickAlerts.delete(guildId);
-   for (const m of prevKickMsgs) m?.delete?.().catch(() => {});
+   for (const m of prevKickMsgs) void deleteDiscordMessage(client.rest, m, textChannel.id);
+  }
+ }
+ if (userdata) {
+  userdata.lastVoiceAlertAt = startedAt;
+  if (userdata.voiceAlertMessage) {
+   void deleteDiscordMessage(client.rest, userdata.voiceAlertMessage, textChannel.id);
+   userdata.voiceAlertMessage = null;
   }
  }
  const sent = await textChannel.send(payload).catch(() => null);
  if (!sent) return;
  if (isKickEvent && guildId) {
   if ((guildLastRejoinAt.get(guildId) ?? 0) >= startedAt) {
-   sent.delete().catch(() => {});
+   void deleteDiscordMessage(client.rest, sent, textChannel.id);
    return;
   }
+  const list = guildKickAlerts.get(guildId) ?? [];
+  list.push(sent);
   if (guildKickAlerts.size >= 50) guildKickAlerts.clear();
-  guildKickAlerts.set(guildId, [sent]);
+  guildKickAlerts.set(guildId, list);
+  schedulePanelAutoDelete(sent, null, IDLE_PANEL_AUTO_DELETE_MS, textChannel.id);
   return;
  }
  if (userdata && !isKickEvent) userdata.voiceAlertMessage = sent;
@@ -653,7 +734,7 @@ async function destroyPlayerSession(guildId, reason) {
   ud.manualDisconnect = true;
   ud.stay247 = false;
   if (ud.voiceAlertMessage) {
-   ud.voiceAlertMessage.delete().catch(() => {});
+   void deleteDiscordMessage(client.rest, ud.voiceAlertMessage, ud.textChannel?.id);
    ud.voiceAlertMessage = null;
   }
   stopProgressTicker(p);
@@ -834,7 +915,7 @@ async function ensureVoiceSession({ guild, voiceChannel, textChannel, userId, in
    channelBitrate: voiceChannel.bitrate,
   });
   if (!p.connection) await p.connect(voiceChannel);
-  clearKickAlertsOnRejoin(guild.id);
+  clearKickAlertsOnRejoin(guild.id, textChannel?.id ?? p.userdata?.textChannel?.id ?? null);
   return { player: p, created };
  } catch (e) {
   if (created) manager.delete(guild.id);
@@ -914,6 +995,8 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
   if (ev.action === 'manual_leave') return;
 
   if (ev.action === 'kicked_stop') {
+   if (p.userdata.kickHandled) return;
+   p.userdata.kickHandled = true;
    const alertChannel = p.userdata.textChannel;
    const saved = captureKickSnapshot(p);
    ev.hasSavedMusic = Boolean(saved);
@@ -923,6 +1006,8 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
   }
 
   if (ev.action === 'kicked_abort_247') {
+   if (p.userdata.kickHandled) return;
+   p.userdata.kickHandled = true;
    const alertChannel = p.userdata.textChannel;
    const saved = captureKickSnapshot(p);
    ev.hasSavedMusic = Boolean(saved);
@@ -954,7 +1039,8 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
   }
 
   if (newState.channelId) {
-   if (!oldState.channelId) clearKickAlertsOnRejoin(guild.id);
+   p.userdata.kickHandled = false;
+   if (!oldState.channelId) clearKickAlertsOnRejoin(guild.id, p.userdata.textChannel?.id ?? null);
    p.userdata.voiceChannelId = newState.channelId;
    if (newState.channel?.bitrate) setAudioEnhancement({ channelBitrate: newState.channel.bitrate });
   }
@@ -1030,10 +1116,42 @@ async function syncGuildCommands(appId, targetGuildId) {
  await client.rest.put(Routes.applicationGuildCommands(appId, targetGuildId), { body: commands });
 }
 
+// Lúc bot vừa khởi động lên, quét nhẹ các kênh văn bản hoạt động để tự dọn sạch những khung kết thúc / thông báo kick cũ bị sót lại từ trước khi restart.
+async function sweepStartupOrphanedNotices(readyClient) {
+ const botId = readyClient.user?.id;
+ if (!botId) return;
+ const guilds = [...readyClient.guilds.cache.values()].slice(0, 5);
+ const candidateChannels = [];
+ for (const guild of guilds) {
+  const me = guild.members.me ?? await guild.members.fetchMe().catch(() => null);
+  for (const ch of guild.channels.cache.values()) {
+   if (ch?.type !== 0 || !ch.lastMessageId) continue;
+   if (me && !ch.permissionsFor(me)?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory])) {
+    continue;
+   }
+   const priority = /(bot|nhac|nhạc|music|nghich|nghịch|lenh|lệnh|chat)/i.test(ch.name ?? '') ? 1 : 0;
+   candidateChannels.push({ id: ch.id, priority, lastId: ch.lastMessageId });
+  }
+ }
+ candidateChannels.sort((a, b) => (b.priority - a.priority) || (b.lastId > a.lastId ? 1 : -1));
+ for (const item of candidateChannels.slice(0, 12)) {
+  channelLastSweepAt.set(item.id, Date.now());
+  await sweepChannelStaleNotices({
+   rest: readyClient.rest,
+   channelId: item.id,
+   botId,
+   activeMessageIds: collectActiveMessageIds(),
+   pendingKeys: new Set(pendingAutoDeletes.keys()),
+   limit: 25,
+  }).catch(() => {});
+ }
+}
+
 client.once(Events.ClientReady, async c => {
  console.log(`[khởi-động] Đã đăng nhập: ${c.user.tag}`);
  nowPlayingHub.publish();
  updateBotPresence(null);
+ void sweepStartupOrphanedNotices(c);
  const appInfo = await c.application.fetch().catch(() => null);
  if (appInfo?.interactionsEndpointURL) {
   console.warn(`[cảnh-báo] Phát hiện Interactions Endpoint URL cũ (${appInfo.interactionsEndpointURL}), đang tự động gỡ bỏ...`);
@@ -1098,7 +1216,7 @@ async function handlePlayerComponent(i) {
  if (i.isStringSelectMenu() && i.customId === 'player_menu' && i.values[0] === 'custom_volume') {
   if (!p) {
    await i.update(buildEndedPayload());
-   schedulePanelAutoDelete(i.message);
+   schedulePanelAutoDelete(i.message, null, IDLE_PANEL_AUTO_DELETE_MS, i.channelId);
    return;
   }
   await requireSameVoiceChannel(i.guild, i.user.id);
@@ -1136,7 +1254,7 @@ async function handlePlayerComponent(i) {
  if (i.isButton() && i.customId === 'player_refresh') {
   if (!p || !p.queue.currentTrack) {
    await i.update(buildEndedPayload());
-   schedulePanelAutoDelete(i.message);
+   schedulePanelAutoDelete(i.message, null, IDLE_PANEL_AUTO_DELETE_MS, i.channelId);
    return;
   }
   const now = Date.now();
@@ -1205,7 +1323,7 @@ async function handlePlayerComponent(i) {
  if (!p) {
   if (i.isButton() || i.isStringSelectMenu()) {
    await i.update(buildEndedPayload());
-   schedulePanelAutoDelete(i.message);
+   schedulePanelAutoDelete(i.message, null, IDLE_PANEL_AUTO_DELETE_MS, i.channelId);
    return;
   }
   throw new Error('Chưa có phiên phát nhạc nào.');
@@ -1266,7 +1384,7 @@ async function handlePlayerComponent(i) {
      nowPlayingHub.publish({ player: null, track: null, reason });
      updateBotPresence(null);
      await i.update(buildEndedPayload(reason));
-     schedulePanelAutoDelete(i.message);
+     schedulePanelAutoDelete(i.message, null, IDLE_PANEL_AUTO_DELETE_MS, i.channelId);
      manager.delete(i.guildId);
      return;
     }
@@ -1286,7 +1404,7 @@ async function handlePlayerComponent(i) {
       nowPlayingHub.publish({ player: p, track: null, reason });
       updateBotPresence(null);
       await i.update(buildIdle247Payload(p, reason));
-      schedulePanelAutoDelete(i.message, p);
+      schedulePanelAutoDelete(i.message, p, IDLE_PANEL_AUTO_DELETE_MS, i.channelId);
       return;
      }
      if (p.userdata) {
@@ -1303,7 +1421,7 @@ async function handlePlayerComponent(i) {
      nowPlayingHub.publish({ player: null, track: null, reason });
      updateBotPresence(null);
      await i.update(buildEndedPayload(reason));
-     schedulePanelAutoDelete(i.message);
+     schedulePanelAutoDelete(i.message, null, IDLE_PANEL_AUTO_DELETE_MS, i.channelId);
      manager.delete(i.guildId);
      return;
     }
@@ -1400,6 +1518,7 @@ client.on(Events.InteractionCreate, async i => {
  if (GUILD_ID && i.guildId !== GUILD_ID) {
   return void i.reply({ content: 'Bot chỉ phục vụ máy chủ đã cấu hình.', flags: MessageFlags.Ephemeral }).catch(() => {});
  }
+ if (i.channelId) triggerChannelSweep(i.channelId);
 
  if (i.isButton() || i.isStringSelectMenu() || i.isModalSubmit()) {
   try { await handlePlayerComponent(i); } catch (e) { await replyInteractionError(i, e); }
@@ -1641,7 +1760,7 @@ client.on(Events.InteractionCreate, async i => {
  }
 });
 
-// Dọn dẹp tài nguyên phát nhạc, kết nối Discord và cổng HTTP khi tắt tiến trình.
+// Dọn dẹp tài nguyên phát nhạc, xóa ngay các thông báo tạm đang chờ tự xóa, kết nối Discord và cổng HTTP khi tắt tiến trình.
 async function shutdown(code = 0) {
  if (closing) return; closing = true;
  const timer = setTimeout(() => process.exit(code || 1), 5000); timer.unref();
@@ -1649,8 +1768,16 @@ async function shutdown(code = 0) {
   for (const p of manager.getAll()) {
    clearPanelTimer(p);
    stopProgressTicker(p);
-   clearAutoDeleteTimer(p);
    clearEmptyTimer(p);
+  }
+  if (pendingAutoDeletes.size > 0) {
+   const entries = [...pendingAutoDeletes.values()];
+   pendingAutoDeletes.clear();
+   for (const e of entries) clearTimeout(e.timer);
+   await Promise.race([
+    Promise.allSettled(entries.map(e => deleteDiscordMessage(client.rest, e.msg, e.channelId))),
+    new Promise(r => setTimeout(r, 2000)),
+   ]);
   }
   manager.destroy();
   client.destroy();

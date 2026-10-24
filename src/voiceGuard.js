@@ -123,7 +123,12 @@ export function evaluateBotVoiceTransition(oldState, newState, session = {}, opt
 }
 
 // Dựng khung thông báo Embed tiếng Việt gọn gàng cho từng sự kiện tắt mic / mở mic / bị kick khỏi phòng.
-export function buildVoiceGuardEmbed(event) {
+export function buildVoiceGuardEmbed(event, { autoDeleteMs = 270000 } = {}) {
+ const deleteAtUnix = autoDeleteMs > 0 ? Math.floor((Date.now() + autoDeleteMs) / 1000) : null;
+ const autoCleanLine = deleteAtUnix
+  ? `🧹 Thông báo này sẽ tự xóa <t:${deleteAtUnix}:R> (hoặc tự dọn ngay khi gọi bot vào lại).`
+  : null;
+
  switch (event?.action) {
   case 'muted':
   case 'joined_muted': {
@@ -167,7 +172,8 @@ export function buildVoiceGuardEmbed(event) {
      event.hasSavedMusic
       ? '💡 Gõ `/join` để gọi bot vào lại và **phát tiếp đúng bài nhạc vừa dở**, hoặc `/play` để mở bài mới.'
       : '💡 Gõ `/play` hoặc `/join` bất cứ lúc nào nếu bạn muốn gọi bot vào lại.',
-    ].join('\n'));
+     autoCleanLine,
+    ].filter(Boolean).join('\n'));
 
   case 'kicked_reconnect_247':
    return new EmbedBuilder()
@@ -189,6 +195,7 @@ export function buildVoiceGuardEmbed(event) {
      event.hasSavedMusic
       ? '💾 Nhạc đang phát & hàng đợi vẫn được lưu tạm — gõ `/join` hoặc `/247` để phát tiếp khi cần.'
       : null,
+     autoCleanLine,
     ].filter(Boolean).join('\n'));
 
   case 'moved_afk':

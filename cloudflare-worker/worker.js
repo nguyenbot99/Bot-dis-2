@@ -1,128 +1,148 @@
-// Cloudflare Worker miễn phí phục vụ Website "Now Playing" + API nhận trạng thái từ bot trên botkeep.cloud.
-// Cách dùng nhanh:
-// 1. Tạo Worker miễn phí tại dash.cloudflare.com -> dán toàn bộ file này -> bấm Deploy.
-// 2. Trong phần Settings -> Variables and Secrets của Worker, tạo Secret: NOW_PLAYING_PUSH_SECRET = <mật-khẩu-tự-chọn>.
-//    (Tùy chọn) Gắn thêm KV Namespace tên NOW_PLAYING_KV nếu muốn lưu bền vững xuyên suốt mọi cụm máy chủ biên.
-// 3. Trên botkeep.cloud, thêm 2 biến môi trường:
-//    NOW_PLAYING_PUSH_URL = https://<ten-worker-cua-ban>.workers.dev/api/now-playing
-//    NOW_PLAYING_PUSH_SECRET = <mật-khẩu-tự-chọn>
+const UI_URL =
+  'https://raw.githubusercontent.com/nguyenbot99/Bot-dis-2/main/web/index.html';
+const CACHE_URL = 'https://now-playing-cache.local/state';
 
-const INDEX_HTML = "<!DOCTYPE html>\n<html lang=\"vi\">\n<head>\n  <meta charset=\"UTF-8\" />\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />\n  <title>Đang Phát Trong Discord • Now Playing</title>\n  <style>\n    :root {\n      --bg-base: #08090f;\n      --card-bg: rgba(18, 20, 32, 0.76);\n      --card-border: rgba(255, 255, 255, 0.09);\n      --surface-soft: rgba(255, 255, 255, 0.045);\n      --surface-hover: rgba(255, 255, 255, 0.08);\n      --text-main: #f5f7ff;\n      --text-sub: #a2abc4;\n      --text-muted: #6c7593;\n      --accent: #8b5cf6;\n      --accent-2: #ec4899;\n      --green: #22c55e;\n      --amber: #f59e0b;\n      --red: #ef4444;\n      --shadow: 0 28px 80px rgba(0, 0, 0, 0.62);\n      --radius-xl: 26px;\n      --radius-lg: 18px;\n      --radius-md: 12px;\n    }\n\n    * {\n      box-sizing: border-box;\n      margin: 0;\n      padding: 0;\n    }\n\n    body {\n      min-height: 100vh;\n      font-family: -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, sans-serif;\n      background: var(--bg-base);\n      color: var(--text-main);\n      overflow-x: hidden;\n      display: flex;\n      flex-direction: column;\n      justify-content: space-between;\n    }\n\n    /* Lớp nền ánh sáng mờ đổi màu theo ảnh bìa bài hát kiểu Ziji V10 */\n    .ambient-stage {\n      position: fixed;\n      inset: 0;\n      z-index: 0;\n      overflow: hidden;\n      pointer-events: none;\n    }\n\n    .ambient-art {\n      position: absolute;\n      inset: -15%;\n      background-size: cover;\n      background-position: center;\n      filter: blur(85px) saturate(1.65) brightness(0.32);\n      transform: scale(1.15);\n      opacity: 0;\n      transition: opacity 0.8s ease, background-image 0.8s ease;\n    }\n\n    .ambient-art.has-image {\n      opacity: 1;\n    }\n\n    .ambient-glow {\n      position: absolute;\n      inset: 0;\n      background:\n        radial-gradient(circle at 18% 22%, rgba(139, 92, 246, 0.25), transparent 46%),\n        radial-gradient(circle at 82% 78%, rgba(236, 72, 153, 0.18), transparent 48%),\n        linear-gradient(180deg, rgba(8, 9, 15, 0.45) 0%, rgba(8, 9, 15, 0.88) 100%);\n    }\n\n    .page-wrap {\n      position: relative;\n      z-index: 1;\n      width: min(1160px, 100%);\n      margin: 0 auto;\n      padding: 28px 20px 36px;\n      flex: 1;\n      display: flex;\n      flex-direction: column;\n      gap: 22px;\n    }\n\n    /* Thanh đầu trang */\n    .topbar {\n      display: flex;\n      align-items: center;\n      justify-content: space-between;\n      gap: 14px;\n      flex-wrap: wrap;\n      padding: 14px 20px;\n      background: var(--card-bg);\n      border: 1px solid var(--card-border);\n      border-radius: 999px;\n      backdrop-filter: blur(24px);\n      -webkit-backdrop-filter: blur(24px);\n    }\n\n    .brand {\n      display: flex;\n      align-items: center;\n      gap: 12px;\n      min-width: 0;\n    }\n\n    .bot-avatar {\n      width: 38px;\n      height: 38px;\n      border-radius: 50%;\n      background: linear-gradient(135deg, var(--accent), var(--accent-2));\n      display: grid;\n      place-items: center;\n      overflow: hidden;\n      flex-shrink: 0;\n      border: 1px solid rgba(255, 255, 255, 0.18);\n    }\n\n    .bot-avatar img {\n      width: 100%;\n      height: 100%;\n      object-fit: cover;\n    }\n\n    .brand-titles {\n      min-width: 0;\n    }\n\n    .brand-name {\n      font-weight: 700;\n      font-size: 0.98rem;\n      letter-spacing: 0.01em;\n      white-space: nowrap;\n      overflow: hidden;\n      text-overflow: ellipsis;\n    }\n\n    .brand-sub {\n      font-size: 0.78rem;\n      color: var(--text-sub);\n    }\n\n    .topbar-right {\n      display: flex;\n      align-items: center;\n      gap: 10px;\n      flex-wrap: wrap;\n    }\n\n    .pill {\n      display: inline-flex;\n      align-items: center;\n      gap: 7px;\n      font-size: 0.8rem;\n      font-weight: 600;\n      padding: 7px 13px;\n      border-radius: 999px;\n      background: var(--surface-soft);\n      border: 1px solid var(--card-border);\n      color: var(--text-sub);\n    }\n\n    .dot {\n      width: 8px;\n      height: 8px;\n      border-radius: 50%;\n      background: var(--text-muted);\n    }\n\n    .dot.live {\n      background: var(--green);\n      box-shadow: 0 0 10px var(--green);\n    }\n\n    .dot.warn {\n      background: var(--amber);\n      box-shadow: 0 0 10px var(--amber);\n    }\n\n    /* Bố cục 2 cột giống giao diện Web Now Playing Ziji V10 */\n    .main-grid {\n      display: grid;\n      grid-template-columns: minmax(0, 1.35fr) minmax(300px, 0.9fr);\n      gap: 22px;\n      align-items: stretch;\n    }\n\n    @media (max-width: 900px) {\n      .main-grid {\n        grid-template-columns: 1fr;\n      }\n      .topbar {\n        border-radius: 20px;\n      }\n    }\n\n    .glass-card {\n      background: var(--card-bg);\n      border: 1px solid var(--card-border);\n      border-radius: var(--radius-xl);\n      box-shadow: var(--shadow);\n      backdrop-filter: blur(28px);\n      -webkit-backdrop-filter: blur(28px);\n    }\n\n    /* Khung chính Now Playing */\n    .hero-card {\n      padding: 28px;\n      display: flex;\n      flex-direction: column;\n      justify-content: space-between;\n      gap: 24px;\n    }\n\n    .hero-top {\n      display: grid;\n      grid-template-columns: 240px minmax(0, 1fr);\n      gap: 26px;\n      align-items: center;\n    }\n\n    @media (max-width: 640px) {\n      .hero-card {\n        padding: 20px;\n      }\n      .hero-top {\n        grid-template-columns: 1fr;\n        justify-items: center;\n        text-align: center;\n      }\n    }\n\n    .artwork-box {\n      position: relative;\n      width: 240px;\n      height: 240px;\n      border-radius: 22px;\n      overflow: hidden;\n      background: linear-gradient(145deg, #17192b, #0e101c);\n      border: 1px solid rgba(255, 255, 255, 0.12);\n      box-shadow: 0 20px 48px rgba(0, 0, 0, 0.52);\n      display: grid;\n      place-items: center;\n      flex-shrink: 0;\n    }\n\n    @media (max-width: 640px) {\n      .artwork-box {\n        width: min(240px, 72vw);\n        height: min(240px, 72vw);\n      }\n    }\n\n    .artwork-img {\n      width: 100%;\n      height: 100%;\n      object-fit: cover;\n      display: none;\n    }\n\n    .artwork-img.visible {\n      display: block;\n    }\n\n    .vinyl-fallback {\n      width: 76%;\n      height: 76%;\n      transition: transform 0.5s ease;\n    }\n\n    .is-playing .vinyl-fallback {\n      animation: spinSlow 14s linear infinite;\n    }\n\n    @keyframes spinSlow {\n      from { transform: rotate(0deg); }\n      to { transform: rotate(360deg); }\n    }\n\n    /* Sóng nhạc động góc ảnh bìa */\n    .eq-badge {\n      position: absolute;\n      bottom: 12px;\n      right: 12px;\n      padding: 7px 11px;\n      border-radius: 999px;\n      background: rgba(10, 12, 20, 0.82);\n      border: 1px solid rgba(255, 255, 255, 0.14);\n      backdrop-filter: blur(10px);\n      display: inline-flex;\n      align-items: flex-end;\n      gap: 3px;\n      height: 28px;\n    }\n\n    .eq-bar {\n      width: 3px;\n      height: 5px;\n      border-radius: 3px;\n      background: linear-gradient(180deg, var(--accent-2), var(--accent));\n      transition: height 0.2s ease;\n    }\n\n    .is-playing .eq-bar:nth-child(1) { animation: eqBounce 0.75s ease-in-out infinite; }\n    .is-playing .eq-bar:nth-child(2) { animation: eqBounce 0.55s ease-in-out infinite 0.15s; }\n    .is-playing .eq-bar:nth-child(3) { animation: eqBounce 0.85s ease-in-out infinite 0.3s; }\n    .is-playing .eq-bar:nth-child(4) { animation: eqBounce 0.65s ease-in-out infinite 0.1s; }\n\n    @keyframes eqBounce {\n      0%, 100% { height: 4px; }\n      50% { height: 14px; }\n    }\n\n    .track-meta {\n      min-width: 0;\n      display: flex;\n      flex-direction: column;\n      gap: 12px;\n    }\n\n    .badges-row {\n      display: flex;\n      align-items: center;\n      gap: 8px;\n      flex-wrap: wrap;\n    }\n\n    @media (max-width: 640px) {\n      .badges-row {\n        justify-content: center;\n      }\n    }\n\n    .status-badge {\n      display: inline-flex;\n      align-items: center;\n      gap: 6px;\n      padding: 5px 12px;\n      border-radius: 999px;\n      font-size: 0.78rem;\n      font-weight: 700;\n      letter-spacing: 0.02em;\n      background: rgba(139, 92, 246, 0.18);\n      color: #d8b4fe;\n      border: 1px solid rgba(139, 92, 246, 0.38);\n    }\n\n    .status-badge.playing {\n      background: rgba(34, 197, 94, 0.15);\n      color: #86efac;\n      border-color: rgba(34, 197, 94, 0.38);\n    }\n\n    .status-badge.paused {\n      background: rgba(245, 158, 11, 0.16);\n      color: #fcd34d;\n      border-color: rgba(245, 158, 11, 0.4);\n    }\n\n    .status-badge.muted {\n      background: rgba(239, 68, 68, 0.18);\n      color: #fca5a5;\n      border-color: rgba(239, 68, 68, 0.45);\n    }\n\n    .source-badge {\n      padding: 5px 11px;\n      border-radius: 999px;\n      font-size: 0.76rem;\n      font-weight: 600;\n      background: var(--surface-soft);\n      color: var(--text-sub);\n      border: 1px solid var(--card-border);\n    }\n\n    .track-title {\n      font-size: clamp(1.35rem, 2.5vw, 1.95rem);\n      font-weight: 800;\n      line-height: 1.25;\n      letter-spacing: -0.015em;\n      display: -webkit-box;\n      -webkit-line-clamp: 2;\n      -webkit-box-orient: vertical;\n      overflow: hidden;\n      word-break: break-word;\n    }\n\n    .track-author {\n      font-size: 1.02rem;\n      font-weight: 500;\n      color: var(--text-sub);\n      white-space: nowrap;\n      overflow: hidden;\n      text-overflow: ellipsis;\n    }\n\n    .actions-row {\n      display: flex;\n      align-items: center;\n      gap: 10px;\n      flex-wrap: wrap;\n      margin-top: 4px;\n    }\n\n    @media (max-width: 640px) {\n      .actions-row {\n        justify-content: center;\n      }\n    }\n\n    .open-link-btn {\n      display: none;\n      align-items: center;\n      gap: 8px;\n      padding: 9px 16px;\n      border-radius: 12px;\n      font-size: 0.86rem;\n      font-weight: 600;\n      color: #ffffff;\n      text-decoration: none;\n      background: linear-gradient(135deg, var(--accent), var(--accent-2));\n      box-shadow: 0 10px 24px rgba(139, 92, 246, 0.32);\n      transition: transform 0.16s ease, filter 0.16s ease;\n    }\n\n    .open-link-btn.visible {\n      display: inline-flex;\n    }\n\n    .open-link-btn:hover {\n      transform: translateY(-1px);\n      filter: brightness(1.08);\n    }\n\n    /* Thanh thời gian đồng bộ thời gian thực */\n    .progress-section {\n      display: flex;\n      flex-direction: column;\n      gap: 9px;\n      padding: 16px 18px;\n      border-radius: var(--radius-lg);\n      background: var(--surface-soft);\n      border: 1px solid rgba(255, 255, 255, 0.06);\n    }\n\n    .progress-track {\n      width: 100%;\n      height: 8px;\n      border-radius: 999px;\n      background: rgba(255, 255, 255, 0.1);\n      overflow: hidden;\n      position: relative;\n    }\n\n    .progress-fill {\n      height: 100%;\n      width: 0%;\n      border-radius: 999px;\n      background: linear-gradient(90deg, var(--accent), var(--accent-2));\n      transition: width 0.25s linear;\n    }\n\n    .progress-times {\n      display: flex;\n      justify-content: space-between;\n      font-size: 0.82rem;\n      font-variant-numeric: tabular-nums;\n      color: var(--text-sub);\n      font-weight: 600;\n    }\n\n    /* Lưới thông số trạng thái của trình phát */\n    .chips-grid {\n      display: grid;\n      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));\n      gap: 10px;\n    }\n\n    .info-chip {\n      padding: 11px 13px;\n      border-radius: var(--radius-md);\n      background: var(--surface-soft);\n      border: 1px solid rgba(255, 255, 255, 0.06);\n      display: flex;\n      flex-direction: column;\n      gap: 3px;\n    }\n\n    .chip-label {\n      font-size: 0.72rem;\n      text-transform: uppercase;\n      letter-spacing: 0.05em;\n      color: var(--text-muted);\n      font-weight: 700;\n    }\n\n    .chip-value {\n      font-size: 0.88rem;\n      font-weight: 600;\n      color: var(--text-main);\n      white-space: nowrap;\n      overflow: hidden;\n      text-overflow: ellipsis;\n    }\n\n    .display-note {\n      font-size: 0.8rem;\n      color: var(--text-muted);\n      line-height: 1.45;\n      border-top: 1px solid rgba(255, 255, 255, 0.06);\n      padding-top: 14px;\n    }\n\n    /* Khung bên phải: Hàng đợi sắp phát & Lịch sử */\n    .side-card {\n      padding: 22px;\n      display: flex;\n      flex-direction: column;\n      gap: 16px;\n      max-height: 580px;\n    }\n\n    .tabs-bar {\n      display: flex;\n      gap: 8px;\n      background: rgba(255, 255, 255, 0.04);\n      padding: 5px;\n      border-radius: 12px;\n      border: 1px solid rgba(255, 255, 255, 0.06);\n    }\n\n    .tab-btn {\n      flex: 1;\n      border: none;\n      background: transparent;\n      color: var(--text-sub);\n      font-size: 0.84rem;\n      font-weight: 600;\n      padding: 8px 10px;\n      border-radius: 9px;\n      cursor: pointer;\n      transition: background 0.15s ease, color 0.15s ease;\n    }\n\n    .tab-btn.active {\n      background: rgba(139, 92, 246, 0.24);\n      color: var(--text-main);\n    }\n\n    .track-list {\n      flex: 1;\n      overflow-y: auto;\n      display: flex;\n      flex-direction: column;\n      gap: 9px;\n      padding-right: 4px;\n    }\n\n    .track-item {\n      display: flex;\n      align-items: center;\n      gap: 11px;\n      padding: 9px 11px;\n      border-radius: 12px;\n      background: var(--surface-soft);\n      border: 1px solid rgba(255, 255, 255, 0.05);\n      text-decoration: none;\n      color: inherit;\n      transition: background 0.15s ease;\n    }\n\n    a.track-item:hover {\n      background: var(--surface-hover);\n    }\n\n    .item-index {\n      width: 22px;\n      text-align: center;\n      font-size: 0.78rem;\n      font-weight: 700;\n      color: var(--text-muted);\n      flex-shrink: 0;\n    }\n\n    .item-thumb {\n      width: 40px;\n      height: 40px;\n      border-radius: 9px;\n      background: #171a2c;\n      object-fit: cover;\n      flex-shrink: 0;\n    }\n\n    .item-body {\n      min-width: 0;\n      flex: 1;\n    }\n\n    .item-title {\n      font-size: 0.86rem;\n      font-weight: 600;\n      white-space: nowrap;\n      overflow: hidden;\n      text-overflow: ellipsis;\n    }\n\n    .item-author {\n      font-size: 0.76rem;\n      color: var(--text-sub);\n      white-space: nowrap;\n      overflow: hidden;\n      text-overflow: ellipsis;\n    }\n\n    .item-dur {\n      font-size: 0.76rem;\n      font-variant-numeric: tabular-nums;\n      color: var(--text-muted);\n      font-weight: 600;\n      flex-shrink: 0;\n    }\n\n    .empty-list {\n      margin: auto 0;\n      text-align: center;\n      padding: 34px 16px;\n      color: var(--text-muted);\n      font-size: 0.86rem;\n      line-height: 1.55;\n    }\n\n    .footer {\n      position: relative;\n      z-index: 1;\n      text-align: center;\n      padding: 0 20px 22px;\n      font-size: 0.77rem;\n      color: var(--text-muted);\n    }\n  </style>\n</head>\n<body>\n  <div class=\"ambient-stage\">\n    <div id=\"ambientArt\" class=\"ambient-art\"></div>\n    <div class=\"ambient-glow\"></div>\n  </div>\n\n  <div class=\"page-wrap\">\n    <header class=\"topbar\">\n      <div class=\"brand\">\n        <div class=\"bot-avatar\" id=\"botAvatarBox\">\n          <svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#ffffff\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\">\n            <path d=\"M9 18V5l12-2v13\"></path>\n            <circle cx=\"6\" cy=\"18\" r=\"3\"></circle>\n            <circle cx=\"18\" cy=\"16\" r=\"3\"></circle>\n          </svg>\n        </div>\n        <div class=\"brand-titles\">\n          <div class=\"brand-name\" id=\"botName\">Discord Music • Now Playing</div>\n          <div class=\"brand-sub\" id=\"voiceRoomText\">Chưa kết nối kênh thoại</div>\n        </div>\n      </div>\n\n      <div class=\"topbar-right\">\n        <div class=\"pill\">\n          <span id=\"connDot\" class=\"dot\"></span>\n          <span id=\"connLabel\">Đang đồng bộ...</span>\n        </div>\n      </div>\n    </header>\n\n    <main class=\"main-grid\">\n      <section id=\"heroCard\" class=\"glass-card hero-card\">\n        <div class=\"hero-top\">\n          <div class=\"artwork-box\">\n            <img id=\"artworkImg\" class=\"artwork-img\" alt=\"Ảnh bìa bài hát\" />\n            <svg id=\"vinylSvg\" class=\"vinyl-fallback\" viewBox=\"0 0 200 200\" fill=\"none\">\n              <circle cx=\"100\" cy=\"100\" r=\"92\" fill=\"url(#vinylGrad)\" stroke=\"rgba(255,255,255,0.12)\" stroke-width=\"2\"/>\n              <circle cx=\"100\" cy=\"100\" r=\"72\" stroke=\"rgba(255,255,255,0.06)\" stroke-width=\"1.5\"/>\n              <circle cx=\"100\" cy=\"100\" r=\"54\" stroke=\"rgba(255,255,255,0.06)\" stroke-width=\"1.5\"/>\n              <circle cx=\"100\" cy=\"100\" r=\"30\" fill=\"url(#centerGrad)\"/>\n              <circle cx=\"100\" cy=\"100\" r=\"8\" fill=\"#08090f\"/>\n              <defs>\n                <radialGradient id=\"vinylGrad\" cx=\"0\" cy=\"0\" r=\"1\" gradientUnits=\"userSpaceOnUse\" gradientTransform=\"translate(100 100) rotate(90) scale(92)\">\n                  <stop stop-color=\"#23263d\"/>\n                  <stop offset=\"1\" stop-color=\"#0d0f1a\"/>\n                </radialGradient>\n                <linearGradient id=\"centerGrad\" x1=\"70\" y1=\"70\" x2=\"130\" y2=\"130\" gradientUnits=\"userSpaceOnUse\">\n                  <stop stop-color=\"#8b5cf6\"/>\n                  <stop offset=\"1\" stop-color=\"#ec4899\"/>\n                </linearGradient>\n              </defs>\n            </svg>\n            <div class=\"eq-badge\" aria-hidden=\"true\">\n              <span class=\"eq-bar\"></span>\n              <span class=\"eq-bar\"></span>\n              <span class=\"eq-bar\"></span>\n              <span class=\"eq-bar\"></span>\n            </div>\n          </div>\n\n          <div class=\"track-meta\">\n            <div class=\"badges-row\">\n              <span id=\"statusBadge\" class=\"status-badge\">💤 Chưa phát nhạc</span>\n              <span id=\"sourceBadge\" class=\"source-badge\">Nguồn: —</span>\n            </div>\n\n            <h1 id=\"trackTitle\" class=\"track-title\">Chưa có bài hát nào đang phát</h1>\n            <p id=\"trackAuthor\" class=\"track-author\">Gõ lệnh /play trong kênh thoại Discord để bắt đầu</p>\n\n            <div class=\"actions-row\">\n              <a id=\"openTrackLink\" class=\"open-link-btn\" href=\"#\" target=\"_blank\" rel=\"noopener noreferrer\">\n                <span>Mở bài hát gốc</span>\n                <svg width=\"15\" height=\"15\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2.3\" stroke-linecap=\"round\" stroke-linejoin=\"round\">\n                  <path d=\"M7 17L17 7\"></path>\n                  <path d=\"M7 7h10v10\"></path>\n                </svg>\n              </a>\n            </div>\n          </div>\n        </div>\n\n        <div class=\"progress-section\">\n          <div class=\"progress-track\">\n            <div id=\"progressFill\" class=\"progress-fill\"></div>\n          </div>\n          <div class=\"progress-times\">\n            <span id=\"currentTime\">0:00</span>\n            <span id=\"totalTime\">0:00</span>\n          </div>\n        </div>\n\n        <div class=\"chips-grid\">\n          <div class=\"info-chip\">\n            <span class=\"chip-label\">Chất âm</span>\n            <span id=\"chipSound\" class=\"chip-value\">Rõ nét HD</span>\n          </div>\n          <div class=\"info-chip\">\n            <span class=\"chip-label\">Âm lượng</span>\n            <span id=\"chipVolume\" class=\"chip-value\">100%</span>\n          </div>\n          <div class=\"info-chip\">\n            <span class=\"chip-label\">Chế độ lặp</span>\n            <span id=\"chipLoop\" class=\"chip-value\">Tắt lặp</span>\n          </div>\n          <div class=\"info-chip\">\n            <span class=\"chip-label\">Tự phát & 24/7</span>\n            <span id=\"chipModes\" class=\"chip-value\">Tắt • 24/7 Tắt</span>\n          </div>\n        </div>\n\n        <p class=\"display-note\">\n          🎧 Website chỉ hiển thị trạng thái trực tiếp — âm thanh vẫn do bot phát trong kênh thoại Discord. Dùng lệnh <strong>/play</strong>, <strong>/skip</strong>, <strong>/pause</strong> hoặc khung điều khiển trong Discord để đổi nhạc.\n        </p>\n      </section>\n\n      <aside class=\"glass-card side-card\">\n        <div class=\"tabs-bar\">\n          <button id=\"tabQueueBtn\" class=\"tab-btn active\" type=\"button\">Sắp phát (0)</button>\n          <button id=\"tabHistoryBtn\" class=\"tab-btn\" type=\"button\">Vừa phát (0)</button>\n        </div>\n        <div id=\"trackList\" class=\"track-list\">\n          <div class=\"empty-list\">Hàng đợi hiện đang trống.<br/>Khi thêm bài bằng <strong>/play</strong>, danh sách sẽ tự hiện tại đây.</div>\n        </div>\n      </aside>\n    </main>\n  </div>\n\n  <footer class=\"footer\">\n    Đồng bộ tự động với trình phát nhạc Discord • Không cần tải lại trang\n  </footer>\n\n  <script>\n    (function () {\n      // Nếu triển khai trang HTML tĩnh riêng (GitHub Pages / Cloudflare Pages), có thể truyền ?api=https://domain-cua-ban\n      // hoặc điền trực tiếp URL vào hằng số DEFAULT_API_BASE bên dưới.\n      const DEFAULT_API_BASE = \"\";\n      const params = new URLSearchParams(window.location.search);\n      const rawBase = (params.get(\"api\") || window.NOW_PLAYING_API_BASE || DEFAULT_API_BASE || \"\").trim().replace(/\\/+$/, \"\");\n\n      function safeHttpUrl(url) {\n        if (typeof url !== \"string\" || !url.trim()) return null;\n        try {\n          const u = new URL(url.trim());\n          return (u.protocol === \"https:\" || u.protocol === \"http:\") ? u.toString() : null;\n        } catch {\n          return null;\n        }\n      }\n\n      function formatTime(ms) {\n        const n = Number(ms);\n        if (!Number.isFinite(n) || n <= 0) return \"0:00\";\n        const totalSec = Math.floor(n / 1000);\n        const h = Math.floor(totalSec / 3600);\n        const m = Math.floor((totalSec % 3600) / 60);\n        const s = String(totalSec % 60).padStart(2, \"0\");\n        return h > 0 ? h + \":\" + String(m).padStart(2, \"0\") + \":\" + s : m + \":\" + s;\n      }\n\n      const els = {\n        ambientArt: document.getElementById(\"ambientArt\"),\n        botAvatarBox: document.getElementById(\"botAvatarBox\"),\n        botName: document.getElementById(\"botName\"),\n        voiceRoomText: document.getElementById(\"voiceRoomText\"),\n        connDot: document.getElementById(\"connDot\"),\n        connLabel: document.getElementById(\"connLabel\"),\n        heroCard: document.getElementById(\"heroCard\"),\n        artworkImg: document.getElementById(\"artworkImg\"),\n        vinylSvg: document.getElementById(\"vinylSvg\"),\n        statusBadge: document.getElementById(\"statusBadge\"),\n        sourceBadge: document.getElementById(\"sourceBadge\"),\n        trackTitle: document.getElementById(\"trackTitle\"),\n        trackAuthor: document.getElementById(\"trackAuthor\"),\n        openTrackLink: document.getElementById(\"openTrackLink\"),\n        progressFill: document.getElementById(\"progressFill\"),\n        currentTime: document.getElementById(\"currentTime\"),\n        totalTime: document.getElementById(\"totalTime\"),\n        chipSound: document.getElementById(\"chipSound\"),\n        chipVolume: document.getElementById(\"chipVolume\"),\n        chipLoop: document.getElementById(\"chipLoop\"),\n        chipModes: document.getElementById(\"chipModes\"),\n        tabQueueBtn: document.getElementById(\"tabQueueBtn\"),\n        tabHistoryBtn: document.getElementById(\"tabHistoryBtn\"),\n        trackList: document.getElementById(\"trackList\"),\n      };\n\n      let latestState = null;\n      let receivedClientMs = 0;\n      let activeTab = \"queue\";\n\n      function setConnectionBadge(mode, text) {\n        els.connDot.className = \"dot\" + (mode === \"live\" ? \" live\" : mode === \"warn\" ? \" warn\" : \"\");\n        els.connLabel.textContent = text;\n      }\n\n      function updateArtwork(url) {\n        const clean = safeHttpUrl(url);\n        if (clean) {\n          els.artworkImg.src = clean;\n          els.artworkImg.classList.add(\"visible\");\n          els.vinylSvg.style.display = \"none\";\n          els.ambientArt.style.backgroundImage = 'url(\"' + clean.replace(/\"/g, \"%22\") + '\")';\n          els.ambientArt.classList.add(\"has-image\");\n        } else {\n          els.artworkImg.removeAttribute(\"src\");\n          els.artworkImg.classList.remove(\"visible\");\n          els.vinylSvg.style.display = \"block\";\n          els.ambientArt.style.backgroundImage = \"\";\n          els.ambientArt.classList.remove(\"has-image\");\n        }\n      }\n\n      els.artworkImg.addEventListener(\"error\", function () {\n        updateArtwork(null);\n      });\n\n      function renderSideList() {\n        const upcoming = Array.isArray(latestState?.upcoming) ? latestState.upcoming : [];\n        const history = Array.isArray(latestState?.history) ? latestState.history : [];\n        els.tabQueueBtn.textContent = \"Sắp phát (\" + upcoming.length + \")\";\n        els.tabHistoryBtn.textContent = \"Vừa phát (\" + history.length + \")\";\n        els.tabQueueBtn.classList.toggle(\"active\", activeTab === \"queue\");\n        els.tabHistoryBtn.classList.toggle(\"active\", activeTab === \"history\");\n\n        const items = activeTab === \"queue\" ? upcoming : history;\n        els.trackList.replaceChildren();\n\n        if (!items.length) {\n          const empty = document.createElement(\"div\");\n          empty.className = \"empty-list\";\n          empty.textContent = activeTab === \"queue\"\n            ? \"Chưa có bài hát nào trong hàng đợi chờ.\"\n            : \"Chưa có lịch sử bài hát trong phiên này.\";\n          els.trackList.appendChild(empty);\n          return;\n        }\n\n        items.forEach(function (item, idx) {\n          const validHref = safeHttpUrl(item.url);\n          const row = document.createElement(validHref ? \"a\" : \"div\");\n          row.className = \"track-item\";\n          if (validHref) {\n            row.href = validHref;\n            row.target = \"_blank\";\n            row.rel = \"noopener noreferrer\";\n          }\n\n          const num = document.createElement(\"span\");\n          num.className = \"item-index\";\n          num.textContent = String(item.position || idx + 1);\n          row.appendChild(num);\n\n          const thumbUrl = safeHttpUrl(item.artworkUrl);\n          if (thumbUrl) {\n            const img = document.createElement(\"img\");\n            img.className = \"item-thumb\";\n            img.src = thumbUrl;\n            img.alt = \"\";\n            img.loading = \"lazy\";\n            row.appendChild(img);\n          }\n\n          const body = document.createElement(\"div\");\n          body.className = \"item-body\";\n          const t = document.createElement(\"div\");\n          t.className = \"item-title\";\n          t.textContent = item.title || \"Không rõ tên bài\";\n          const a = document.createElement(\"div\");\n          a.className = \"item-author\";\n          a.textContent = (item.author || \"Nghệ sĩ\") + (item.sourceLabel ? \" • \" + item.sourceLabel : \"\");\n          body.appendChild(t);\n          body.appendChild(a);\n          row.appendChild(body);\n\n          const dur = document.createElement(\"span\");\n          dur.className = \"item-dur\";\n          dur.textContent = formatTime(item.durationMs);\n          row.appendChild(dur);\n\n          els.trackList.appendChild(row);\n        });\n      }\n\n      els.tabQueueBtn.addEventListener(\"click\", function () {\n        activeTab = \"queue\";\n        renderSideList();\n      });\n      els.tabHistoryBtn.addEventListener(\"click\", function () {\n        activeTab = \"history\";\n        renderSideList();\n      });\n\n      function renderProgressTick() {\n        const track = latestState?.track;\n        if (!track) {\n          els.progressFill.style.width = \"0%\";\n          els.currentTime.textContent = \"0:00\";\n          els.totalTime.textContent = \"0:00\";\n          return;\n        }\n        const total = Math.max(0, Number(track.durationMs) || 0);\n        let pos = Math.max(0, Number(track.positionMs) || 0);\n        if (latestState.status === \"playing\" && receivedClientMs > 0) {\n          pos += Math.max(0, Date.now() - receivedClientMs);\n        }\n        if (total > 0 && pos > total) pos = total;\n        const pct = total > 0 ? Math.min(100, (pos / total) * 100) : 0;\n        els.progressFill.style.width = pct.toFixed(2) + \"%\";\n        els.currentTime.textContent = formatTime(pos);\n        els.totalTime.textContent = formatTime(total);\n      }\n\n      function applyState(state) {\n        if (!state || typeof state !== \"object\") return;\n        latestState = state;\n        receivedClientMs = Date.now();\n\n        if (state.bot?.name) {\n          els.botName.textContent = state.bot.name + \" • Now Playing\";\n        }\n        const botAva = safeHttpUrl(state.bot?.avatarUrl);\n        if (botAva && !els.botAvatarBox.querySelector(\"img\")) {\n          const img = document.createElement(\"img\");\n          img.src = botAva;\n          img.alt = \"\";\n          els.botAvatarBox.replaceChildren(img);\n        }\n\n        els.voiceRoomText.textContent = state.voiceChannelName\n          ? \"🎙️ Đang kết nối: \" + state.voiceChannelName\n          : (state.settings?.stay247 ? \"🌙 Đang giữ chế độ 24/7\" : \"Chưa kết nối kênh thoại\");\n\n        const isPlaying = state.status === \"playing\";\n        els.heroCard.classList.toggle(\"is-playing\", isPlaying);\n\n        els.statusBadge.className = \"status-badge\" + (\n          state.status === \"playing\" ? \" playing\"\n          : state.status === \"paused\" ? \" paused\"\n          : state.status === \"muted\" ? \" muted\"\n          : \"\"\n        );\n        els.statusBadge.textContent = state.statusLabel || \"Chưa phát nhạc\";\n\n        const track = state.track;\n        if (track) {\n          els.trackTitle.textContent = track.title || \"Không rõ tiêu đề\";\n          els.trackAuthor.textContent = track.author || \"Nghệ sĩ\";\n          els.sourceBadge.textContent = \"Nguồn: \" + (track.sourceLabel || \"SoundCloud\");\n          updateArtwork(track.artworkUrl);\n\n          const validUrl = safeHttpUrl(track.url);\n          if (validUrl) {\n            els.openTrackLink.href = validUrl;\n            els.openTrackLink.classList.add(\"visible\");\n          } else {\n            els.openTrackLink.removeAttribute(\"href\");\n            els.openTrackLink.classList.remove(\"visible\");\n          }\n          document.title = (isPlaying ? \"▶ \" : \"⏸ \") + (track.title || \"Now Playing\") + \" • Discord Music\";\n        } else {\n          els.trackTitle.textContent = state.status === \"idle_247\"\n            ? \"Bot đang treo kênh thoại 24/7\"\n            : \"Chưa có bài hát nào đang phát\";\n          els.trackAuthor.textContent = state.reason || \"Gõ lệnh /play trong kênh thoại Discord để bắt đầu phát nhạc\";\n          els.sourceBadge.textContent = \"Nguồn: —\";\n          updateArtwork(null);\n          els.openTrackLink.removeAttribute(\"href\");\n          els.openTrackLink.classList.remove(\"visible\");\n          document.title = \"Đang Phát Trong Discord • Now Playing\";\n        }\n\n        const st = state.settings || {};\n        els.chipSound.textContent = st.soundLabel || \"Rõ nét HD\";\n        els.chipVolume.textContent = (st.volume ?? 100) + \"%\";\n        els.chipLoop.textContent = st.loopLabel || \"Tắt lặp\";\n        els.chipModes.textContent = \"Auto: \" + (st.autoPlay ? \"Bật\" : \"Tắt\") + \" • 24/7: \" + (st.stay247 ? \"Bật\" : \"Tắt\");\n\n        renderProgressTick();\n        renderSideList();\n      }\n\n      setInterval(renderProgressTick, 250);\n\n      // Tự động kết nối thời gian thực bằng SSE (/api/now-playing/events) và tự chuyển sang hỏi định kỳ (/api/now-playing) nếu qua Worker/tĩnh.\n      const apiEndpoint = rawBase + \"/api/now-playing\";\n      const sseEndpoint = rawBase + \"/api/now-playing/events\";\n      let pollTimer = null;\n\n      async function fetchSnapshotOnce() {\n        try {\n          const res = await fetch(apiEndpoint, { cache: \"no-store\" });\n          if (!res.ok) throw new Error(\"HTTP \" + res.status);\n          const data = await res.json();\n          applyState(data);\n          setConnectionBadge(\"live\", \"Trực tuyến\");\n          return true;\n        } catch {\n          setConnectionBadge(\"warn\", \"Đang chờ tín hiệu từ bot...\");\n          return false;\n        }\n      }\n\n      function startPollingFallback() {\n        if (pollTimer) return;\n        fetchSnapshotOnce();\n        pollTimer = setInterval(fetchSnapshotOnce, 4000);\n      }\n\n      if (window.location.protocol === \"http:\" || window.location.protocol === \"https:\" || rawBase) {\n        if (typeof window.EventSource === \"function\" && !params.has(\"poll\")) {\n          const es = new EventSource(sseEndpoint);\n          let openedOnce = false;\n          es.addEventListener(\"state\", function (ev) {\n            openedOnce = true;\n            setConnectionBadge(\"live\", \"Trực tuyến • Thời gian thực\");\n            try { applyState(JSON.parse(ev.data)); } catch {}\n          });\n          es.onerror = function () {\n            if (!openedOnce) {\n              es.close();\n              startPollingFallback();\n            } else {\n              setConnectionBadge(\"warn\", \"Đang tự kết nối lại...\");\n            }\n          };\n        } else {\n          startPollingFallback();\n        }\n      } else {\n        setConnectionBadge(\"warn\", \"Bản xem trước giao diện\");\n      }\n    })();\n  </script>\n</body>\n</html>\n";
-const CACHE_KEY_URL = 'https://now-playing-internal.local/state';
 let memoryState = null;
+let cachedHtml = null;
+let cachedHtmlAt = 0;
 
-const CORS_HEADERS = {
- 'Access-Control-Allow-Origin': '*',
- 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
- 'Access-Control-Allow-Headers': 'Content-Type, Authorization',
- 'Cache-Control': 'no-store, no-cache, must-revalidate',
+const CORS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+  'Cache-Control': 'no-store, no-cache, must-revalidate',
 };
 
-function timingSafeEqualStr(a, b) {
- if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false;
- let diff = 0;
- for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
- return diff === 0;
+function safeEqual(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) {
+    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return diff === 0;
 }
 
-function computeLivePosition(state) {
- if (!state || typeof state !== 'object') {
-  return {
-   bot: { ready: false, name: 'Discord Music Bot', avatarUrl: null },
-   status: 'idle',
-   statusLabel: '💤 Chưa phát nhạc',
-   reason: 'Đang chờ tín hiệu đầu tiên từ bot Discord...',
-   serverTimeMs: Date.now(),
-   voiceChannelName: null,
-   settings: { volume: 100, loopMode: 'off', loopLabel: 'Tắt lặp', autoPlay: false, stay247: false, soundLabel: 'Rõ nét HD' },
-   track: null,
-   upcoming: [],
-   history: [],
-  };
- }
- if (state.status === 'playing' && state.track && state.serverTimeMs) {
-  const elapsed = Math.max(0, Date.now() - Number(state.serverTimeMs));
-  const total = Math.max(0, Number(state.track.durationMs) || 0);
-  let nextPos = Math.max(0, (Number(state.track.positionMs) || 0) + elapsed);
-  if (total > 0 && nextPos > total) nextPos = total;
-  return {
-   ...state,
-   serverTimeMs: Date.now(),
-   track: { ...state.track, positionMs: nextPos },
-  };
- }
- return { ...state, serverTimeMs: Date.now() };
+function withLivePosition(state) {
+  if (!state || typeof state !== 'object') {
+    return {
+      bot: { ready: false, name: 'Discord Music Bot', avatarUrl: null },
+      status: 'idle',
+      statusLabel: 'Chua phat nhac',
+      reason: 'Dang cho tin hieu dau tien tu bot Discord...',
+      serverTimeMs: Date.now(),
+      voiceChannelName: null,
+      settings: {
+        volume: 100,
+        loopMode: 'off',
+        loopLabel: 'Tat lap',
+        autoPlay: false,
+        stay247: false,
+        soundLabel: 'Ro net HD',
+      },
+      track: null,
+      upcoming: [],
+      history: [],
+    };
+  }
+  if (state.status === 'playing' && state.track && state.serverTimeMs) {
+    const elapsed = Math.max(0, Date.now() - Number(state.serverTimeMs));
+    const total = Math.max(0, Number(state.track.durationMs) || 0);
+    let pos = Math.max(0, (Number(state.track.positionMs) || 0) + elapsed);
+    if (total > 0 && pos > total) pos = total;
+    return {
+      ...state,
+      serverTimeMs: Date.now(),
+      track: { ...state.track, positionMs: pos },
+    };
+  }
+  return { ...state, serverTimeMs: Date.now() };
+}
+
+async function loadHtml() {
+  const now = Date.now();
+  if (cachedHtml && now - cachedHtmlAt < 300000) return cachedHtml;
+  try {
+    const res = await fetch(UI_URL, { cf: { cacheTtl: 300 } });
+    if (res.ok) {
+      cachedHtml = await res.text();
+      cachedHtmlAt = now;
+      return cachedHtml;
+    }
+  } catch {}
+  return cachedHtml || '<!doctype html><meta charset="utf-8"><title>Now Playing</title>';
 }
 
 export default {
- async fetch(request, env, ctx) {
-  const url = new URL(request.url);
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
 
-  if (request.method === 'OPTIONS') {
-   return new Response(null, { status: 204, headers: CORS_HEADERS });
-  }
-
-  if (url.pathname === '/api/now-playing' && request.method === 'POST') {
-   const expected = String(env?.NOW_PLAYING_PUSH_SECRET ?? '').trim();
-   if (!expected) {
-    return Response.json({ error: 'Chưa cấu hình NOW_PLAYING_PUSH_SECRET trên Worker.' }, { status: 503, headers: CORS_HEADERS });
-   }
-   const auth = request.headers.get('Authorization') ?? '';
-   const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
-   if (!timingSafeEqualStr(token, expected)) {
-    return Response.json({ error: 'Sai khóa xác thực.' }, { status: 401, headers: CORS_HEADERS });
-   }
-   const body = await request.json().catch(() => null);
-   if (!body || typeof body !== 'object') {
-    return Response.json({ error: 'Dữ liệu JSON không hợp lệ.' }, { status: 400, headers: CORS_HEADERS });
-   }
-   memoryState = body;
-   const serialized = JSON.stringify(body);
-   if (env?.NOW_PLAYING_KV?.put) {
-    ctx.waitUntil(env.NOW_PLAYING_KV.put('latest', serialized, { expirationTtl: 86400 }));
-   }
-   if (typeof caches !== 'undefined' && caches.default) {
-    ctx.waitUntil(
-     caches.default.put(
-      CACHE_KEY_URL,
-      new Response(serialized, { headers: { 'Content-Type': 'application/json', 'Cache-Control': 'max-age=86400' } }),
-     ),
-    );
-   }
-   return Response.json({ ok: true }, { status: 200, headers: CORS_HEADERS });
-  }
-
-  if (url.pathname === '/api/now-playing' && request.method === 'GET') {
-   let state = memoryState;
-   if (!state && env?.NOW_PLAYING_KV?.get) {
-    state = await env.NOW_PLAYING_KV.get('latest', 'json').catch(() => null);
-    if (state) memoryState = state;
-   }
-   if (!state && typeof caches !== 'undefined' && caches.default) {
-    const cached = await caches.default.match(CACHE_KEY_URL).catch(() => null);
-    if (cached) {
-     state = await cached.json().catch(() => null);
-     if (state) memoryState = state;
+    if (request.method === 'OPTIONS') {
+      return new Response(null, { status: 204, headers: CORS });
     }
-   }
-   return Response.json(computeLivePosition(state), { status: 200, headers: CORS_HEADERS });
-  }
 
-  // Với Cloudflare Worker miễn phí, yêu cầu SSE trả 204/404 gọn để trình duyệt tự chuyển sang hỏi JSON định kỳ mỗi 4 giây.
-  if (url.pathname === '/api/now-playing/events') {
-   return new Response('Polling mode', { status: 404, headers: CORS_HEADERS });
-  }
+    if (url.pathname === '/api/now-playing' && request.method === 'POST') {
+      const secret = String(env?.NOW_PLAYING_PUSH_SECRET || '').trim();
+      if (!secret) {
+        return Response.json(
+          { error: 'Missing NOW_PLAYING_PUSH_SECRET' },
+          { status: 503, headers: CORS },
+        );
+      }
+      const auth = request.headers.get('Authorization') || '';
+      const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
+      if (!safeEqual(token, secret)) {
+        return Response.json({ error: 'Unauthorized' }, { status: 401, headers: CORS });
+      }
+      const body = await request.json().catch(() => null);
+      if (!body || typeof body !== 'object') {
+        return Response.json({ error: 'Invalid JSON' }, { status: 400, headers: CORS });
+      }
+      memoryState = body;
+      const raw = JSON.stringify(body);
+      if (env?.NOW_PLAYING_KV?.put) {
+        ctx.waitUntil(env.NOW_PLAYING_KV.put('latest', raw, { expirationTtl: 86400 }));
+      }
+      if (typeof caches !== 'undefined' && caches.default) {
+        const resp = new Response(raw, {
+          headers: { 'Content-Type': 'application/json', 'Cache-Control': 'max-age=86400' },
+        });
+        ctx.waitUntil(caches.default.put(CACHE_URL, resp));
+      }
+      return Response.json({ ok: true }, { status: 200, headers: CORS });
+    }
 
-  if (url.pathname === '/' || url.pathname === '/index.html') {
-   return new Response(INDEX_HTML, {
-    status: 200,
-    headers: {
-     'Content-Type': 'text/html; charset=utf-8',
-     'Cache-Control': 'no-cache',
-    },
-   });
-  }
+    if (url.pathname === '/api/now-playing' && request.method === 'GET') {
+      let state = memoryState;
+      if (!state && env?.NOW_PLAYING_KV?.get) {
+        state = await env.NOW_PLAYING_KV.get('latest', 'json').catch(() => null);
+        if (state) memoryState = state;
+      }
+      if (!state && typeof caches !== 'undefined' && caches.default) {
+        const hit = await caches.default.match(CACHE_URL).catch(() => null);
+        if (hit) {
+          state = await hit.json().catch(() => null);
+          if (state) memoryState = state;
+        }
+      }
+      return Response.json(withLivePosition(state), { status: 200, headers: CORS });
+    }
 
-  return new Response('Not Found', { status: 404 });
- },
+    if (url.pathname === '/api/now-playing/events') {
+      return new Response('Polling', { status: 404, headers: CORS });
+    }
+
+    if (url.pathname === '/' || url.pathname === '/index.html') {
+      const html = await loadHtml();
+      return new Response(html, {
+        status: 200,
+        headers: {
+          'Content-Type': 'text/html; charset=utf-8',
+          'Cache-Control': 'no-cache',
+        },
+      });
+    }
+
+    return new Response('Not Found', { status: 404 });
+  },
 };

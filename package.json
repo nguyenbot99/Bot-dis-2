@@ -5,7 +5,6 @@
   "scripts": {
     "start": "node index.js",
     "register": "node scripts/register.js",
-    "build:worker": "node scripts/build-worker.js",
     "test": "node --test",
     "check": "node --check index.js"
   },

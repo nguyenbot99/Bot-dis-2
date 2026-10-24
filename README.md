@@ -76,7 +76,24 @@ botkeep.cloud / Pterodactyl:
 4. Khi cập nhật code mới trên GitHub, mở tab **GitHub** trên panel Botkeep để pull phiên bản mới về rồi Restart (nút Redeploy không tự kéo commit mới từ GitHub).
 5. Bật restart-on-crash của panel, tránh chạy thêm PM2 trong container RAM thấp.
 
-Không tự ping hoặc mở nhiều web worker. `GET /healthz` trả 200 khi Discord client ready, 503 khi chưa ready; `/` chỉ báo dịch vụ web đang sống. Endpoint bind `0.0.0.0`. Health endpoint không chứng minh audio hoạt động và **không vượt được sleep/time quota/termination** do nhà cung cấp áp dụng. Chỉ dùng uptime monitor bên ngoài nếu điều khoản host cho phép.
+Không tự ping hoặc mở nhiều web worker. `GET /healthz` trả 200 khi Discord client ready, 503 khi chưa ready; `GET /` phục vụ giao diện Website **Now Playing** kiểu Ziji V10, `GET /api/now-playing` trả JSON và `GET /api/now-playing/events` phát luồng SSE thời gian thực. Endpoint bind `0.0.0.0`. Health endpoint không chứng minh audio hoạt động và **không vượt được sleep/time quota/termination** do nhà cung cấp áp dụng. Chỉ dùng uptime monitor bên ngoài nếu điều khoản host cho phép.
+
+### Website "Now Playing" (Hiển thị bài đang phát theo thời gian thực)
+
+Website chỉ hiển thị thông tin trực tiếp (tên bài, nghệ sĩ, ảnh bìa, nguồn nhạc, trạng thái phát/tạm dừng/tắt mic, thanh thời gian, nút mở bài gốc và hàng đợi) — âm thanh vẫn do bot phát trong kênh thoại Discord. Dữ liệu gắn trực tiếp vào sự kiện của `PlayerManager` (`trackStart`, `playerPause`, `playerResume`, `seek`, `queueAdd`, `queueRemove`, `queueEnd`, `playerStop`, `playerDestroy`), hoàn toàn độc lập với lệnh slash người dùng gọi.
+
+1. **Cách 1 — Mở trực tiếp từ cổng web của bot (VPS / Render / Railway / Cloudflare Tunnel):**
+   - Mở thẳng `http://<ip-hoac-domain>:<PORT>/` trên trình duyệt. Trình duyệt tự kết nối SSE (`/api/now-playing/events`) và cập nhật tức thì mà không cần tải lại trang.
+2. **Cách 2 — Khi bot chạy trên `botkeep.cloud` Free (không có domain web công khai):**
+   - Đăng nhập `dash.cloudflare.com` (gói Free, 100.000 lượt/ngày, **không ngủ đông**) -> **Workers & Pages -> Create Worker** -> dán nội dung file `cloudflare-worker/worker.js` -> bấm **Deploy**.
+   - Trong phần **Settings -> Variables and Secrets** của Worker, thêm Secret `NOW_PLAYING_PUSH_SECRET` (một chuỗi mật khẩu tự đặt). *(Tùy chọn: gắn thêm KV Namespace tên `NOW_PLAYING_KV` để đồng bộ toàn cầu bền vững hơn).*
+   - Trên panel `botkeep.cloud` của bot, thêm 2 biến môi trường:
+     - `NOW_PLAYING_PUSH_URL=https://<ten-worker>.workers.dev/api/now-playing`
+     - `NOW_PLAYING_PUSH_SECRET=<mật-khẩu-đã-đặt>`
+   - Mở `https://<ten-worker>.workers.dev/` là có ngay Website Now Playing trực tuyến (hoặc đưa `web/index.html` lên GitHub Pages kèm tham số `?api=https://<ten-worker>.workers.dev`).
+3. **Lưu ý giới hạn của Hosting miễn phí:**
+   - Các dịch vụ web miễn phí dạng container (như Render Free, Glitch...) thường **cho tiến trình ngủ (spin-down) sau ~15 phút không có truy cập HTTP**, làm ngắt kết nối Discord Voice; hoặc giới hạn tổng số giờ chạy mỗi tháng.
+   - `botkeep.cloud` Free là host chuyên treo bot nhưng có thể bị giới hạn định kỳ/bảo trì cụm máy chủ hoặc không mở cổng HTTP ra internet (khắc phục bằng Cách 2 qua Cloudflare Worker ở trên).
 
 Docker (tùy chọn):
 ```sh
@@ -109,13 +126,20 @@ Không commit `.env`, token hoặc private SSH key. Dự án không chứa deplo
 ## Cấu trúc
 
 ```
-index.js                 Discord client, player, khung điều khiển tương tác, HTTP, graceful shutdown
-src/commands.js          Slash command schema & khung Embed /help
+index.js                 Discord client, player, khung điều khiển tương tác, HTTP + SSE, graceful shutdown
+src/commands.js          Slash command schema & khung Embed /help (23 lệnh '/')
 src/playerGui.js         Khung Music Player tương tác kiểu Ziji V10 (Components V2, nút bấm, menu, modal, Embeds)
-src/access.js            Kiểm tra quyền điều khiển theo người yêu cầu bài đang phát
-src/policy.js            Kiểm tra đầu vào và biến môi trường
+src/nowPlayingHub.js     Trung tâm Website "Now Playing" (API JSON + SSE thời gian thực + đẩy sang Worker ngoài)
+src/voiceGuard.js        Phát hiện bị tắt mic (Server Mute / Stage) & bị kick khỏi phòng thoại
+src/audioEnhancer.js     Tối ưu âm thanh HD 24-bit/48kHz + Opus Music
+src/lyrics.js            Tìm lời bài hát LRCLIB / Lyrics.ovh
+src/access.js            Kiểm tra quyền điều khiển theo người yêu cầu bài + chủ bot
+src/policy.js            Kiểm tra đầu vào, giải mã link YouTube / Spotify / SoundCloud
+web/index.html           Giao diện Website "Now Playing" độc lập (chạy trực tiếp hoặc trên GitHub Pages)
+cloudflare-worker/       Worker miễn phí nhận trạng thái đẩy từ botkeep.cloud & hiển thị Website
 scripts/register.js      Đăng ký lệnh thủ công
-test/*.test.js           Bộ unit tests kiểm tra quyền, đầu vào và giao diện
+scripts/build-worker.js  Đóng gói web/index.html vào cloudflare-worker/worker.js
+test/*.test.js           Bộ unit & integration tests
 .env.example             Cấu hình mẫu không chứa bí mật
 Dockerfile               Image Node 22
 package-lock.json        Dependency lock

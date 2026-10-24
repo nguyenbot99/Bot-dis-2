@@ -7,6 +7,7 @@ import { parseSeekTime, pickBestMatchingTrack, resolveConfig, resolveMusicReques
 import { getNextSoundPreset, installAudioEnhancer, setAudioEnhancement, SOUND_PRESETS } from './src/audioEnhancer.js';
 import { assertMusicAccess, isBotOwner, resolveHumanRequester } from './src/access.js';
 import { fetchTrackLyrics, sanitizeLyricsTitle } from './src/lyrics.js';
+import { createNowPlayingHub } from './src/nowPlayingHub.js';
 import { buildVoiceGuardEmbed, evaluateBotVoiceTransition } from './src/voiceGuard.js';
 import { buildHelpEmbed, commands } from './src/commands.js';
 import {
@@ -193,11 +194,17 @@ installSmartFallback(soundCloudPlugin, syncedTrack => {
  }
 });
 
-// Máy chủ HTTP nhẹ phục vụ kiểm tra trạng thái hoạt động (/healthz).
+// Trung tâm Website "Now Playing" (giao diện kiểu Ziji V10 + SSE thời gian thực + tùy chọn đẩy dữ liệu ra Cloudflare Worker ngoài).
+const nowPlayingHub = createNowPlayingHub({
+ getPlayer: () => manager.getAll()[0] ?? null,
+ client,
+});
+
+// Máy chủ HTTP nhẹ phục vụ Website "Now Playing" (/) + API thời gian thực (/api/now-playing) + kiểm tra sức khỏe (/healthz).
 const app = express();
 app.disable('x-powered-by');
 app.get('/healthz', (_req, res) => res.status(client.isReady() ? 200 : 503).json({ ready: client.isReady(), uptime: Math.floor(process.uptime()) }));
-app.get('/', (_req, res) => res.type('text').send('Bot nhạc tiếng Việt đang hoạt động — /healthz'));
+nowPlayingHub.mountRoutes(app);
 const explicitPort = process.env.PORT || process.env.SERVER_PORT;
 let server = app.listen(Number(explicitPort || 3000), '0.0.0.0');
 server.on('error', e => {
@@ -230,11 +237,13 @@ function stopProgressTicker(player) {
  }
 }
 
-function markPanelTouched(player) {
+function markPanelTouched(player, overrides = {}) {
  const ud = player?.userdata;
- if (!ud) return;
- ud.lastPanelEditAt = Date.now();
- ud.lastProgressText = renderSyncedProgress(player).barText;
+ if (ud) {
+  ud.lastPanelEditAt = Date.now();
+  ud.lastProgressText = renderSyncedProgress(player).barText;
+ }
+ if (player && !player.destroyed) nowPlayingHub.publish({ player, ...overrides });
 }
 
 // Kiểm tra trong kênh thoại có ít nhất 1 người nghe thật (để không tốn API cập nhật thanh nhạc khi phòng trống).
@@ -346,8 +355,9 @@ async function postFreshPanel(player, track) {
  }
 }
 
-// Gom các thay đổi liên tiếp (âm lượng, lặp, 24/7, hàng đợi, tạm dừng, tua nhạc) để cập nhật khung điều khiển mượt mà.
+// Gom các thay đổi liên tiếp (âm lượng, lặp, 24/7, hàng đợi, tạm dừng, tua nhạc) để cập nhật khung điều khiển & Website mượt mà.
 function schedulePanelUpdate(player, overrides = {}) {
+ if (player && !player.destroyed) nowPlayingHub.publish({ player, ...overrides });
  const ud = player?.userdata;
  if (!ud || player.destroyed || ud.ending || !ud.panelMessage) return;
  clearPanelTimer(player);
@@ -365,11 +375,17 @@ async function closeCurrentPanel(player, reason, { keepIdle247 = false } = {}) {
  ud.ending = true;
  clearPanelTimer(player);
  stopProgressTicker(player);
- const payload = keepIdle247 && ud.stay247 && !ud.manualDisconnect
+ const shouldKeepIdle = keepIdle247 && ud.stay247 && !ud.manualDisconnect;
+ nowPlayingHub.publish({
+  player: shouldKeepIdle ? player : null,
+  track: null,
+  reason,
+ });
+ const payload = shouldKeepIdle
   ? buildIdle247Payload(player, reason)
   : buildEndedPayload(reason);
  const msg = ud.panelMessage;
- if (keepIdle247 && ud.stay247 && !ud.manualDisconnect) {
+ if (shouldKeepIdle) {
   if (msg) {
    await msg.edit(payload).catch(() => {});
    return;
@@ -412,7 +428,10 @@ async function sendVoiceGuardAlert(textChannel, userdata, event) {
 // Đóng toàn bộ phiên phát, xóa mọi bộ hẹn giờ/tham chiếu và cho bot rời khỏi kênh thoại.
 async function destroyPlayerSession(guildId, reason) {
  const p = manager.get(guildId);
- if (!p) return;
+ if (!p) {
+  nowPlayingHub.publish({ player: null, track: null, reason });
+  return;
+ }
  const ud = p.userdata;
  if (ud) {
   ud.manualDisconnect = true;
@@ -424,9 +443,10 @@ async function destroyPlayerSession(guildId, reason) {
   ud.textChannel = null;
  }
  manager.delete(guildId);
+ nowPlayingHub.publish({ player: null, track: null, reason });
 }
 
-// Gắn sự kiện vòng đời từ ZiPlayer để tự động đồng bộ khung điều khiển nhạc trên kênh chat.
+// Gắn sự kiện vòng đời từ ZiPlayer để tự động đồng bộ khung điều khiển nhạc trên kênh chat & Website Now Playing.
 manager.on('trackStart', (player, track) => {
  const humanOwner = resolveHumanRequester(track?.requestedBy);
  if (humanOwner && player?.userdata) player.userdata.ownerId = humanOwner;
@@ -444,6 +464,7 @@ manager.on('trackStart', (player, track) => {
   }, 250);
   pauseTimer.unref?.();
  }
+ nowPlayingHub.publish({ player, track, paused: Boolean(player?.isPaused) });
  void postFreshPanel(player, track);
 });
 manager.on('playerPause', player => {
@@ -770,6 +791,7 @@ async function syncGuildCommands(appId, targetGuildId) {
 
 client.once(Events.ClientReady, async c => {
  console.log(`[khởi-động] Đã đăng nhập: ${c.user.tag}`);
+ nowPlayingHub.publish();
  const appInfo = await c.application.fetch().catch(() => null);
  if (appInfo?.interactionsEndpointURL) {
   console.warn(`[cảnh-báo] Phát hiện Interactions Endpoint URL cũ (${appInfo.interactionsEndpointURL}), đang tự động gỡ bỏ...`);
@@ -1104,7 +1126,8 @@ client.on(Events.InteractionCreate, async i => {
 
   if (i.commandName === 'join') {
    const alreadyConnected = Boolean(p?.connection);
-   await ensureVoiceSession({ guild: i.guild, voiceChannel: channel, textChannel: i.channel, userId: i.user.id });
+   const { player: joinedPlayer } = await ensureVoiceSession({ guild: i.guild, voiceChannel: channel, textChannel: i.channel, userId: i.user.id });
+   nowPlayingHub.publish({ player: joinedPlayer });
    return await reply(alreadyConnected ? `✅ Bot đang ở sẵn trong kênh thoại <#${channel.id}>.` : `✅ Đã tham gia kênh thoại <#${channel.id}>. Dùng \`/play\` để phát nhạc hoặc \`/247\` để giữ bot ở lại 24/7.`);
   }
 
@@ -1289,6 +1312,7 @@ async function shutdown(code = 0) {
   }
   manager.destroy();
   client.destroy();
+  nowPlayingHub.close();
   server.close(() => process.exit(code));
  } catch { process.exit(1); }
 }

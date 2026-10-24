@@ -1,0 +1,1081 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Đang Phát Trong Discord • Now Playing</title>
+  <style>
+    :root {
+      --bg-base: #08090f;
+      --card-bg: rgba(18, 20, 32, 0.76);
+      --card-border: rgba(255, 255, 255, 0.09);
+      --surface-soft: rgba(255, 255, 255, 0.045);
+      --surface-hover: rgba(255, 255, 255, 0.08);
+      --text-main: #f5f7ff;
+      --text-sub: #a2abc4;
+      --text-muted: #6c7593;
+      --accent: #8b5cf6;
+      --accent-2: #ec4899;
+      --green: #22c55e;
+      --amber: #f59e0b;
+      --red: #ef4444;
+      --shadow: 0 28px 80px rgba(0, 0, 0, 0.62);
+      --radius-xl: 26px;
+      --radius-lg: 18px;
+      --radius-md: 12px;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      min-height: 100vh;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: var(--bg-base);
+      color: var(--text-main);
+      overflow-x: hidden;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+
+    /* Lớp nền ánh sáng mờ đổi màu theo ảnh bìa bài hát kiểu Ziji V10 */
+    .ambient-stage {
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+      overflow: hidden;
+      pointer-events: none;
+    }
+
+    .ambient-art {
+      position: absolute;
+      inset: -15%;
+      background-size: cover;
+      background-position: center;
+      filter: blur(85px) saturate(1.65) brightness(0.32);
+      transform: scale(1.15);
+      opacity: 0;
+      transition: opacity 0.8s ease, background-image 0.8s ease;
+    }
+
+    .ambient-art.has-image {
+      opacity: 1;
+    }
+
+    .ambient-glow {
+      position: absolute;
+      inset: 0;
+      background:
+        radial-gradient(circle at 18% 22%, rgba(139, 92, 246, 0.25), transparent 46%),
+        radial-gradient(circle at 82% 78%, rgba(236, 72, 153, 0.18), transparent 48%),
+        linear-gradient(180deg, rgba(8, 9, 15, 0.45) 0%, rgba(8, 9, 15, 0.88) 100%);
+    }
+
+    .page-wrap {
+      position: relative;
+      z-index: 1;
+      width: min(1160px, 100%);
+      margin: 0 auto;
+      padding: 28px 20px 36px;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 22px;
+    }
+
+    /* Thanh đầu trang */
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      flex-wrap: wrap;
+      padding: 14px 20px;
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 999px;
+      backdrop-filter: blur(24px);
+      -webkit-backdrop-filter: blur(24px);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+    }
+
+    .bot-avatar {
+      width: 38px;
+      height: 38px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      display: grid;
+      place-items: center;
+      overflow: hidden;
+      flex-shrink: 0;
+      border: 1px solid rgba(255, 255, 255, 0.18);
+    }
+
+    .bot-avatar img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    .brand-titles {
+      min-width: 0;
+    }
+
+    .brand-name {
+      font-weight: 700;
+      font-size: 0.98rem;
+      letter-spacing: 0.01em;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .brand-sub {
+      font-size: 0.78rem;
+      color: var(--text-sub);
+    }
+
+    .topbar-right {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      padding: 7px 13px;
+      border-radius: 999px;
+      background: var(--surface-soft);
+      border: 1px solid var(--card-border);
+      color: var(--text-sub);
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--text-muted);
+    }
+
+    .dot.live {
+      background: var(--green);
+      box-shadow: 0 0 10px var(--green);
+    }
+
+    .dot.warn {
+      background: var(--amber);
+      box-shadow: 0 0 10px var(--amber);
+    }
+
+    /* Bố cục 2 cột giống giao diện Web Now Playing Ziji V10 */
+    .main-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.35fr) minmax(300px, 0.9fr);
+      gap: 22px;
+      align-items: stretch;
+    }
+
+    @media (max-width: 900px) {
+      .main-grid {
+        grid-template-columns: 1fr;
+      }
+      .topbar {
+        border-radius: 20px;
+      }
+    }
+
+    .glass-card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius-xl);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(28px);
+      -webkit-backdrop-filter: blur(28px);
+    }
+
+    /* Khung chính Now Playing */
+    .hero-card {
+      padding: 28px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 24px;
+    }
+
+    .hero-top {
+      display: grid;
+      grid-template-columns: 240px minmax(0, 1fr);
+      gap: 26px;
+      align-items: center;
+    }
+
+    @media (max-width: 640px) {
+      .hero-card {
+        padding: 20px;
+      }
+      .hero-top {
+        grid-template-columns: 1fr;
+        justify-items: center;
+        text-align: center;
+      }
+    }
+
+    .artwork-box {
+      position: relative;
+      width: 240px;
+      height: 240px;
+      border-radius: 22px;
+      overflow: hidden;
+      background: linear-gradient(145deg, #17192b, #0e101c);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      box-shadow: 0 20px 48px rgba(0, 0, 0, 0.52);
+      display: grid;
+      place-items: center;
+      flex-shrink: 0;
+    }
+
+    @media (max-width: 640px) {
+      .artwork-box {
+        width: min(240px, 72vw);
+        height: min(240px, 72vw);
+      }
+    }
+
+    .artwork-img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: none;
+    }
+
+    .artwork-img.visible {
+      display: block;
+    }
+
+    .vinyl-fallback {
+      width: 76%;
+      height: 76%;
+      transition: transform 0.5s ease;
+    }
+
+    .is-playing .vinyl-fallback {
+      animation: spinSlow 14s linear infinite;
+    }
+
+    @keyframes spinSlow {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+
+    /* Sóng nhạc động góc ảnh bìa */
+    .eq-badge {
+      position: absolute;
+      bottom: 12px;
+      right: 12px;
+      padding: 7px 11px;
+      border-radius: 999px;
+      background: rgba(10, 12, 20, 0.82);
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      backdrop-filter: blur(10px);
+      display: inline-flex;
+      align-items: flex-end;
+      gap: 3px;
+      height: 28px;
+    }
+
+    .eq-bar {
+      width: 3px;
+      height: 5px;
+      border-radius: 3px;
+      background: linear-gradient(180deg, var(--accent-2), var(--accent));
+      transition: height 0.2s ease;
+    }
+
+    .is-playing .eq-bar:nth-child(1) { animation: eqBounce 0.75s ease-in-out infinite; }
+    .is-playing .eq-bar:nth-child(2) { animation: eqBounce 0.55s ease-in-out infinite 0.15s; }
+    .is-playing .eq-bar:nth-child(3) { animation: eqBounce 0.85s ease-in-out infinite 0.3s; }
+    .is-playing .eq-bar:nth-child(4) { animation: eqBounce 0.65s ease-in-out infinite 0.1s; }
+
+    @keyframes eqBounce {
+      0%, 100% { height: 4px; }
+      50% { height: 14px; }
+    }
+
+    .track-meta {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .badges-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    @media (max-width: 640px) {
+      .badges-row {
+        justify-content: center;
+      }
+    }
+
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 12px;
+      border-radius: 999px;
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      background: rgba(139, 92, 246, 0.18);
+      color: #d8b4fe;
+      border: 1px solid rgba(139, 92, 246, 0.38);
+    }
+
+    .status-badge.playing {
+      background: rgba(34, 197, 94, 0.15);
+      color: #86efac;
+      border-color: rgba(34, 197, 94, 0.38);
+    }
+
+    .status-badge.paused {
+      background: rgba(245, 158, 11, 0.16);
+      color: #fcd34d;
+      border-color: rgba(245, 158, 11, 0.4);
+    }
+
+    .status-badge.muted {
+      background: rgba(239, 68, 68, 0.18);
+      color: #fca5a5;
+      border-color: rgba(239, 68, 68, 0.45);
+    }
+
+    .source-badge {
+      padding: 5px 11px;
+      border-radius: 999px;
+      font-size: 0.76rem;
+      font-weight: 600;
+      background: var(--surface-soft);
+      color: var(--text-sub);
+      border: 1px solid var(--card-border);
+    }
+
+    .track-title {
+      font-size: clamp(1.35rem, 2.5vw, 1.95rem);
+      font-weight: 800;
+      line-height: 1.25;
+      letter-spacing: -0.015em;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      word-break: break-word;
+    }
+
+    .track-author {
+      font-size: 1.02rem;
+      font-weight: 500;
+      color: var(--text-sub);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .actions-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 4px;
+    }
+
+    @media (max-width: 640px) {
+      .actions-row {
+        justify-content: center;
+      }
+    }
+
+    .open-link-btn {
+      display: none;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 16px;
+      border-radius: 12px;
+      font-size: 0.86rem;
+      font-weight: 600;
+      color: #ffffff;
+      text-decoration: none;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      box-shadow: 0 10px 24px rgba(139, 92, 246, 0.32);
+      transition: transform 0.16s ease, filter 0.16s ease;
+    }
+
+    .open-link-btn.visible {
+      display: inline-flex;
+    }
+
+    .open-link-btn:hover {
+      transform: translateY(-1px);
+      filter: brightness(1.08);
+    }
+
+    /* Thanh thời gian đồng bộ thời gian thực */
+    .progress-section {
+      display: flex;
+      flex-direction: column;
+      gap: 9px;
+      padding: 16px 18px;
+      border-radius: var(--radius-lg);
+      background: var(--surface-soft);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+    }
+
+    .progress-track {
+      width: 100%;
+      height: 8px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.1);
+      overflow: hidden;
+      position: relative;
+    }
+
+    .progress-fill {
+      height: 100%;
+      width: 0%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, var(--accent), var(--accent-2));
+      transition: width 0.25s linear;
+    }
+
+    .progress-times {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.82rem;
+      font-variant-numeric: tabular-nums;
+      color: var(--text-sub);
+      font-weight: 600;
+    }
+
+    /* Lưới thông số trạng thái của trình phát */
+    .chips-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 10px;
+    }
+
+    .info-chip {
+      padding: 11px 13px;
+      border-radius: var(--radius-md);
+      background: var(--surface-soft);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+
+    .chip-label {
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      font-weight: 700;
+    }
+
+    .chip-value {
+      font-size: 0.88rem;
+      font-weight: 600;
+      color: var(--text-main);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .display-note {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      line-height: 1.45;
+      border-top: 1px solid rgba(255, 255, 255, 0.06);
+      padding-top: 14px;
+    }
+
+    /* Khung bên phải: Hàng đợi sắp phát & Lịch sử */
+    .side-card {
+      padding: 22px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      max-height: 580px;
+    }
+
+    .tabs-bar {
+      display: flex;
+      gap: 8px;
+      background: rgba(255, 255, 255, 0.04);
+      padding: 5px;
+      border-radius: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.06);
+    }
+
+    .tab-btn {
+      flex: 1;
+      border: none;
+      background: transparent;
+      color: var(--text-sub);
+      font-size: 0.84rem;
+      font-weight: 600;
+      padding: 8px 10px;
+      border-radius: 9px;
+      cursor: pointer;
+      transition: background 0.15s ease, color 0.15s ease;
+    }
+
+    .tab-btn.active {
+      background: rgba(139, 92, 246, 0.24);
+      color: var(--text-main);
+    }
+
+    .track-list {
+      flex: 1;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 9px;
+      padding-right: 4px;
+    }
+
+    .track-item {
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      padding: 9px 11px;
+      border-radius: 12px;
+      background: var(--surface-soft);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      text-decoration: none;
+      color: inherit;
+      transition: background 0.15s ease;
+    }
+
+    a.track-item:hover {
+      background: var(--surface-hover);
+    }
+
+    .item-index {
+      width: 22px;
+      text-align: center;
+      font-size: 0.78rem;
+      font-weight: 700;
+      color: var(--text-muted);
+      flex-shrink: 0;
+    }
+
+    .item-thumb {
+      width: 40px;
+      height: 40px;
+      border-radius: 9px;
+      background: #171a2c;
+      object-fit: cover;
+      flex-shrink: 0;
+    }
+
+    .item-body {
+      min-width: 0;
+      flex: 1;
+    }
+
+    .item-title {
+      font-size: 0.86rem;
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .item-author {
+      font-size: 0.76rem;
+      color: var(--text-sub);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .item-dur {
+      font-size: 0.76rem;
+      font-variant-numeric: tabular-nums;
+      color: var(--text-muted);
+      font-weight: 600;
+      flex-shrink: 0;
+    }
+
+    .empty-list {
+      margin: auto 0;
+      text-align: center;
+      padding: 34px 16px;
+      color: var(--text-muted);
+      font-size: 0.86rem;
+      line-height: 1.55;
+    }
+
+    .footer {
+      position: relative;
+      z-index: 1;
+      text-align: center;
+      padding: 0 20px 22px;
+      font-size: 0.77rem;
+      color: var(--text-muted);
+    }
+  </style>
+</head>
+<body>
+  <div class="ambient-stage">
+    <div id="ambientArt" class="ambient-art"></div>
+    <div class="ambient-glow"></div>
+  </div>
+
+  <div class="page-wrap">
+    <header class="topbar">
+      <div class="brand">
+        <div class="bot-avatar" id="botAvatarBox">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M9 18V5l12-2v13"></path>
+            <circle cx="6" cy="18" r="3"></circle>
+            <circle cx="18" cy="16" r="3"></circle>
+          </svg>
+        </div>
+        <div class="brand-titles">
+          <div class="brand-name" id="botName">Discord Music • Now Playing</div>
+          <div class="brand-sub" id="voiceRoomText">Chưa kết nối kênh thoại</div>
+        </div>
+      </div>
+
+      <div class="topbar-right">
+        <div class="pill">
+          <span id="connDot" class="dot"></span>
+          <span id="connLabel">Đang đồng bộ...</span>
+        </div>
+      </div>
+    </header>
+
+    <main class="main-grid">
+      <section id="heroCard" class="glass-card hero-card">
+        <div class="hero-top">
+          <div class="artwork-box">
+            <img id="artworkImg" class="artwork-img" alt="Ảnh bìa bài hát" />
+            <svg id="vinylSvg" class="vinyl-fallback" viewBox="0 0 200 200" fill="none">
+              <circle cx="100" cy="100" r="92" fill="url(#vinylGrad)" stroke="rgba(255,255,255,0.12)" stroke-width="2"/>
+              <circle cx="100" cy="100" r="72" stroke="rgba(255,255,255,0.06)" stroke-width="1.5"/>
+              <circle cx="100" cy="100" r="54" stroke="rgba(255,255,255,0.06)" stroke-width="1.5"/>
+              <circle cx="100" cy="100" r="30" fill="url(#centerGrad)"/>
+              <circle cx="100" cy="100" r="8" fill="#08090f"/>
+              <defs>
+                <radialGradient id="vinylGrad" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(100 100) rotate(90) scale(92)">
+                  <stop stop-color="#23263d"/>
+                  <stop offset="1" stop-color="#0d0f1a"/>
+                </radialGradient>
+                <linearGradient id="centerGrad" x1="70" y1="70" x2="130" y2="130" gradientUnits="userSpaceOnUse">
+                  <stop stop-color="#8b5cf6"/>
+                  <stop offset="1" stop-color="#ec4899"/>
+                </linearGradient>
+              </defs>
+            </svg>
+            <div class="eq-badge" aria-hidden="true">
+              <span class="eq-bar"></span>
+              <span class="eq-bar"></span>
+              <span class="eq-bar"></span>
+              <span class="eq-bar"></span>
+            </div>
+          </div>
+
+          <div class="track-meta">
+            <div class="badges-row">
+              <span id="statusBadge" class="status-badge">💤 Chưa phát nhạc</span>
+              <span id="sourceBadge" class="source-badge">Nguồn: —</span>
+            </div>
+
+            <h1 id="trackTitle" class="track-title">Chưa có bài hát nào đang phát</h1>
+            <p id="trackAuthor" class="track-author">Gõ lệnh /play trong kênh thoại Discord để bắt đầu</p>
+
+            <div class="actions-row">
+              <a id="openTrackLink" class="open-link-btn" href="#" target="_blank" rel="noopener noreferrer">
+                <span>Mở bài hát gốc</span>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M7 17L17 7"></path>
+                  <path d="M7 7h10v10"></path>
+                </svg>
+              </a>
+            </div>
+          </div>
+        </div>
+
+        <div class="progress-section">
+          <div class="progress-track">
+            <div id="progressFill" class="progress-fill"></div>
+          </div>
+          <div class="progress-times">
+            <span id="currentTime">0:00</span>
+            <span id="totalTime">0:00</span>
+          </div>
+        </div>
+
+        <div class="chips-grid">
+          <div class="info-chip">
+            <span class="chip-label">Chất âm</span>
+            <span id="chipSound" class="chip-value">Rõ nét HD</span>
+          </div>
+          <div class="info-chip">
+            <span class="chip-label">Âm lượng</span>
+            <span id="chipVolume" class="chip-value">100%</span>
+          </div>
+          <div class="info-chip">
+            <span class="chip-label">Chế độ lặp</span>
+            <span id="chipLoop" class="chip-value">Tắt lặp</span>
+          </div>
+          <div class="info-chip">
+            <span class="chip-label">Tự phát & 24/7</span>
+            <span id="chipModes" class="chip-value">Tắt • 24/7 Tắt</span>
+          </div>
+        </div>
+
+        <p class="display-note">
+          🎧 Website chỉ hiển thị trạng thái trực tiếp — âm thanh vẫn do bot phát trong kênh thoại Discord. Dùng lệnh <strong>/play</strong>, <strong>/skip</strong>, <strong>/pause</strong> hoặc khung điều khiển trong Discord để đổi nhạc.
+        </p>
+      </section>
+
+      <aside class="glass-card side-card">
+        <div class="tabs-bar">
+          <button id="tabQueueBtn" class="tab-btn active" type="button">Sắp phát (0)</button>
+          <button id="tabHistoryBtn" class="tab-btn" type="button">Vừa phát (0)</button>
+        </div>
+        <div id="trackList" class="track-list">
+          <div class="empty-list">Hàng đợi hiện đang trống.<br/>Khi thêm bài bằng <strong>/play</strong>, danh sách sẽ tự hiện tại đây.</div>
+        </div>
+      </aside>
+    </main>
+  </div>
+
+  <footer class="footer">
+    Đồng bộ tự động với trình phát nhạc Discord • Không cần tải lại trang
+  </footer>
+
+  <script>
+    (function () {
+      // Nếu triển khai trang HTML tĩnh riêng (GitHub Pages / Cloudflare Pages), có thể truyền ?api=https://domain-cua-ban
+      // hoặc điền trực tiếp URL vào hằng số DEFAULT_API_BASE bên dưới.
+      const DEFAULT_API_BASE = "";
+      const params = new URLSearchParams(window.location.search);
+      const rawBase = (params.get("api") || window.NOW_PLAYING_API_BASE || DEFAULT_API_BASE || "").trim().replace(/\/+$/, "");
+
+      function safeHttpUrl(url) {
+        if (typeof url !== "string" || !url.trim()) return null;
+        try {
+          const u = new URL(url.trim());
+          return (u.protocol === "https:" || u.protocol === "http:") ? u.toString() : null;
+        } catch {
+          return null;
+        }
+      }
+
+      function formatTime(ms) {
+        const n = Number(ms);
+        if (!Number.isFinite(n) || n <= 0) return "0:00";
+        const totalSec = Math.floor(n / 1000);
+        const h = Math.floor(totalSec / 3600);
+        const m = Math.floor((totalSec % 3600) / 60);
+        const s = String(totalSec % 60).padStart(2, "0");
+        return h > 0 ? h + ":" + String(m).padStart(2, "0") + ":" + s : m + ":" + s;
+      }
+
+      const els = {
+        ambientArt: document.getElementById("ambientArt"),
+        botAvatarBox: document.getElementById("botAvatarBox"),
+        botName: document.getElementById("botName"),
+        voiceRoomText: document.getElementById("voiceRoomText"),
+        connDot: document.getElementById("connDot"),
+        connLabel: document.getElementById("connLabel"),
+        heroCard: document.getElementById("heroCard"),
+        artworkImg: document.getElementById("artworkImg"),
+        vinylSvg: document.getElementById("vinylSvg"),
+        statusBadge: document.getElementById("statusBadge"),
+        sourceBadge: document.getElementById("sourceBadge"),
+        trackTitle: document.getElementById("trackTitle"),
+        trackAuthor: document.getElementById("trackAuthor"),
+        openTrackLink: document.getElementById("openTrackLink"),
+        progressFill: document.getElementById("progressFill"),
+        currentTime: document.getElementById("currentTime"),
+        totalTime: document.getElementById("totalTime"),
+        chipSound: document.getElementById("chipSound"),
+        chipVolume: document.getElementById("chipVolume"),
+        chipLoop: document.getElementById("chipLoop"),
+        chipModes: document.getElementById("chipModes"),
+        tabQueueBtn: document.getElementById("tabQueueBtn"),
+        tabHistoryBtn: document.getElementById("tabHistoryBtn"),
+        trackList: document.getElementById("trackList"),
+      };
+
+      let latestState = null;
+      let receivedClientMs = 0;
+      let activeTab = "queue";
+
+      function setConnectionBadge(mode, text) {
+        els.connDot.className = "dot" + (mode === "live" ? " live" : mode === "warn" ? " warn" : "");
+        els.connLabel.textContent = text;
+      }
+
+      function updateArtwork(url) {
+        const clean = safeHttpUrl(url);
+        if (clean) {
+          els.artworkImg.src = clean;
+          els.artworkImg.classList.add("visible");
+          els.vinylSvg.style.display = "none";
+          els.ambientArt.style.backgroundImage = 'url("' + clean.replace(/"/g, "%22") + '")';
+          els.ambientArt.classList.add("has-image");
+        } else {
+          els.artworkImg.removeAttribute("src");
+          els.artworkImg.classList.remove("visible");
+          els.vinylSvg.style.display = "block";
+          els.ambientArt.style.backgroundImage = "";
+          els.ambientArt.classList.remove("has-image");
+        }
+      }
+
+      els.artworkImg.addEventListener("error", function () {
+        updateArtwork(null);
+      });
+
+      function renderSideList() {
+        const upcoming = Array.isArray(latestState?.upcoming) ? latestState.upcoming : [];
+        const history = Array.isArray(latestState?.history) ? latestState.history : [];
+        els.tabQueueBtn.textContent = "Sắp phát (" + upcoming.length + ")";
+        els.tabHistoryBtn.textContent = "Vừa phát (" + history.length + ")";
+        els.tabQueueBtn.classList.toggle("active", activeTab === "queue");
+        els.tabHistoryBtn.classList.toggle("active", activeTab === "history");
+
+        const items = activeTab === "queue" ? upcoming : history;
+        els.trackList.replaceChildren();
+
+        if (!items.length) {
+          const empty = document.createElement("div");
+          empty.className = "empty-list";
+          empty.textContent = activeTab === "queue"
+            ? "Chưa có bài hát nào trong hàng đợi chờ."
+            : "Chưa có lịch sử bài hát trong phiên này.";
+          els.trackList.appendChild(empty);
+          return;
+        }
+
+        items.forEach(function (item, idx) {
+          const validHref = safeHttpUrl(item.url);
+          const row = document.createElement(validHref ? "a" : "div");
+          row.className = "track-item";
+          if (validHref) {
+            row.href = validHref;
+            row.target = "_blank";
+            row.rel = "noopener noreferrer";
+          }
+
+          const num = document.createElement("span");
+          num.className = "item-index";
+          num.textContent = String(item.position || idx + 1);
+          row.appendChild(num);
+
+          const thumbUrl = safeHttpUrl(item.artworkUrl);
+          if (thumbUrl) {
+            const img = document.createElement("img");
+            img.className = "item-thumb";
+            img.src = thumbUrl;
+            img.alt = "";
+            img.loading = "lazy";
+            row.appendChild(img);
+          }
+
+          const body = document.createElement("div");
+          body.className = "item-body";
+          const t = document.createElement("div");
+          t.className = "item-title";
+          t.textContent = item.title || "Không rõ tên bài";
+          const a = document.createElement("div");
+          a.className = "item-author";
+          a.textContent = (item.author || "Nghệ sĩ") + (item.sourceLabel ? " • " + item.sourceLabel : "");
+          body.appendChild(t);
+          body.appendChild(a);
+          row.appendChild(body);
+
+          const dur = document.createElement("span");
+          dur.className = "item-dur";
+          dur.textContent = formatTime(item.durationMs);
+          row.appendChild(dur);
+
+          els.trackList.appendChild(row);
+        });
+      }
+
+      els.tabQueueBtn.addEventListener("click", function () {
+        activeTab = "queue";
+        renderSideList();
+      });
+      els.tabHistoryBtn.addEventListener("click", function () {
+        activeTab = "history";
+        renderSideList();
+      });
+
+      function renderProgressTick() {
+        const track = latestState?.track;
+        if (!track) {
+          els.progressFill.style.width = "0%";
+          els.currentTime.textContent = "0:00";
+          els.totalTime.textContent = "0:00";
+          return;
+        }
+        const total = Math.max(0, Number(track.durationMs) || 0);
+        let pos = Math.max(0, Number(track.positionMs) || 0);
+        if (latestState.status === "playing" && receivedClientMs > 0) {
+          pos += Math.max(0, Date.now() - receivedClientMs);
+        }
+        if (total > 0 && pos > total) pos = total;
+        const pct = total > 0 ? Math.min(100, (pos / total) * 100) : 0;
+        els.progressFill.style.width = pct.toFixed(2) + "%";
+        els.currentTime.textContent = formatTime(pos);
+        els.totalTime.textContent = formatTime(total);
+      }
+
+      function applyState(state) {
+        if (!state || typeof state !== "object") return;
+        latestState = state;
+        receivedClientMs = Date.now();
+
+        if (state.bot?.name) {
+          els.botName.textContent = state.bot.name + " • Now Playing";
+        }
+        const botAva = safeHttpUrl(state.bot?.avatarUrl);
+        if (botAva && !els.botAvatarBox.querySelector("img")) {
+          const img = document.createElement("img");
+          img.src = botAva;
+          img.alt = "";
+          els.botAvatarBox.replaceChildren(img);
+        }
+
+        els.voiceRoomText.textContent = state.voiceChannelName
+          ? "🎙️ Đang kết nối: " + state.voiceChannelName
+          : (state.settings?.stay247 ? "🌙 Đang giữ chế độ 24/7" : "Chưa kết nối kênh thoại");
+
+        const isPlaying = state.status === "playing";
+        els.heroCard.classList.toggle("is-playing", isPlaying);
+
+        els.statusBadge.className = "status-badge" + (
+          state.status === "playing" ? " playing"
+          : state.status === "paused" ? " paused"
+          : state.status === "muted" ? " muted"
+          : ""
+        );
+        els.statusBadge.textContent = state.statusLabel || "Chưa phát nhạc";
+
+        const track = state.track;
+        if (track) {
+          els.trackTitle.textContent = track.title || "Không rõ tiêu đề";
+          els.trackAuthor.textContent = track.author || "Nghệ sĩ";
+          els.sourceBadge.textContent = "Nguồn: " + (track.sourceLabel || "SoundCloud");
+          updateArtwork(track.artworkUrl);
+
+          const validUrl = safeHttpUrl(track.url);
+          if (validUrl) {
+            els.openTrackLink.href = validUrl;
+            els.openTrackLink.classList.add("visible");
+          } else {
+            els.openTrackLink.removeAttribute("href");
+            els.openTrackLink.classList.remove("visible");
+          }
+          document.title = (isPlaying ? "▶ " : "⏸ ") + (track.title || "Now Playing") + " • Discord Music";
+        } else {
+          els.trackTitle.textContent = state.status === "idle_247"
+            ? "Bot đang treo kênh thoại 24/7"
+            : "Chưa có bài hát nào đang phát";
+          els.trackAuthor.textContent = state.reason || "Gõ lệnh /play trong kênh thoại Discord để bắt đầu phát nhạc";
+          els.sourceBadge.textContent = "Nguồn: —";
+          updateArtwork(null);
+          els.openTrackLink.removeAttribute("href");
+          els.openTrackLink.classList.remove("visible");
+          document.title = "Đang Phát Trong Discord • Now Playing";
+        }
+
+        const st = state.settings || {};
+        els.chipSound.textContent = st.soundLabel || "Rõ nét HD";
+        els.chipVolume.textContent = (st.volume ?? 100) + "%";
+        els.chipLoop.textContent = st.loopLabel || "Tắt lặp";
+        els.chipModes.textContent = "Auto: " + (st.autoPlay ? "Bật" : "Tắt") + " • 24/7: " + (st.stay247 ? "Bật" : "Tắt");
+
+        renderProgressTick();
+        renderSideList();
+      }
+
+      setInterval(renderProgressTick, 250);
+
+      // Tự động kết nối thời gian thực bằng SSE (/api/now-playing/events) và tự chuyển sang hỏi định kỳ (/api/now-playing) nếu qua Worker/tĩnh.
+      const apiEndpoint = rawBase + "/api/now-playing";
+      const sseEndpoint = rawBase + "/api/now-playing/events";
+      let pollTimer = null;
+
+      async function fetchSnapshotOnce() {
+        try {
+          const res = await fetch(apiEndpoint, { cache: "no-store" });
+          if (!res.ok) throw new Error("HTTP " + res.status);
+          const data = await res.json();
+          applyState(data);
+          setConnectionBadge("live", "Trực tuyến");
+          return true;
+        } catch {
+          setConnectionBadge("warn", "Đang chờ tín hiệu từ bot...");
+          return false;
+        }
+      }
+
+      function startPollingFallback() {
+        if (pollTimer) return;
+        fetchSnapshotOnce();
+        pollTimer = setInterval(fetchSnapshotOnce, 4000);
+      }
+
+      if (window.location.protocol === "http:" || window.location.protocol === "https:" || rawBase) {
+        if (typeof window.EventSource === "function" && !params.has("poll")) {
+          const es = new EventSource(sseEndpoint);
+          let openedOnce = false;
+          es.addEventListener("state", function (ev) {
+            openedOnce = true;
+            setConnectionBadge("live", "Trực tuyến • Thời gian thực");
+            try { applyState(JSON.parse(ev.data)); } catch {}
+          });
+          es.onerror = function () {
+            if (!openedOnce) {
+              es.close();
+              startPollingFallback();
+            } else {
+              setConnectionBadge("warn", "Đang tự kết nối lại...");
+            }
+          };
+        } else {
+          startPollingFallback();
+        }
+      } else {
+        setConnectionBadge("warn", "Bản xem trước giao diện");
+      }
+    })();
+  </script>
+</body>
+</html>

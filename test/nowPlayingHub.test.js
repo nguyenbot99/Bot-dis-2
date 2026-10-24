@@ -286,16 +286,66 @@ test('Cloudflare Worker relay enforces secret on POST and serves live HTML + JSO
  assert.ok(doJson.track.positionMs >= 5800);
 });
 
-test('resolvePushEndpoint normalizes root Worker URL and defaults when only secret is set', () => {
+test('resolvePushEndpoint normalizes root Worker URL, defaults when secret is set, and auto-derives key from botToken', () => {
  assert.deepEqual(
   resolvePushEndpoint({ NOW_PLAYING_PUSH_SECRET: 'bao123' }),
-  { pushUrl: DEFAULT_NOW_PLAYING_PUSH_URL, pushSecret: 'bao123' },
+  { pushUrl: DEFAULT_NOW_PLAYING_PUSH_URL, pushSecret: 'bao123', ownerProof: '' },
  );
  assert.deepEqual(
   resolvePushEndpoint({
    NOW_PLAYING_PUSH_URL: 'https://bot-dis-2.botmusicvip.workers.dev/',
    NOW_PLAYING_PUSH_SECRET: 'bao123',
   }),
-  { pushUrl: 'https://bot-dis-2.botmusicvip.workers.dev/api/now-playing', pushSecret: 'bao123' },
+  { pushUrl: 'https://bot-dis-2.botmusicvip.workers.dev/api/now-playing', pushSecret: 'bao123', ownerProof: '' },
  );
+ const autoDerived = resolvePushEndpoint({}, 'sample-discord-bot-token');
+ assert.equal(autoDerived.pushUrl, DEFAULT_NOW_PLAYING_PUSH_URL);
+ assert.equal(autoDerived.pushSecret.length, 64);
+ assert.equal(autoDerived.ownerProof.length, 64);
+ assert.notEqual(autoDerived.pushSecret, 'sample-discord-bot-token');
+});
+
+test('NowPlayingRoom auto-pairs on first bot push without needing Cloudflare secret and blocks strangers', async () => {
+ const backing = new Map();
+ const room = new NowPlayingRoom(
+  {
+   storage: {
+    get: async k => backing.get(k),
+    put: async (k, v) => backing.set(k, v),
+   },
+  },
+  {},
+ );
+ const envNoSecret = {
+  NOW_PLAYING_ROOM: {
+   idFromName: name => name,
+   get: () => ({
+    fetch: (url, init) => room.fetch(new Request(url, init)),
+   }),
+  },
+ };
+
+ // Lần đầu bot thật gửi lên: tự động ghép đôi thành công
+ const firstPush = await workerModule.fetch(
+  new Request('https://bot-dis-2.botmusicvip.workers.dev/api/now-playing', {
+   method: 'POST',
+   headers: { Authorization: 'Bearer bot-auto-key-123', 'Content-Type': 'application/json' },
+   body: JSON.stringify({ status: 'playing', bot: { ready: true, name: 'Bắt_Don' }, track: { title: 'Bài 1', positionMs: 0, durationMs: 180000 } }),
+  }),
+  envNoSecret,
+  {},
+ );
+ assert.equal(firstPush.status, 200);
+
+ // Người lạ thử gửi đè bằng khóa khác: bị chặn 401 ngay lập tức
+ const strangerPush = await workerModule.fetch(
+  new Request('https://bot-dis-2.botmusicvip.workers.dev/api/now-playing', {
+   method: 'POST',
+   headers: { Authorization: 'Bearer hacker-wrong-key', 'Content-Type': 'application/json' },
+   body: JSON.stringify({ status: 'playing', bot: { ready: true, name: 'Fake' } }),
+  }),
+  envNoSecret,
+  {},
+ );
+ assert.equal(strangerPush.status, 401);
 });

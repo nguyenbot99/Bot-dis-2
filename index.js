@@ -196,10 +196,11 @@ installSmartFallback(soundCloudPlugin, syncedTrack => {
  }
 });
 
-// Trung tâm Website "Now Playing" (giao diện kiểu Ziji V10 + SSE thời gian thực + tùy chọn đẩy dữ liệu ra Cloudflare Worker ngoài).
+// Trung tâm Website "Now Playing" (giao diện kiểu Ziji V10 + SSE thời gian thực + tự động đồng bộ ra Cloudflare Worker).
 const nowPlayingHub = createNowPlayingHub({
  getPlayer: () => manager.getAll()[0] ?? null,
  client,
+ botToken: DISCORD_TOKEN,
 });
 
 // Máy chủ HTTP nhẹ phục vụ Website "Now Playing" (/) + API thời gian thực (/api/now-playing) + kiểm tra sức khỏe (/healthz).

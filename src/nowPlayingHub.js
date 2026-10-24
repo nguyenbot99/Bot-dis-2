@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { SOUND_PRESETS } from './audioEnhancer.js';
 import { cleanText, LOOP_LABELS, renderSyncedProgress, safeHttpUrl } from './playerGui.js';
@@ -41,10 +42,23 @@ function serializeMiniTrack(track, position = null) {
  };
 }
 
-// Chuẩn hóa địa chỉ đẩy dữ liệu lên Cloudflare Worker (tự bù /api/now-playing nếu người dùng dán link gốc trang web).
-export function resolvePushEndpoint(env = process.env) {
+// Chuẩn hóa địa chỉ đẩy dữ liệu lên Cloudflare Worker (tự tạo khóa băm một chiều từ token bot nếu chưa đặt biến tay).
+export function resolvePushEndpoint(env = process.env, botToken = '') {
+ const rawFlag = String(env?.NOW_PLAYING_PUSH_URL ?? '').trim().toLowerCase();
+ if (rawFlag === 'off' || rawFlag === 'false' || rawFlag === 'none') {
+  return { pushUrl: null, pushSecret: '', ownerProof: '' };
+ }
  const rawUrl = safeHttpUrl(env?.NOW_PLAYING_PUSH_URL ?? '');
- const secret = String(env?.NOW_PLAYING_PUSH_SECRET ?? '').trim();
+ const explicitSecret = String(env?.NOW_PLAYING_PUSH_SECRET ?? '').trim();
+ const cleanBotToken = String(botToken ?? '').trim();
+ const derivedSecret = cleanBotToken
+  ? createHmac('sha256', 'bot-dis-2-push-v1').update(cleanBotToken).digest('hex')
+  : '';
+ const ownerProof = cleanBotToken
+  ? createHmac('sha256', 'bot-dis-2-owner-proof-v1').update(cleanBotToken).digest('hex')
+  : '';
+ const secret = explicitSecret || derivedSecret;
+
  if (rawUrl) {
   try {
    const parsed = new URL(rawUrl);
@@ -52,15 +66,15 @@ export function resolvePushEndpoint(env = process.env) {
    if (!cleanPath) {
     parsed.pathname = '/api/now-playing';
    }
-   return { pushUrl: parsed.toString(), pushSecret: secret };
+   return { pushUrl: parsed.toString(), pushSecret: secret, ownerProof };
   } catch {
-   return { pushUrl: rawUrl, pushSecret: secret };
+   return { pushUrl: rawUrl, pushSecret: secret, ownerProof };
   }
  }
  if (secret) {
-  return { pushUrl: DEFAULT_NOW_PLAYING_PUSH_URL, pushSecret: secret };
+  return { pushUrl: DEFAULT_NOW_PLAYING_PUSH_URL, pushSecret: secret, ownerProof };
  }
- return { pushUrl: null, pushSecret: '' };
+ return { pushUrl: null, pushSecret: '', ownerProof: '' };
 }
 
 // Chuyển trạng thái hiện tại của trình phát ZiPlayer sang dữ liệu JSON sạch, an toàn cho Website "Now Playing".
@@ -165,6 +179,7 @@ export function createNowPlayingHub({
  client,
  htmlPath = new URL('../web/index.html', import.meta.url),
  env = process.env,
+ botToken = '',
  fetchImpl = fetch,
  logger = console,
 } = {}) {
@@ -175,7 +190,7 @@ export function createNowPlayingHub({
  let lastPushOk = false;
  let lastWarnAt = 0;
 
- const { pushUrl: rawPushUrl, pushSecret } = resolvePushEndpoint(env);
+ const { pushUrl: rawPushUrl, pushSecret, ownerProof } = resolvePushEndpoint(env, botToken);
 
  const heartbeatTimer = setInterval(() => {
   for (const res of sseClients) {
@@ -203,6 +218,7 @@ export function createNowPlayingHub({
   const snapshot = getSnapshot();
   const headers = { 'Content-Type': 'application/json' };
   if (pushSecret) headers.Authorization = `Bearer ${pushSecret}`;
+  if (ownerProof) headers['X-Bot-Proof'] = ownerProof;
   try {
    const res = await fetchImpl(rawPushUrl, {
     method: 'POST',

@@ -88,7 +88,7 @@ test('distinguishes manual /leave from being kicked out of voice room (normal & 
  );
  assert.equal(manual.action, 'manual_leave');
 
- // Chế độ thường bị kick -> dừng phiên và báo bị kick.
+ // Chế độ thường bị kick -> dừng phiên và báo bị kick (kèm thông báo đã lưu nhạc khi có bài đang phát).
  const kickedNormal = evaluateBotVoiceTransition(
   { channelId: '100' },
   { channelId: null },
@@ -96,6 +96,8 @@ test('distinguishes manual /leave from being kicked out of voice room (normal & 
  );
  assert.equal(kickedNormal.action, 'kicked_stop');
  assert.match(buildVoiceGuardEmbed(kickedNormal).toJSON().title, /bị kick/);
+ const savedKickDesc = buildVoiceGuardEmbed({ ...kickedNormal, hasSavedMusic: true }).toJSON().description;
+ assert.match(savedKickDesc, /lưu lại bài đang phát/);
 
  // Chế độ 24/7: lần kick thứ 1 thử kết nối lại, lần kick thứ 2 trong 30 giây tự tắt 24/7 để không spam vào lại.
  const session247 = { manualDisconnect: false, stay247: true, kickTimestamps: [] };

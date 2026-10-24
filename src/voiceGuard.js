@@ -161,8 +161,12 @@ export function buildVoiceGuardEmbed(event) {
     .setTitle('👢 Phát hiện bot bị kick khỏi kênh thoại')
     .setDescription([
      `Bot vừa bị ngắt kết nối khỏi phòng <#${event.oldChannelId}>.`,
-     '⏹️ Đã tự động dừng phát nhạc và dọn sạch phiên để tiết kiệm tài nguyên.',
-     '💡 Gõ `/play` hoặc `/join` bất cứ lúc nào nếu bạn muốn gọi bot vào lại.',
+     event.hasSavedMusic
+      ? '💾 Đã **lưu lại bài đang phát, mốc thời gian & hàng đợi** (giữ trong 30 phút).'
+      : '⏹️ Đã tự động dừng phát nhạc và dọn sạch phiên để tiết kiệm tài nguyên.',
+     event.hasSavedMusic
+      ? '💡 Gõ `/join` để gọi bot vào lại và **phát tiếp đúng bài nhạc vừa dở**, hoặc `/play` để mở bài mới.'
+      : '💡 Gõ `/play` hoặc `/join` bất cứ lúc nào nếu bạn muốn gọi bot vào lại.',
     ].join('\n'));
 
   case 'kicked_reconnect_247':
@@ -182,7 +186,10 @@ export function buildVoiceGuardEmbed(event) {
     .setDescription([
      `Phát hiện bot bị đưa ra khỏi phòng <#${event.oldChannelId}> nhiều lần liên tiếp.`,
      '🛑 Bot đã **tự tắt chế độ 24/7** và dừng vào lại để tránh làm phiền quản trị viên.',
-    ].join('\n'));
+     event.hasSavedMusic
+      ? '💾 Nhạc đang phát & hàng đợi vẫn được lưu tạm — gõ `/join` hoặc `/247` để phát tiếp khi cần.'
+      : null,
+    ].filter(Boolean).join('\n'));
 
   case 'moved_afk':
    return new EmbedBuilder()

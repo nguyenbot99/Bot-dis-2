@@ -225,6 +225,8 @@ const cooldown = new Map();
 const refreshCooldown = new Map();
 const guildKickAlerts = new Map();
 const guildLastRejoinAt = new Map();
+const guildKickSnapshots = new Map();
+const KICK_SNAPSHOT_TTL_MS = 30 * 60 * 1000; // Giữ trạng thái bài đang phát & hàng đợi trong 30 phút sau khi bị kick để khôi phục khi /join.
 const PROGRESS_TICK_MS = 5000; // Chu kỳ cập nhật thanh tiến trình (5 giây/lần: chuẩn mượt, không bao giờ chạm giới hạn rate-limit Discord).
 const KNOWN_ERROR_RE = /^(Hãy|Bạn|Bot|Chờ|Chỉ|Hàng|Không|Chưa|Tên|URL|Lệnh|Bản|Link|Thời|Số|Định|Vị)/;
 
@@ -377,6 +379,10 @@ async function postFreshPanel(player, track) {
   }
   ud.panelMessage = sent;
   markPanelTouched(player);
+  if (ud.pendingKickRestoreSync) {
+   ud.pendingKickRestoreSync = false;
+   schedulePanelUpdate(player);
+  }
   if (!player.isPaused) startProgressTicker(player);
  } catch (e) {
   console.warn('[khung-nhạc] Không thể gửi khung điều khiển vào kênh chat (kiểm tra quyền Gửi tin nhắn):', e?.code ?? e?.name ?? 'Lỗi');
@@ -436,6 +442,119 @@ async function closeCurrentPanel(player, reason, { keepIdle247 = false } = {}) {
   await msg.edit(payload).catch(() => {});
   schedulePanelAutoDelete(msg);
  }
+}
+
+// Sao lưu gọn nhẹ bài hát đang phát, mốc thời gian và hàng đợi trước khi phiên bị hủy do bot bị kick khỏi phòng.
+function cloneSavedTrack(t) {
+ if (!t || typeof t !== 'object') return null;
+ return {
+  id: t.id,
+  title: t.title,
+  url: t.url,
+  duration: t.duration,
+  thumbnail: t.thumbnail,
+  requestedBy: t.requestedBy,
+  source: t.source,
+  isLive: t.isLive,
+  metadata: t.metadata ? { ...t.metadata } : undefined,
+ };
+}
+
+function captureKickSnapshot(player) {
+ if (!player || player.destroyed) return null;
+ const cur = player.queue?.currentTrack ?? player.currentTrack ?? null;
+ const upcoming = (Array.isArray(player.upcomingTracks) ? player.upcomingTracks : [])
+  .slice(0, 20)
+  .map(cloneSavedTrack)
+  .filter(Boolean);
+ const clonedCur = cloneSavedTrack(cur);
+ if (!clonedCur && !upcoming.length) return null;
+
+ let positionMs = 0;
+ if (cur) {
+  const { currentMs, totalMs } = renderSyncedProgress(player, cur, Boolean(player.isPaused));
+  if (currentMs >= 5000 && (!totalMs || currentMs < totalMs - 5000)) {
+   positionMs = Math.round(currentMs);
+  }
+ }
+
+ const snap = {
+  savedAt: Date.now(),
+  currentTrack: clonedCur,
+  positionMs,
+  upcomingTracks: upcoming,
+  wasPaused: Boolean(player.isPaused && !player.userdata?.autoPausedByMute),
+  volume: player.volume ?? 100,
+  loopMode: (typeof player.loop === 'function' ? player.loop() : 'off') ?? 'off',
+  autoPlay: typeof player.autoPlay === 'function' ? Boolean(player.autoPlay()) : false,
+  soundPreset: player.userdata?.soundPreset ?? 'hd',
+  ownerId: player.userdata?.ownerId ?? null,
+ };
+ if (guildKickSnapshots.size >= 50) guildKickSnapshots.clear();
+ guildKickSnapshots.set(player.guildId, snap);
+ return snap;
+}
+
+// Khôi phục lại đúng bài hát, mốc thời gian tua và hàng đợi trước khi bị kick khi người dùng gọi /join hoặc /247.
+async function restoreKickSnapshotIfAny(player, voiceChannel, fallbackUserId) {
+ const guildId = player?.guildId;
+ if (!guildId) return null;
+ const snap = guildKickSnapshots.get(guildId);
+ if (!snap) return null;
+ guildKickSnapshots.delete(guildId);
+ if (Date.now() - snap.savedAt > KICK_SNAPSHOT_TTL_MS) return null;
+
+ const allTracks = [snap.currentTrack, ...(snap.upcomingTracks ?? [])].filter(Boolean);
+ if (!allTracks.length) return null;
+ const [firstTrack, ...restTracks] = allTracks;
+
+ const origOwner = resolveHumanRequester(firstTrack.requestedBy) || snap.ownerId;
+ const ownerStillInRoom = Boolean(origOwner && voiceChannel?.members?.has?.(origOwner));
+ const effectiveOwner = ownerStillInRoom ? origOwner : fallbackUserId;
+ if (!ownerStillInRoom) firstTrack.requestedBy = fallbackUserId;
+
+ if (player.userdata) {
+  player.userdata.soundPreset = snap.soundPreset ?? 'hd';
+  player.userdata.ownerId = effectiveOwner;
+  player.userdata.idleOpen = false;
+ }
+ setAudioEnhancement({
+  preset: snap.soundPreset ?? 'hd',
+  channelBitrate: voiceChannel?.bitrate,
+ });
+
+ if (typeof snap.volume === 'number' && snap.volume !== 100) player.setVolume(snap.volume);
+ if (snap.autoPlay) player.autoPlay(true);
+
+ const played = await player.play(firstTrack, firstTrack.requestedBy || fallbackUserId).catch(() => false);
+ if (!played) return null;
+
+ if (restTracks.length > 0) {
+  if (typeof player.queue?.addMultiple === 'function') {
+   player.queue.addMultiple(restTracks);
+  } else {
+   for (const t of restTracks) player.queue?.insert?.(t, player.queue.size);
+  }
+ }
+ if (snap.loopMode && snap.loopMode !== 'off') player.loop(snap.loopMode);
+
+ let resumedAtMs = 0;
+ if (snap.currentTrack && snap.positionMs >= 5000) {
+  const seekOk = await player.seek(snap.positionMs).catch(() => false);
+  if (seekOk) resumedAtMs = snap.positionMs;
+ }
+ if (snap.wasPaused && !player.isPaused) {
+  await player.pause().catch(() => {});
+ }
+ if (player.userdata && !player.userdata.panelMessage) {
+  player.userdata.pendingKickRestoreSync = true;
+ }
+ schedulePanelUpdate(player);
+ return {
+  track: firstTrack,
+  resumedAtMs,
+  queuedCount: restTracks.length,
+ };
 }
 
 // Tự động xóa thông báo bị kick khỏi phòng ngay khi bot được gọi vào lại kênh thoại.
@@ -719,6 +838,7 @@ async function enqueueAndPlay({ guild, voiceChannel, textChannel, rawQuery, user
  cooldown.set(userId, Date.now());
 
  const { player: p, created } = await ensureVoiceSession({ guild, voiceChannel, textChannel, userId });
+ guildKickSnapshots.delete(guild.id);
  try {
   if (p.queue.size >= 20) throw new Error('Hàng đợi đã đủ 20 bài.');
   let result = await p.search(q, userId).catch(() => null);
@@ -782,6 +902,8 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
 
   if (ev.action === 'kicked_stop') {
    const alertChannel = p.userdata.textChannel;
+   const saved = captureKickSnapshot(p);
+   ev.hasSavedMusic = Boolean(saved);
    void destroyPlayerSession(guild.id, `👢 Bot đã bị kick (ngắt kết nối) khỏi kênh thoại <#${ev.oldChannelId}>.`);
    void sendVoiceGuardAlert(alertChannel, null, ev, guild.id);
    return;
@@ -789,6 +911,8 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
 
   if (ev.action === 'kicked_abort_247') {
    const alertChannel = p.userdata.textChannel;
+   const saved = captureKickSnapshot(p);
+   ev.hasSavedMusic = Boolean(saved);
    void destroyPlayerSession(
     guild.id,
     `👢 Phát hiện bot bị kick khỏi kênh <#${ev.oldChannelId}> liên tiếp — đã tự tắt 24/7 và rời phòng.`,
@@ -1073,6 +1197,7 @@ async function handlePlayerComponent(i) {
      return;
     }
     case 'player_leave': {
+     guildKickSnapshots.delete(i.guildId);
      if (p.userdata) {
       p.userdata.manualDisconnect = true;
       p.userdata.stay247 = false;
@@ -1093,6 +1218,7 @@ async function handlePlayerComponent(i) {
      return;
     }
     case 'player_stop': {
+     guildKickSnapshots.delete(i.guildId);
      if (p.userdata?.stay247) {
       p.userdata.ending = true;
       p.userdata.idleOpen = true;
@@ -1255,6 +1381,14 @@ client.on(Events.InteractionCreate, async i => {
   if (i.commandName === 'join') {
    const alreadyConnected = Boolean(p?.connection);
    const { player: joinedPlayer } = await ensureVoiceSession({ guild: i.guild, voiceChannel: channel, textChannel: i.channel, userId: i.user.id });
+   if (!alreadyConnected && !joinedPlayer.queue?.currentTrack) {
+    const restored = await restoreKickSnapshotIfAny(joinedPlayer, channel, i.user.id);
+    if (restored) {
+     const posNote = restored.resumedAtMs > 0 ? ` từ mốc **${formatDuration(restored.resumedAtMs)}**` : '';
+     const queueNote = restored.queuedCount > 0 ? ` *(kèm ${restored.queuedCount} bài trong hàng đợi)*` : '';
+     return await reply(`▶️ Đã vào lại <#${channel.id}> và **phát tiếp nhạc lúc trước khi bị kick**: **${cleanText(restored.track.title, 85)}**${posNote}${queueNote}!`);
+    }
+   }
    nowPlayingHub.publish({ player: joinedPlayer });
    return await reply(alreadyConnected ? `✅ Bot đang ở sẵn trong kênh thoại <#${channel.id}>.` : `✅ Đã tham gia kênh thoại <#${channel.id}>. Dùng \`/play\` để phát nhạc hoặc \`/247\` để giữ bot ở lại 24/7.`);
   }
@@ -1264,6 +1398,12 @@ client.on(Events.InteractionCreate, async i => {
    if (!p) {
     if (chosen === 'off') return await reply('Chế độ 24/7 hiện đang tắt (bot chưa ở trong kênh thoại).');
     const { player: createdPlayer } = await ensureVoiceSession({ guild: i.guild, voiceChannel: channel, textChannel: i.channel, userId: i.user.id, initial247: true });
+    const restored = await restoreKickSnapshotIfAny(createdPlayer, channel, i.user.id);
+    if (restored) {
+     const posNote = restored.resumedAtMs > 0 ? ` từ mốc **${formatDuration(restored.resumedAtMs)}**` : '';
+     const queueNote = restored.queuedCount > 0 ? ` *(kèm ${restored.queuedCount} bài trong hàng đợi)*` : '';
+     return await reply(`🌙 Đã vào lại <#${channel.id}>, bật **24/7** và phát tiếp bài lúc trước khi bị kick: **${cleanText(restored.track.title, 85)}**${posNote}${queueNote}!`);
+    }
     await closeCurrentPanel(createdPlayer, 'Bot đang treo trong kênh thoại 24/7 và sẵn sàng phát nhạc.', { keepIdle247: true });
     return await reply(`🌙 Đã tham gia <#${channel.id}> và **BẬT** chế độ treo kênh thoại 24/7.`);
    }
@@ -1285,6 +1425,7 @@ client.on(Events.InteractionCreate, async i => {
   }
 
   if (i.commandName === 'leave') {
+   guildKickSnapshots.delete(i.guildId);
    if (!p) throw new Error('Bot hiện không ở trong kênh thoại nào.');
    await destroyPlayerSession(i.guildId, 'Đã dừng phát nhạc và rời kênh thoại theo lệnh `/leave`.');
    return await reply('👋 Đã tắt chế độ 24/7, xóa hàng đợi và rời khỏi kênh thoại.');
@@ -1408,6 +1549,7 @@ client.on(Events.InteractionCreate, async i => {
     return await reply('Đã bỏ qua bài hiện tại.');
    }
    case 'stop':
+    guildKickSnapshots.delete(i.guildId);
     if (p.userdata?.stay247) {
      p.userdata.idleOpen = true;
      p.userdata.skipNextStopEvent = true;

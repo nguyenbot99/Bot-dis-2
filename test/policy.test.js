@@ -152,7 +152,7 @@ test('new music command options are bounded', () => {
  assert.deepEqual(option('autoplay').choices.map(c => c.value), ['on', 'off']);
  assert.deepEqual(option('loop').choices.map(c => c.value), ['off', 'track', 'queue']);
  assert.equal(option('volume').min_value, 0);
- assert.equal(option('volume').max_value, 100);
+ assert.equal(option('volume').max_value, 200);
  assert.equal(option('remove').min_value, 1);
  assert.equal(option('remove').max_value, 20);
  assert.equal(option('move').min_value, 1);

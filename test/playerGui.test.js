@@ -8,6 +8,7 @@ import {
  buildNowPlayingEmbed,
  buildPlayerPayload,
  buildQueueEmbed,
+ buildVolumeModal,
  formatDuration,
  IDLE_PANEL_AUTO_DELETE_MS,
  renderSyncedProgress,
@@ -89,6 +90,15 @@ test('buildEndedPayload, modal, and embeds serialize cleanly', () => {
 
  const modal = buildAddSongModal().toJSON();
  assert.equal(modal.custom_id, 'player_add_modal');
+
+ const volModal = buildVolumeModal(165).toJSON();
+ assert.equal(volModal.custom_id, 'player_volume_modal');
+ assert.equal(volModal.components[0].components[0].value, '165');
+
+ const boostedRaw = JSON.stringify(buildPlayerPayload(samplePlayer, { volume: 200, soundPreset: 'bass' }).components[0].toJSON());
+ assert.ok(boostedRaw.includes('🔊 **200%**'), 'renders 200% volume on player panel');
+ assert.ok(boostedRaw.includes('custom_volume'), 'includes custom volume option in player menu');
+ assert.ok(boostedRaw.includes('preset_bass'), 'includes direct sound preset options in player menu');
 
  const botUser = { username: 'Bắt_Don', displayAvatarURL: () => 'https://cdn.discordapp.com/embed/avatars/0.png' };
  const qEmbed = buildQueueEmbed(samplePlayer, botUser).toJSON();

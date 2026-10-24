@@ -221,7 +221,7 @@ export function buildPlayerPayload(player, overrides = {}) {
 
  container.addSeparatorComponents(new SeparatorBuilder().setDivider(true).setSpacing(1));
 
- // Menu chọn nhanh các chức năng điều khiển và tra cứu.
+ // Menu chọn nhanh các chức năng điều khiển, âm lượng tùy chỉnh (0–200%) và đổi chất âm trực tiếp.
  const selectRow = new ActionRowBuilder().addComponents(
   new StringSelectMenuBuilder()
    .setCustomId('player_menu')
@@ -232,6 +232,51 @@ export function buildPlayerPayload(player, overrides = {}) {
      .setDescription('Mở hộp thoại nhập tên bài hoặc link YouTube / SoundCloud / Spotify')
      .setValue('add_song')
      .setEmoji('➕'),
+    new StringSelectMenuOptionBuilder()
+     .setLabel('Tùy chỉnh âm lượng (0% – 200%)')
+     .setDescription(`Nhập số phần trăm bất kỳ từ 0 đến 200 (hiện tại: ${volume}%)`)
+     .setValue('custom_volume')
+     .setEmoji('🎚️'),
+    new StringSelectMenuOptionBuilder()
+     .setLabel('Giảm âm lượng (-20%)')
+     .setDescription(`Giảm ngay 20% âm lượng (hiện tại: ${volume}%)`)
+     .setValue('vol_down')
+     .setEmoji('🔉'),
+    new StringSelectMenuOptionBuilder()
+     .setLabel('Tăng âm lượng (+20%)')
+     .setDescription(`Tăng thêm 20% âm lượng, tối đa 200% (hiện tại: ${volume}%)`)
+     .setValue('vol_up')
+     .setEmoji('🔊'),
+    new StringSelectMenuOptionBuilder()
+     .setLabel('Đặt lại âm lượng 100%')
+     .setDescription('Đưa mức âm lượng về chuẩn mặc định 100%')
+     .setValue('vol_100')
+     .setEmoji('🔄'),
+    new StringSelectMenuOptionBuilder()
+     .setLabel(`Đổi chất âm nhanh (hiện tại: ${soundLabel})`)
+     .setDescription('Chuyển vòng chất âm trực tiếp ngay trên bài đang phát')
+     .setValue('cycle_sound')
+     .setEmoji('🎧'),
+    new StringSelectMenuOptionBuilder()
+     .setLabel(`Chất âm: Rõ nét HD${soundPreset === 'hd' ? ' (Đang bật)' : ''}`)
+     .setDescription('Âm hình 3D rộng, dải cao sáng trong & trầm gọn chắc')
+     .setValue('preset_hd')
+     .setEmoji('💎'),
+    new StringSelectMenuOptionBuilder()
+     .setLabel(`Chất âm: Rõ lời & Sáng tiếng${soundPreset === 'vocal' ? ' (Đang bật)' : ''}`)
+     .setDescription('Tôn giọng ca sĩ nổi bật phía trước, giảm trầm lấn lời')
+     .setValue('preset_vocal')
+     .setEmoji('🎤'),
+    new StringSelectMenuOptionBuilder()
+     .setLabel(`Chất âm: Bass Ấm & Căng${soundPreset === 'bass' ? ' (Đang bật)' : ''}`)
+     .setDescription('Tăng mạnh lực sub-bass & trống trầm đập chắc, chống rè')
+     .setValue('preset_bass')
+     .setEmoji('🔥'),
+    new StringSelectMenuOptionBuilder()
+     .setLabel(`Chất âm: Nguyên bản${soundPreset === 'flat' ? ' (Đang bật)' : ''}`)
+     .setDescription('Giữ nguyên EQ gốc tự nhiên 100% của bản thu')
+     .setValue('preset_flat')
+     .setEmoji('🎵'),
     new StringSelectMenuOptionBuilder()
      .setLabel('Xem hàng đợi')
      .setDescription('Xem danh sách các bài tiếp theo (mọi người đều xem được)')
@@ -247,11 +292,6 @@ export function buildPlayerPayload(player, overrides = {}) {
      .setDescription(autoPlay ? 'Dừng tự tìm nhạc liên quan khi hết hàng đợi' : 'Tự động tìm & phát nhạc cùng gu khi hết hàng đợi')
      .setValue('toggle_autoplay')
      .setEmoji('✨'),
-    new StringSelectMenuOptionBuilder()
-     .setLabel(`Đổi chất âm (hiện tại: ${soundLabel})`)
-     .setDescription('Chuyển vòng: Rõ nét HD → Rõ lời & Sáng tiếng → Bass ấm → Nguyên bản')
-     .setValue('cycle_sound')
-     .setEmoji('🎧'),
     new StringSelectMenuOptionBuilder()
      .setLabel('Đổi chế độ lặp')
      .setDescription(`Chuyển vòng: Tắt lặp → Một bài → Hàng đợi (hiện tại: ${LOOP_LABELS[loopMode] ?? 'Tắt lặp'})`)
@@ -272,21 +312,6 @@ export function buildPlayerPayload(player, overrides = {}) {
      .setDescription('Xóa toàn bộ bài đang chờ mà không dừng bài hiện tại')
      .setValue('clear_queue')
      .setEmoji('🗑️'),
-    new StringSelectMenuOptionBuilder()
-     .setLabel('Giảm âm lượng (-20%)')
-     .setDescription(`Giảm bớt 20% âm lượng (hiện tại: ${volume}%)`)
-     .setValue('vol_down')
-     .setEmoji('🔉'),
-    new StringSelectMenuOptionBuilder()
-     .setLabel('Tăng âm lượng (+20%)')
-     .setDescription(`Tăng thêm 20% âm lượng (hiện tại: ${volume}%)`)
-     .setValue('vol_up')
-     .setEmoji('🔊'),
-    new StringSelectMenuOptionBuilder()
-     .setLabel('Đặt lại âm lượng 100%')
-     .setDescription('Đưa mức âm lượng về mặc định 100%')
-     .setValue('vol_100')
-     .setEmoji('🎚️'),
    ),
  );
 
@@ -444,6 +469,27 @@ export function buildAddSongModal() {
      .setPlaceholder('Nhập tên bài hát hoặc dán link bài lẻ HTTPS...')
      .setRequired(true)
      .setMaxLength(400),
+   ),
+  );
+}
+
+// Hộp thoại tùy chỉnh mức âm lượng bất kỳ từ 0% đến 200% ngay trên khung điều khiển.
+export function buildVolumeModal(currentVolume = 100) {
+ const safeCurrent = Math.min(200, Math.max(0, Math.round(Number(currentVolume) || 100)));
+ return new ModalBuilder()
+  .setCustomId('player_volume_modal')
+  .setTitle('Tùy chỉnh âm lượng (0% – 200%)')
+  .addComponents(
+   new ActionRowBuilder().addComponents(
+    new TextInputBuilder()
+     .setCustomId('volume')
+     .setLabel('Nhập mức âm lượng mong muốn (0 – 200)')
+     .setStyle(TextInputStyle.Short)
+     .setPlaceholder('Nhập số bất kỳ từ 0 đến 200 (ví dụ: 20, 75, 150, 200)')
+     .setValue(String(safeCurrent))
+     .setRequired(true)
+     .setMinLength(1)
+     .setMaxLength(5),
    ),
   );
 }

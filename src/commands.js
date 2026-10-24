@@ -21,7 +21,7 @@ const definitions = [
  ['move', 'Đổi vị trí một bài hát đang chờ trong hàng đợi'],
  ['remove', 'Xóa một bài hát khỏi hàng đợi theo số thứ tự trong /queue'],
  ['clear', 'Xóa toàn bộ các bài đang chờ mà không dừng bài hiện tại'],
- ['volume', 'Điều chỉnh âm lượng phát nhạc từ 0% đến 100%'],
+ ['volume', 'Điều chỉnh âm lượng phát nhạc tùy thích từ 0% đến 200%'],
  ['queue', 'Xem danh sách tối đa 10 bài hát tiếp theo trong hàng đợi'],
  ['history', 'Xem danh sách tối đa 10 bài hát vừa phát gần đây'],
  ['nowplaying', 'Xem thông tin chi tiết bài hát đang được phát'],
@@ -76,7 +76,7 @@ export function buildHelpEmbed(botUser) {
      '`/move` `from` `to` — Đổi vị trí bài chờ trong `/queue` (`1` – `20`)',
      '`/remove` `position` — Xóa một bài chờ theo số thứ tự (`1` – `20`)',
      '`/clear` — Xóa sạch danh sách chờ mà không dừng bài đang phát',
-     '`/volume` `percent` — Chỉnh mức âm lượng phát (`0%` – `100%`)',
+     '`/volume` `percent` — Tùy chỉnh mức âm lượng phát bất kỳ (`0%` – `200%`)',
     ].join('\n'),
    },
    {
@@ -183,10 +183,10 @@ export const commands = definitions.map(([name, description]) => {
  if (name === 'volume') {
   c.addIntegerOption(o => o
    .setName('percent')
-   .setDescription('Mức âm lượng mong muốn (từ 0 đến 100)')
+   .setDescription('Mức âm lượng mong muốn (nhập số bất kỳ từ 0 đến 200)')
    .setRequired(true)
    .setMinValue(0)
-   .setMaxValue(100));
+   .setMaxValue(200));
  }
  if (name === 'remove') {
   c.addIntegerOption(o => o

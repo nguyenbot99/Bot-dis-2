@@ -4,7 +4,17 @@ import { ActivityType, Client, Events, GatewayIntentBits, MessageFlags, Options,
 import { PlayerManager } from 'ziplayer';
 import ffmpeg from 'ffmpeg-static';
 import { parseSeekTime, pickBestMatchingTrack, resolveConfig, resolveMusicRequest } from './src/policy.js';
-import { getNextSoundPreset, installAudioEnhancer, setAudioEnhancement, SOUND_PRESETS } from './src/audioEnhancer.js';
+import {
+ clampVolumePercent,
+ configurePlayerAudio,
+ getNextSoundPreset,
+ installAudioEnhancer,
+ MAX_VOLUME_PERCENT,
+ MIN_VOLUME_PERCENT,
+ parseCustomVolumeInput,
+ setAudioEnhancement,
+ SOUND_PRESETS,
+} from './src/audioEnhancer.js';
 import { assertMusicAccess, isBotOwner, resolveHumanRequester } from './src/access.js';
 import { fetchTrackLyrics, sanitizeLyricsTitle } from './src/lyrics.js';
 import { createNowPlayingHub } from './src/nowPlayingHub.js';
@@ -19,6 +29,7 @@ import {
  buildNowPlayingEmbed,
  buildPlayerPayload,
  buildQueueEmbed,
+ buildVolumeModal,
  cleanText,
  formatDuration,
  IDLE_PANEL_AUTO_DELETE_MS,
@@ -228,7 +239,7 @@ const guildLastRejoinAt = new Map();
 const guildKickSnapshots = new Map();
 const KICK_SNAPSHOT_TTL_MS = 30 * 60 * 1000; // Giữ trạng thái bài đang phát & hàng đợi trong 30 phút sau khi bị kick để khôi phục khi /join.
 const PROGRESS_TICK_MS = 5000; // Chu kỳ cập nhật thanh tiến trình (5 giây/lần: chuẩn mượt, không bao giờ chạm giới hạn rate-limit Discord).
-const KNOWN_ERROR_RE = /^(Hãy|Bạn|Bot|Chờ|Chỉ|Hàng|Không|Chưa|Tên|URL|Lệnh|Bản|Link|Thời|Số|Định|Vị)/;
+const KNOWN_ERROR_RE = /^(Hãy|Bạn|Bot|Chờ|Chỉ|Hàng|Không|Chưa|Tên|URL|Lệnh|Bản|Link|Thời|Số|Định|Vị|Mức|Âm)/;
 
 function clearPanelTimer(player) {
  if (player?.userdata?.panelTimer) {
@@ -523,6 +534,7 @@ async function restoreKickSnapshotIfAny(player, voiceChannel, fallbackUserId) {
   channelBitrate: voiceChannel?.bitrate,
  });
 
+ configurePlayerAudio(player);
  if (typeof snap.volume === 'number' && snap.volume !== 100) player.setVolume(snap.volume);
  if (snap.autoPlay) player.autoPlay(true);
 
@@ -816,6 +828,7 @@ async function ensureVoiceSession({ guild, voiceChannel, textChannel, userId, in
  }
 
  try {
+  configurePlayerAudio(p);
   setAudioEnhancement({
    preset: p.userdata?.soundPreset ?? 'hd',
    channelBitrate: voiceChannel.bitrate,
@@ -1081,6 +1094,21 @@ async function handlePlayerComponent(i) {
   return;
  }
 
+ // Trường hợp mở hộp thoại tùy chỉnh âm lượng (0% – 200%): phải gọi showModal trước khi defer.
+ if (i.isStringSelectMenu() && i.customId === 'player_menu' && i.values[0] === 'custom_volume') {
+  if (!p) {
+   await i.update(buildEndedPayload());
+   schedulePanelAutoDelete(i.message);
+   return;
+  }
+  await requireSameVoiceChannel(i.guild, i.user.id);
+  assertMusicAccess('volume', i.user.id, p);
+  if (p.userdata) p.userdata.panelMessage = i.message;
+  await i.showModal(buildVolumeModal(p.volume ?? 100));
+  if (p.queue?.currentTrack) schedulePanelUpdate(p);
+  return;
+ }
+
  // Trường hợp xem hàng đợi từ menu (ai trong máy chủ cũng bấm xem được, hiển thị riêng tư).
  if (i.isStringSelectMenu() && i.customId === 'player_menu' && i.values[0] === 'view_queue') {
   if (!p) throw new Error('Chưa có phiên phát nhạc nào.');
@@ -1140,6 +1168,31 @@ async function handlePlayerComponent(i) {
    });
    await i.editReply({
     content: queued ? `✅ Đã thêm vào hàng đợi: **${cleanText(track.title, 90)}**` : `▶️ Đang phát: **${cleanText(track.title, 90)}**`,
+    allowedMentions: { parse: [] },
+   });
+  } finally {
+   if (ownsLock) busy = false;
+  }
+  return;
+ }
+
+ // Trường hợp gửi hộp thoại tùy chỉnh âm lượng bất kỳ từ 0% đến 200% (Modal Submit).
+ if (i.isModalSubmit() && i.customId === 'player_volume_modal') {
+  let ownsLock = false;
+  try {
+   await i.deferReply({ flags: MessageFlags.Ephemeral });
+   if (!p) throw new Error('Chưa có phiên phát nhạc nào.');
+   if (busy) return void await i.editReply({ content: 'Đang xử lý thao tác khác, vui lòng thử lại.' });
+   busy = true; ownsLock = true;
+   await requireSameVoiceChannel(i.guild, i.user.id);
+   assertMusicAccess('volume', i.user.id, p);
+   configurePlayerAudio(p);
+   const target = parseCustomVolumeInput(i.fields.getTextInputValue('volume'));
+   if (!p.setVolume(target)) throw new Error('Không thể chỉnh âm lượng lúc này.');
+   nowPlayingHub.publish({ player: p, volume: target });
+   schedulePanelUpdate(p, { volume: target });
+   await i.editReply({
+    content: `🎚️ Đã tùy chỉnh âm lượng thành **${target}%** (áp dụng trực tiếp ngay trên bài đang phát).`,
     allowedMentions: { parse: [] },
    });
   } finally {
@@ -1266,15 +1319,24 @@ async function handlePlayerComponent(i) {
      await i.update(buildPlayerPayload(p, { autoPlay: nextAuto }));
      return;
     }
-    case 'cycle_sound': {
-     const nextPreset = getNextSoundPreset(p.userdata?.soundPreset ?? 'hd');
+    case 'cycle_sound':
+    case 'preset_hd':
+    case 'preset_vocal':
+    case 'preset_bass':
+    case 'preset_flat': {
+     const nextPreset = i.values[0] === 'cycle_sound'
+      ? getNextSoundPreset(p.userdata?.soundPreset ?? 'hd')
+      : i.values[0].slice('preset_'.length);
+     if (!SOUND_PRESETS[nextPreset]) throw new Error('Chưa hỗ trợ chế độ chất âm này.');
      if (p.userdata) p.userdata.soundPreset = nextPreset;
      setAudioEnhancement({ preset: nextPreset });
+     clearPanelTimer(p);
      markPanelTouched(p);
+     nowPlayingHub.publish({ player: p, soundPreset: nextPreset });
      await i.update(buildPlayerPayload(p, { soundPreset: nextPreset }));
      const presetInfo = SOUND_PRESETS[nextPreset];
      await i.followUp({
-      content: `🎧 Đã chuyển chất âm sang **${presetInfo.label}** (*${presetInfo.description}*) — sẽ áp dụng mượt từ bài kế tiếp để không ngắt nhạc đang phát.`,
+      content: `🎧 Đã chuyển ngay chất âm sang **${presetInfo.label}** (*${presetInfo.description}*) — áp dụng trực tiếp trên bài đang phát!`,
       flags: MessageFlags.Ephemeral,
      }).catch(() => {});
      return;
@@ -1313,10 +1375,15 @@ async function handlePlayerComponent(i) {
     case 'vol_down':
     case 'vol_up':
     case 'vol_100': {
-     const target = i.values[0] === 'vol_100' ? 100 : Math.min(100, Math.max(0, p.volume + (i.values[0] === 'vol_up' ? 20 : -20)));
+     configurePlayerAudio(p);
+     const currentVol = p.volume ?? 100;
+     const target = i.values[0] === 'vol_100'
+      ? 100
+      : clampVolumePercent(currentVol + (i.values[0] === 'vol_up' ? 20 : -20));
      if (!p.setVolume(target)) throw new Error('Không thể chỉnh âm lượng lúc này.');
      clearPanelTimer(p);
      markPanelTouched(p);
+     nowPlayingHub.publish({ player: p, volume: target });
      await i.update(buildPlayerPayload(p, { volume: target }));
      return;
     }
@@ -1494,11 +1561,15 @@ client.on(Events.InteractionCreate, async i => {
     return await reply(`🗑️ Đã xóa sạch **${count}** bài đang chờ trong hàng đợi.`);
    }
    case 'volume': {
+    configurePlayerAudio(p);
     const percent = i.options.getInteger('percent', true);
-    if (percent < 0 || percent > 100) throw new Error('Lệnh âm lượng chỉ nhận 0–100.');
+    if (percent < MIN_VOLUME_PERCENT || percent > MAX_VOLUME_PERCENT) {
+     throw new Error(`Lệnh âm lượng chỉ nhận từ ${MIN_VOLUME_PERCENT} đến ${MAX_VOLUME_PERCENT}%.`);
+    }
     if (!p.setVolume(percent)) throw new Error('Không thể chỉnh âm lượng lúc này.');
+    nowPlayingHub.publish({ player: p, volume: percent });
     schedulePanelUpdate(p, { volume: percent });
-    return await reply(`Đã đặt âm lượng: ${percent}%.`);
+    return await reply(`🔊 Đã đặt âm lượng: **${percent}%**.`);
    }
    case 'remove': {
     const position = i.options.getInteger('position', true);

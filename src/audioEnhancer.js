@@ -1,30 +1,181 @@
 import { createRequire } from 'node:module';
 
-// Các cấu hình lọc âm thanh chạy trực tiếp trong tiến trình FFmpeg giải mã sẵn có (không tạo thêm tiến trình phụ, không tốn thêm RAM).
+export const MIN_VOLUME_PERCENT = 0;
+export const MAX_VOLUME_PERCENT = 200;
+const DSP_SAMPLE_RATE = 48000;
+const STEREO_BYTES = 4; // 16-bit signed LE * 2 kênh (Trái + Phải)
+const OPUS_FRAME_BYTES = 3840; // 960 mẫu stereo = 20ms mỗi khung Opus
+const LOW_LATENCY_PCM_HWM = 7680; // Tối đa 40ms PCM nằm chờ sau bộ DSP để đổi âm lượng/chất âm ăn ngay lập tức (< 80ms)
+const LOW_LATENCY_OPUS_HWM = 4; // Tối đa 4 gói Opus (80ms) đệm đầu ra
+
+// Các cấu hình chất âm Studio xử lý trực tiếp theo thời gian thực (biquad 64-bit + mở rộng âm hình Mid/Side)
+// kết hợp lấy mẫu chuẩn SoX 24-bit trong FFmpeg: đổi chất âm ăn ngay giữa bài trong ~80ms, không ngắt nhạc, không tốn thêm tiến trình.
 export const SOUND_PRESETS = {
  hd: {
   label: 'Rõ nét HD',
-  description: 'Lấy mẫu SoX 24-bit, làm trong giọng hát & âm cao, chống rè tiếng',
-  filter: 'aresample=48000:resampler=soxr:precision=24,highpass=f=28,equalizer=f=3600:t=q:w=1.2:g=1.8,treble=g=1.6:f=9500:w=0.6,alimiter=limit=0.95:attack=5:release=50:level=false',
+  description: 'Lấy mẫu SoX 24-bit, âm hình 3D rộng, dải cao sáng trong & trầm gọn chắc',
+  filter: 'aresample=48000:resampler=soxr:precision=24',
+  preGainDb: -2.2,
+  makeupGainDb: 1.8,
+  stereoWidth: 1.24,
+  stages: [
+   { type: 'highpass', freq: 30, q: 0.707, gainDb: 0 },
+   { type: 'lowshelf', freq: 95, q: 0.75, gainDb: 4.5 },
+   { type: 'peaking', freq: 280, q: 1.15, gainDb: -3.0 },
+   { type: 'peaking', freq: 3800, q: 1.0, gainDb: 4.0 },
+   { type: 'highshelf', freq: 9200, q: 0.707, gainDb: 5.5 },
+  ],
  },
  vocal: {
   label: 'Rõ lời & Sáng tiếng',
-  description: 'Tôn giọng ca sĩ, giảm âm đục trầm và cân bằng âm lượng lời hát',
-  filter: 'aresample=48000:resampler=soxr:precision=24,highpass=f=45,equalizer=f=220:t=q:w=1.1:g=-1.5,equalizer=f=3400:t=q:w=1.1:g=2.8,treble=g=2.4:f=9000:w=0.6,acompressor=threshold=-16dB:ratio=1.7:attack=15:release=180:makeup=1.25,alimiter=limit=0.95:attack=5:release=50:level=false',
+  description: 'Tôn giọng ca sĩ nổi bật phía trước, giảm dải trầm lấn lời hát',
+  filter: 'aresample=48000:resampler=soxr:precision=24',
+  preGainDb: -2.0,
+  makeupGainDb: 2.2,
+  stereoWidth: 0.90,
+  stages: [
+   { type: 'highpass', freq: 115, q: 0.707, gainDb: 0 },
+   { type: 'lowshelf', freq: 170, q: 0.75, gainDb: -6.0 },
+   { type: 'peaking', freq: 310, q: 1.2, gainDb: -3.2 },
+   { type: 'peaking', freq: 1650, q: 0.95, gainDb: 4.5 },
+   { type: 'peaking', freq: 3600, q: 1.0, gainDb: 5.8 },
+   { type: 'highshelf', freq: 8500, q: 0.707, gainDb: 3.5 },
+  ],
  },
  bass: {
-  label: 'Bass ấm & Rõ nét',
-  description: 'Tăng lực âm trầm gọn chắc nhưng vẫn giữ độ sáng của lời hát',
-  filter: 'aresample=48000:resampler=soxr:precision=24,highpass=f=25,bass=g=4.0:f=85:w=0.6,equalizer=f=260:t=q:w=1.2:g=-1.2,equalizer=f=3600:t=q:w=1.2:g=1.8,treble=g=1.5:f=9500:w=0.6,alimiter=limit=0.94:attack=5:release=50:level=false',
+  label: 'Bass Ấm & Căng',
+  description: 'Tăng mạnh lực sub-bass & trống trầm đập chắc ngực, chống vỡ tiếng',
+  filter: 'aresample=48000:resampler=soxr:precision=24',
+  preGainDb: -4.8,
+  makeupGainDb: 2.4,
+  stereoWidth: 1.08,
+  stages: [
+   { type: 'highpass', freq: 26, q: 0.707, gainDb: 0 },
+   { type: 'lowshelf', freq: 85, q: 0.72, gainDb: 9.5 },
+   { type: 'peaking', freq: 64, q: 1.15, gainDb: 4.2 },
+   { type: 'peaking', freq: 270, q: 1.15, gainDb: -3.8 },
+   { type: 'peaking', freq: 3400, q: 1.1, gainDb: 1.8 },
+   { type: 'highshelf', freq: 7500, q: 0.707, gainDb: -1.5 },
+  ],
  },
  flat: {
   label: 'Nguyên bản',
-  description: 'Giữ nguyên EQ gốc, chỉ bật lấy mẫu chuẩn SoX 24-bit và chống vỡ tiếng',
-  filter: 'aresample=48000:resampler=soxr:precision=24,alimiter=limit=0.97:attack=5:release=50:level=false',
+  description: 'Giữ nguyên EQ gốc tự nhiên 100%, chỉ lấy mẫu SoX 24-bit & chống rè tiếng',
+  filter: 'aresample=48000:resampler=soxr:precision=24',
+  preGainDb: 0,
+  makeupGainDb: 0,
+  stereoWidth: 1.0,
+  stages: [],
  },
 };
 
 export const SOUND_PRESET_ORDER = ['hd', 'vocal', 'bass', 'flat'];
+
+// Tính toán hệ số lọc số Biquad chuẩn RBJ Audio EQ Cookbook ở tần số lấy mẫu 48 kHz.
+function designBiquad({ type, freq, q = 0.707, gainDb = 0 }, sampleRate = DSP_SAMPLE_RATE) {
+ const w0 = (2 * Math.PI * freq) / sampleRate;
+ const cosW0 = Math.cos(w0);
+ const sinW0 = Math.sin(w0);
+ const alpha = sinW0 / (2 * Math.max(0.1, q));
+ const A = Math.pow(10, gainDb / 40);
+
+ let b0 = 1, b1 = 0, b2 = 0, a0 = 1, a1 = 0, a2 = 0;
+ switch (type) {
+  case 'highpass':
+   b0 = (1 + cosW0) / 2;
+   b1 = -(1 + cosW0);
+   b2 = (1 + cosW0) / 2;
+   a0 = 1 + alpha;
+   a1 = -2 * cosW0;
+   a2 = 1 - alpha;
+   break;
+  case 'peaking':
+   b0 = 1 + alpha * A;
+   b1 = -2 * cosW0;
+   b2 = 1 - alpha * A;
+   a0 = 1 + alpha / A;
+   a1 = -2 * cosW0;
+   a2 = 1 - alpha / A;
+   break;
+  case 'lowshelf': {
+   const beta = 2 * Math.sqrt(A) * alpha;
+   b0 = A * ((A + 1) - (A - 1) * cosW0 + beta);
+   b1 = 2 * A * ((A - 1) - (A + 1) * cosW0);
+   b2 = A * ((A + 1) - (A - 1) * cosW0 - beta);
+   a0 = (A + 1) + (A - 1) * cosW0 + beta;
+   a1 = -2 * ((A - 1) + (A + 1) * cosW0);
+   a2 = (A + 1) + (A - 1) * cosW0 - beta;
+   break;
+  }
+  case 'highshelf': {
+   const beta = 2 * Math.sqrt(A) * alpha;
+   b0 = A * ((A + 1) + (A - 1) * cosW0 + beta);
+   b1 = -2 * A * ((A - 1) + (A + 1) * cosW0);
+   b2 = A * ((A + 1) + (A - 1) * cosW0 - beta);
+   a0 = (A + 1) - (A - 1) * cosW0 + beta;
+   a1 = 2 * ((A - 1) - (A + 1) * cosW0);
+   a2 = (A + 1) - (A - 1) * cosW0 - beta;
+   break;
+  }
+ }
+ return new Float64Array([b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0]);
+}
+
+const COMPILED_PRESETS = Object.fromEntries(
+ Object.entries(SOUND_PRESETS).map(([key, cfg]) => [
+  key,
+  {
+   key,
+   preGain: Math.pow(10, (cfg.preGainDb ?? 0) / 20),
+   makeupGain: Math.pow(10, (cfg.makeupGainDb ?? 0) / 20),
+   stereoWidth: Number.isFinite(cfg.stereoWidth) ? cfg.stereoWidth : 1.0,
+   coeffs: (cfg.stages ?? []).map(stage => designBiquad(stage, DSP_SAMPLE_RATE)),
+  },
+ ]),
+);
+
+// Chuẩn hóa mức phần trăm âm lượng hợp lệ trong khoảng 0% – 200%.
+export function clampVolumePercent(value) {
+ const num = Number(value);
+ if (!Number.isFinite(num)) return 100;
+ return Math.min(MAX_VOLUME_PERCENT, Math.max(MIN_VOLUME_PERCENT, Math.round(num)));
+}
+
+// Đọc chuỗi mức âm lượng tùy chỉnh người dùng nhập vào (hỗ trợ cả dạng "35", "150", "175%").
+export function parseCustomVolumeInput(raw) {
+ const cleaned = String(raw ?? '').trim().replace(/%\s*$/, '').trim();
+ if (!cleaned || !/^\d+(?:\.\d+)?$/.test(cleaned)) {
+  throw new Error(`Hãy nhập một số âm lượng hợp lệ từ ${MIN_VOLUME_PERCENT} đến ${MAX_VOLUME_PERCENT} (ví dụ: 25, 100, 150, 200).`);
+ }
+ const numeric = Math.round(Number(cleaned));
+ if (!Number.isFinite(numeric) || numeric < MIN_VOLUME_PERCENT || numeric > MAX_VOLUME_PERCENT) {
+  throw new Error(`Mức âm lượng chỉ nhận từ ${MIN_VOLUME_PERCENT}% đến tối đa ${MAX_VOLUME_PERCENT}%.`);
+ }
+ return numeric;
+}
+
+// Chuyển tỷ lệ âm lượng (0.0 – 2.0) sang hệ số khuếch đại cảm nhận thực tế của tai người (Psychoacoustic Curve):
+// - 0%: tắt tiếng hoàn toàn (0.0)
+// - 1% – 99%: đường cong lũy thừa x^1.85 giúp giảm về 20% (~ -25.9 dB) hay 50% (~ -11.1 dB) nhỏ đi rõ rệt tự nhiên
+// - 100%: giữ nguyên 1.0 (0 dB chuẩn gốc)
+// - 101% – 200%: khuếch đại mạnh lên tới +8.4 dB (kết hợp bộ chống vỡ tiếng mềm soft-knee ở đầu ra)
+export function computePerceptualGain(volumeRatio) {
+ const r = Number(volumeRatio);
+ if (!Number.isFinite(r) || r <= 0) return 0;
+ if (r === 1) return 1;
+ if (r < 1) return Math.pow(r, 1.85);
+ return Math.pow(Math.min(r, 4), 1.4);
+}
+
+// Bộ giới hạn mềm (Analog Soft-Knee Limiter): giữ nguyên tín hiệu dưới ngưỡng 0.82 và bo tròn mượt trên 0.82
+// để khi đẩy âm lượng lên 150% – 200% hoặc bật Bass Căng nhạc vẫn to rõ mà không bị rè/vỡ tiếng kỹ thuật số.
+function softLimitSample(x) {
+ if (!Number.isFinite(x)) return 0;
+ if (x >= -0.82 && x <= 0.82) return x;
+ const sign = x < 0 ? -1 : 1;
+ const abs = x < 0 ? -x : x;
+ return sign * (0.82 + 0.175 * Math.tanh((abs - 0.82) / 0.175));
+}
 
 // Mã điều khiển chuẩn của bộ mã hóa libopus (Opus CTL).
 const OPUS_CTL = {
@@ -63,17 +214,20 @@ function applyOpusMusicTuning(opusStream, bitrate) {
  safeCtl(OPUS_CTL.SET_PACKET_LOSS_PERC, 5);
 }
 
-// Cập nhật cấu hình chất âm và mức bitrate mục tiêu theo kênh thoại Discord hiện tại.
+// Cập nhật cấu hình chất âm (áp dụng ngay lập tức lên bài đang phát!) và mức bitrate mục tiêu của kênh thoại.
 export function setAudioEnhancement({ preset, channelBitrate } = {}) {
  if (preset && SOUND_PRESETS[preset]) {
   activePreset = preset;
  }
  if (channelBitrate) {
-  // Luôn giữ tối thiểu 128 kbps ở đầu ra bộ mã hóa (hoặc cao hơn tới 256 kbps nếu máy chủ có Boost kênh thoại).
   targetBitrate = Math.min(256000, Math.max(128000, Number(channelBitrate) || 128000));
   if (currentEncoder?.encoder) applyOpusMusicTuning(currentEncoder, targetBitrate);
  }
  return { preset: activePreset, bitrate: targetBitrate };
+}
+
+export function getActiveSoundPreset() {
+ return activePreset;
 }
 
 export function getNextSoundPreset(current = activePreset) {
@@ -81,7 +235,47 @@ export function getNextSoundPreset(current = activePreset) {
  return SOUND_PRESET_ORDER[(idx + 1) % SOUND_PRESET_ORDER.length];
 }
 
-// Gắn bộ tối ưu hóa trực tiếp vào đường ống FFmpeg + Opus của @discordjs/voice (chạy 1 lần khi khởi động).
+// Mở khóa giới hạn âm lượng 0% – 200% trên phiên phát ZiPlayer và đồng bộ trực tiếp xuống AudioResource đang phát.
+export function configurePlayerAudio(player) {
+ if (!player || player.__audioConfigured) return player;
+ const graph = player.runtimeGraph;
+ const vc = graph?.volumeController;
+ const pc = graph?.playbackController;
+ const ap = graph?.audioPlayer;
+
+ if (vc) {
+  vc.clamp = value => clampVolumePercent(value);
+  if (typeof vc.bindActiveResourceResolver === 'function') {
+   vc.bindActiveResourceResolver(() => {
+    const resource = pc?.activeResource ?? ap?.state?.resource ?? null;
+    const track = pc?.activeSession?.track ?? resource?.metadata ?? null;
+    return resource ? { resource, track, gain: pc?.fadeGain ?? 1 } : null;
+   });
+  }
+ }
+
+ player.setVolume = function patchedSetVolume(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < MIN_VOLUME_PERCENT || numeric > MAX_VOLUME_PERCENT) {
+   return false;
+  }
+  const rounded = clampVolumePercent(numeric);
+  this.bus.requestRpcSync('volume.set', { value: rounded });
+  const fadeGain = Number.isFinite(pc?.fadeGain) ? Math.max(0, pc.fadeGain) : 1;
+  const ratio = (rounded / 100) * fadeGain;
+  for (const res of new Set([pc?.activeResource, ap?.state?.resource])) {
+   if (res?.volume && typeof res.volume.setVolume === 'function') {
+    res.volume.setVolume(ratio);
+   }
+  }
+  return true;
+ };
+
+ player.__audioConfigured = true;
+ return player;
+}
+
+// Gắn bộ DSP thời gian thực + Volume 0–200% + Opus Music HD trực tiếp vào đường ống của @discordjs/voice.
 export function installAudioEnhancer(ffmpegPath) {
  if (installed) return;
  if (ffmpegPath && !process.env.FFMPEG_PATH) {
@@ -92,7 +286,7 @@ export function installAudioEnhancer(ffmpegPath) {
  const voiceEntry = req.resolve('@discordjs/voice');
  const prism = createRequire(voiceEntry)('prism-media');
 
- // 1. Nâng chất lượng giải mã & lấy mẫu lại âm thanh ngay trong tiến trình FFmpeg duy nhất của @discordjs/voice.
+ // 1. Giữ bộ lấy mẫu chuẩn SoX 24-bit sạch nguyên bản trong tiến trình giải mã FFmpeg duy nhất.
  const origCreate = prism.FFmpeg.create.bind(prism.FFmpeg);
  prism.FFmpeg.create = function patchedFFmpegCreate(options = {}) {
   const rawArgs = Array.isArray(options.args) ? [...options.args] : [];
@@ -100,25 +294,140 @@ export function installAudioEnhancer(ffmpegPath) {
   if (analyzeIdx !== -1 && rawArgs[analyzeIdx + 1] === '0') {
    rawArgs[analyzeIdx + 1] = '500000';
   }
-  const presetCfg = SOUND_PRESETS[activePreset] ?? SOUND_PRESETS.hd;
-  if (presetCfg?.filter && !rawArgs.includes('-af')) {
+  if (!rawArgs.includes('-af')) {
    const fmtIdx = rawArgs.indexOf('-f');
+   const resampleFilter = 'aresample=48000:resampler=soxr:precision=24';
    if (fmtIdx !== -1) {
-    rawArgs.splice(fmtIdx, 0, '-af', presetCfg.filter);
+    rawArgs.splice(fmtIdx, 0, '-af', resampleFilter);
    } else {
-    rawArgs.push('-af', presetCfg.filter);
+    rawArgs.push('-af', resampleFilter);
    }
   }
   return origCreate({ ...options, args: rawArgs });
  };
 
- // 2. Khóa bộ mã hóa Opus sang chế độ Âm nhạc chuyên dụng (CELT Fullband 20 kHz, độ chi tiết 10, chống rớt gói FEC).
+ // 2. Nâng cấp VolumeTransformer thành Bộ xử lý DSP Studio + Âm lượng cảm nhận 0–200% độ trễ cực thấp (< 80ms).
+ const origVolumeTransform = prism.VolumeTransformer.prototype._transform;
+ prism.VolumeTransformer.prototype._transform = function patchedRealtimeDspTransform(chunk, encoding, done) {
+  if (this._bits !== 16) {
+   return origVolumeTransform.call(this, chunk, encoding, done);
+  }
+
+  if (!this._dspReady) {
+   this._dspReady = true;
+   this._dspCarry = Buffer.alloc(0);
+   this._dspPresetKey = null;
+   this._dspStates = null;
+   this._dspRampSamples = 0;
+   this._dspCurrentGain = computePerceptualGain(this.volume);
+   if (this._readableState) this._readableState.highWaterMark = LOW_LATENCY_PCM_HWM;
+   if (this._writableState) this._writableState.highWaterMark = LOW_LATENCY_PCM_HWM;
+  }
+
+  const input = this._dspCarry.length > 0 ? Buffer.concat([this._dspCarry, chunk]) : chunk;
+  if (input.length < STEREO_BYTES) {
+   this._dspCarry = Buffer.from(input);
+   return done();
+  }
+
+  const complete = Math.floor(input.length / STEREO_BYTES) * STEREO_BYTES;
+  this._dspCarry = input.length > complete ? Buffer.from(input.subarray(complete)) : Buffer.alloc(0);
+
+  const presetKey = COMPILED_PRESETS[activePreset] ? activePreset : 'hd';
+  const preset = COMPILED_PRESETS[presetKey];
+  const coeffsList = preset.coeffs;
+  const numStages = coeffsList.length;
+
+  if (this._dspPresetKey !== presetKey) {
+   const hadPrevious = this._dspPresetKey !== null;
+   this._dspPresetKey = presetKey;
+   this._dspStates = new Float64Array(numStages * 4);
+   // Làm mượt 192 mẫu (4ms) khi chuyển chất âm giữa chừng để không có tiếng "tách" nhỏ.
+   this._dspRampSamples = hadPrevious ? 192 : 0;
+  }
+
+  const states = this._dspStates;
+  const preGain = preset.preGain;
+  const makeupGain = preset.makeupGain;
+  const width = preset.stereoWidth;
+  const targetGain = computePerceptualGain(this.volume);
+  let currentGain = this._dspCurrentGain;
+  let ramp = this._dspRampSamples;
+
+  const out = Buffer.allocUnsafe(complete);
+  for (let i = 0; i < complete; i += STEREO_BYTES) {
+   // Làm mượt thay đổi âm lượng (exponential slewing ~10ms) chống tiếng nổ lụp bụp khi kéo gấp.
+   currentGain += (targetGain - currentGain) * 0.005;
+
+   const dryL = this._readInt(input, i) / 32768;
+   const dryR = this._readInt(input, i + 2) / 32768;
+
+   let l = dryL;
+   let r = dryR;
+
+   if (numStages > 0 || width !== 1) {
+    l *= preGain;
+    r *= preGain;
+
+    for (let s = 0; s < numStages; s++) {
+     const c = coeffsList[s];
+     const stIdx = s * 4;
+     const b0 = c[0], b1 = c[1], b2 = c[2], a1 = c[3], a2 = c[4];
+
+     const yL = b0 * l + states[stIdx];
+     states[stIdx] = b1 * l - a1 * yL + states[stIdx + 1];
+     states[stIdx + 1] = b2 * l - a2 * yL;
+     l = yL;
+
+     const yR = b0 * r + states[stIdx + 2];
+     states[stIdx + 2] = b1 * r - a1 * yR + states[stIdx + 3];
+     states[stIdx + 3] = b2 * r - a2 * yR;
+     r = yR;
+    }
+
+    if (width !== 1) {
+     const mid = (l + r) * 0.5;
+     const side = (l - r) * 0.5 * width;
+     l = mid + side;
+     r = mid - side;
+    }
+
+    l *= makeupGain;
+    r *= makeupGain;
+
+    if (ramp > 0) {
+     const wetMix = (192 - ramp) / 192;
+     l = dryL * (1 - wetMix) + l * wetMix;
+     r = dryR * (1 - wetMix) + r * wetMix;
+     ramp--;
+    }
+   }
+
+   const outL = softLimitSample(l * currentGain);
+   const outR = softLimitSample(r * currentGain);
+
+   this._writeInt(out, Math.max(-32768, Math.min(32767, Math.round(outL * 32767))), i);
+   this._writeInt(out, Math.max(-32768, Math.min(32767, Math.round(outR * 32767))), i + 2);
+  }
+
+  this._dspCurrentGain = Math.abs(targetGain - currentGain) < 1e-6 ? targetGain : currentGain;
+  this._dspRampSamples = ramp;
+
+  for (let off = 0; off < complete; off += OPUS_FRAME_BYTES) {
+   this.push(out.subarray(off, Math.min(complete, off + OPUS_FRAME_BYTES)));
+  }
+  return done();
+ };
+
+ // 3. Khóa bộ mã hóa Opus sang chế độ Âm nhạc chuyên dụng (CELT Fullband 20 kHz) & giảm hàng đợi gói tin đệm còn 80ms.
  const tunedInstances = new WeakSet();
  const origEncode = prism.opus.Encoder.prototype._encode;
  prism.opus.Encoder.prototype._encode = function patchedOpusEncode(buffer) {
   if (!tunedInstances.has(this)) {
    tunedInstances.add(this);
    currentEncoder = this;
+   if (this._readableState) this._readableState.highWaterMark = LOW_LATENCY_OPUS_HWM;
+   if (this._writableState) this._writableState.highWaterMark = LOW_LATENCY_PCM_HWM;
    applyOpusMusicTuning(this, targetBitrate);
   }
   return origEncode.call(this, buffer);

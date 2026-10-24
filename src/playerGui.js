@@ -25,6 +25,25 @@ export const LOOP_LABELS = {
  queue: 'Lặp hàng đợi',
 };
 
+export const DEFAULT_NOW_PLAYING_WEB_URL = 'https://bot-dis-2.botmusicvip.workers.dev/';
+
+// Tự động xác định link Website Now Playing công khai để gắn nút mở nhanh trên khung Discord.
+export function resolveNowPlayingWebUrl(env = process.env) {
+ const explicit = safeHttpUrl(env?.NOW_PLAYING_WEB_URL ?? '');
+ if (explicit) return explicit;
+ const pushUrl = safeHttpUrl(env?.NOW_PLAYING_PUSH_URL ?? '');
+ if (pushUrl) {
+  try {
+   const u = new URL(pushUrl);
+   u.pathname = '/';
+   u.search = '';
+   u.hash = '';
+   return u.toString();
+  } catch {}
+ }
+ return DEFAULT_NOW_PLAYING_WEB_URL;
+}
+
 const SOURCE_LABELS = {
  youtube: 'YouTube',
  ytsr: 'YouTube',
@@ -299,6 +318,24 @@ export function buildPlayerPayload(player, overrides = {}) {
  container.addActionRowComponents(selectRow);
  container.addActionRowComponents(buttonRow);
 
+ const webUrl = resolveNowPlayingWebUrl();
+ if (webUrl) {
+  container.addSeparatorComponents(new SeparatorBuilder().setDivider(true).setSpacing(1));
+  container.addSectionComponents(
+   new SectionBuilder()
+    .addTextDisplayComponents(
+     new TextDisplayBuilder().setContent('🌐 **Website Now Playing trực tuyến**\n-# Theo dõi bài đang phát & danh sách chờ trên trình duyệt'),
+    )
+    .setButtonAccessory(
+     new ButtonBuilder()
+      .setStyle(ButtonStyle.Link)
+      .setEmoji('🌐')
+      .setLabel('Mở Web Now Playing')
+      .setURL(webUrl),
+    ),
+  );
+ }
+
  return {
   flags: MessageFlags.IsComponentsV2,
   components: [container],
@@ -315,6 +352,7 @@ export function buildIdle247Payload(player, reason = 'Bot đang giữ kết nố
   ownerId ? `👑 Chủ phiên 24/7: <@${ownerId}>` : null,
  ].filter(Boolean).join(' • ');
 
+ const webUrl = resolveNowPlayingWebUrl();
  const buttonRow = new ActionRowBuilder().addComponents(
   new ButtonBuilder()
    .setCustomId('player_open_add')
@@ -327,6 +365,15 @@ export function buildIdle247Payload(player, reason = 'Bot đang giữ kết nố
    .setLabel('Rời kênh thoại')
    .setStyle(ButtonStyle.Danger),
  );
+ if (webUrl) {
+  buttonRow.addComponents(
+   new ButtonBuilder()
+    .setStyle(ButtonStyle.Link)
+    .setEmoji('🌐')
+    .setLabel('Web Now Playing')
+    .setURL(webUrl),
+  );
+ }
 
  const voiceMuted = Boolean(player?.userdata?.voiceMuted);
  const muteNotice = voiceMuted
@@ -431,6 +478,7 @@ export function buildNowPlayingEmbed(player, botUser) {
  const trackUrl = safeHttpUrl(current?.url);
  const ownerId = resolveOwnerId(player, current);
  const { barText, endUnix } = renderSyncedProgress(player, current, Boolean(player?.isPaused));
+ const webUrl = resolveNowPlayingWebUrl();
 
  const embed = new EmbedBuilder()
   .setColor(player?.isPaused ? 0xfee75c : 0x7c4dff)
@@ -442,6 +490,7 @@ export function buildNowPlayingEmbed(player, botUser) {
   .setDescription([
    `👤 **Nghệ sĩ:** ${cleanText(current?.metadata?.author ?? 'Không rõ', 50)} • **Nguồn:** ${resolveSourceLabel(current?.source)}`,
    ownerId ? `👑 **Người điều khiển:** <@${ownerId}>` : '',
+   webUrl ? `🌐 **Web trực tuyến:** [Mở Now Playing](${webUrl})` : '',
    '',
    player?.isPaused
     ? '⏸️ **Tạm dừng**'

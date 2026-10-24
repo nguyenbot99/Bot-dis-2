@@ -1,4 +1,5 @@
 import { EmbedBuilder, SlashCommandBuilder } from 'discord.js';
+import { resolveNowPlayingWebUrl } from './playerGui.js';
 
 // Giữ nguyên tên lệnh và tên tham số bằng tiếng Anh/số chuẩn Discord (lưu ý Discord không cho dấu "/" trong tên lệnh nên 24/7 viết là /247);
 // Việt hóa toàn bộ phần chú thích hiển thị trên Discord.
@@ -32,6 +33,7 @@ const definitions = [
 export function buildHelpEmbed(botUser) {
  const botName = botUser?.username ?? 'Music Bot';
  const avatarUrl = botUser?.displayAvatarURL?.({ size: 128 }) ?? undefined;
+ const webUrl = resolveNowPlayingWebUrl();
 
  const embed = new EmbedBuilder()
   .setColor(0x5865f2)
@@ -42,8 +44,9 @@ export function buildHelpEmbed(botUser) {
   .setTitle('🎵 Bảng Lệnh & Hướng Dẫn Sử Dụng')
   .setDescription([
    'Hãy vào một **kênh thoại thường** rồi nhập `/play` — bot sẽ hiện **khung Music Player tương tác HD** kèm nút bấm & menu ngay tại kênh chat!',
+   webUrl ? `🌐 **Theo dõi bài đang phát trực tuyến:** [Mở Website Now Playing](${webUrl})` : null,
    '> 🔒 *Chỉ **người yêu cầu bài đang phát** (cùng kênh thoại) mới bấm hoặc gõ lệnh thay đổi nhạc được.*',
-  ].join('\n'))
+  ].filter(Boolean).join('\n'))
   .addFields(
    {
     name: '🎙️ Kết nối kênh thoại & 24/7',

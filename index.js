@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import express from 'express';
-import { Client, Events, GatewayIntentBits, MessageFlags, Options, PermissionFlagsBits, Routes } from 'discord.js';
+import { ActivityType, Client, Events, GatewayIntentBits, MessageFlags, Options, PermissionFlagsBits, Routes } from 'discord.js';
 import { PlayerManager } from 'ziplayer';
 import ffmpeg from 'ffmpeg-static';
 import { parseSeekTime, pickBestMatchingTrack, resolveConfig, resolveMusicRequest } from './src/policy.js';
@@ -23,6 +23,7 @@ import {
  formatDuration,
  LOOP_LABELS,
  renderSyncedProgress,
+ resolveNowPlayingWebUrl,
 } from './src/playerGui.js';
 
 // Kiểm tra phiên bản Node tối thiểu do thư viện voice yêu cầu Node >= 22.12.0.
@@ -381,6 +382,7 @@ async function closeCurrentPanel(player, reason, { keepIdle247 = false } = {}) {
   track: null,
   reason,
  });
+ updateBotPresence(null);
  const payload = shouldKeepIdle
   ? buildIdle247Payload(player, reason)
   : buildEndedPayload(reason);
@@ -425,11 +427,28 @@ async function sendVoiceGuardAlert(textChannel, userdata, event) {
  if (userdata && sent && !isKickEvent) userdata.voiceAlertMessage = sent;
 }
 
+// Cập nhật dòng trạng thái dưới tên bot trong Discord để mọi thành viên thấy tên bài đang phát & địa chỉ Website Now Playing.
+function updateBotPresence(track = null) {
+ if (!client.user) return;
+ let hostLabel = '';
+ try {
+  const webUrl = resolveNowPlayingWebUrl();
+  if (webUrl) hostLabel = new URL(webUrl).host;
+ } catch {}
+ const statusText = track?.title
+  ? `${cleanText(track.title, 58)}${hostLabel ? ` • ${hostLabel}` : ''}`
+  : `/play${hostLabel ? ` • ${hostLabel}` : ''}`;
+ try {
+  client.user.setActivity(statusText, { type: ActivityType.Listening });
+ } catch {}
+}
+
 // Đóng toàn bộ phiên phát, xóa mọi bộ hẹn giờ/tham chiếu và cho bot rời khỏi kênh thoại.
 async function destroyPlayerSession(guildId, reason) {
  const p = manager.get(guildId);
  if (!p) {
   nowPlayingHub.publish({ player: null, track: null, reason });
+  updateBotPresence(null);
   return;
  }
  const ud = p.userdata;
@@ -444,6 +463,7 @@ async function destroyPlayerSession(guildId, reason) {
  }
  manager.delete(guildId);
  nowPlayingHub.publish({ player: null, track: null, reason });
+ updateBotPresence(null);
 }
 
 // Gắn sự kiện vòng đời từ ZiPlayer để tự động đồng bộ khung điều khiển nhạc trên kênh chat & Website Now Playing.
@@ -465,6 +485,7 @@ manager.on('trackStart', (player, track) => {
   pauseTimer.unref?.();
  }
  nowPlayingHub.publish({ player, track, paused: Boolean(player?.isPaused) });
+ updateBotPresence(track);
  void postFreshPanel(player, track);
 });
 manager.on('playerPause', player => {
@@ -792,6 +813,7 @@ async function syncGuildCommands(appId, targetGuildId) {
 client.once(Events.ClientReady, async c => {
  console.log(`[khởi-động] Đã đăng nhập: ${c.user.tag}`);
  nowPlayingHub.publish();
+ updateBotPresence(null);
  const appInfo = await c.application.fetch().catch(() => null);
  if (appInfo?.interactionsEndpointURL) {
   console.warn(`[cảnh-báo] Phát hiện Interactions Endpoint URL cũ (${appInfo.interactionsEndpointURL}), đang tự động gỡ bỏ...`);

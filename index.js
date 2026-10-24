@@ -21,6 +21,7 @@ import {
  buildQueueEmbed,
  cleanText,
  formatDuration,
+ IDLE_PANEL_AUTO_DELETE_MS,
  LOOP_LABELS,
  renderSyncedProgress,
  resolveNowPlayingWebUrl,
@@ -238,6 +239,27 @@ function stopProgressTicker(player) {
  }
 }
 
+function clearAutoDeleteTimer(player) {
+ if (player?.userdata?.autoDeleteTimer) {
+  clearTimeout(player.userdata.autoDeleteTimer);
+  player.userdata.autoDeleteTimer = null;
+ }
+}
+
+// Tự động thu dọn khung chờ 24/7 & khung kết thúc sau 4 phút 30 giây để giữ kênh chat luôn sạch sẽ.
+function schedulePanelAutoDelete(msg, player = null, delayMs = IDLE_PANEL_AUTO_DELETE_MS) {
+ if (!msg?.delete || !(delayMs > 0)) return;
+ clearAutoDeleteTimer(player);
+ const ud = player?.userdata ?? null;
+ const timer = setTimeout(() => {
+  if (ud?.autoDeleteTimer === timer) ud.autoDeleteTimer = null;
+  if (ud?.panelMessage?.id === msg.id) ud.panelMessage = null;
+  msg.delete().catch(() => {});
+ }, delayMs);
+ timer.unref?.();
+ if (ud) ud.autoDeleteTimer = timer;
+}
+
 function markPanelTouched(player, overrides = {}) {
  const ud = player?.userdata;
  if (ud) {
@@ -338,6 +360,7 @@ async function postFreshPanel(player, track) {
  ud.idleOpen = false;
  clearPanelTimer(player);
  stopProgressTicker(player);
+ clearAutoDeleteTimer(player);
  const oldMsg = ud.panelMessage;
  ud.panelMessage = null;
  if (oldMsg) oldMsg.delete().catch(() => {});
@@ -346,6 +369,7 @@ async function postFreshPanel(player, track) {
   const sent = await ud.textChannel.send(buildPlayerPayload(player, { track }));
   if (player.destroyed || ud.ending || ud.manualDisconnect) {
    sent.edit(buildEndedPayload()).catch(() => {});
+   schedulePanelAutoDelete(sent);
    return;
   }
   ud.panelMessage = sent;
@@ -369,13 +393,14 @@ function schedulePanelUpdate(player, overrides = {}) {
  ud.panelTimer.unref?.();
 }
 
-// Đóng khung điều khiển của bài hiện tại (hoặc chuyển sang khung chờ 24/7 nếu đang bật 24/7).
+// Đóng khung điều khiển của bài hiện tại (hoặc chuyển sang khung chờ 24/7 nếu đang bật 24/7) và hẹn giờ tự xóa sau 4.5 phút.
 async function closeCurrentPanel(player, reason, { keepIdle247 = false } = {}) {
  const ud = player?.userdata;
  if (!ud) return;
  ud.ending = true;
  clearPanelTimer(player);
  stopProgressTicker(player);
+ clearAutoDeleteTimer(player);
  const shouldKeepIdle = keepIdle247 && ud.stay247 && !ud.manualDisconnect;
  nowPlayingHub.publish({
   player: shouldKeepIdle ? player : null,
@@ -389,16 +414,25 @@ async function closeCurrentPanel(player, reason, { keepIdle247 = false } = {}) {
  const msg = ud.panelMessage;
  if (shouldKeepIdle) {
   if (msg) {
-   await msg.edit(payload).catch(() => {});
-   return;
+   const edited = await msg.edit(payload).catch(() => null);
+   if (edited) {
+    schedulePanelAutoDelete(msg, player);
+    return;
+   }
+   ud.panelMessage = null;
   }
-  if (ud.textChannel?.send) {
-   ud.panelMessage = await ud.textChannel.send(payload).catch(() => null);
+  if (ud.textChannel?.send && reason) {
+   const sent = await ud.textChannel.send(payload).catch(() => null);
+   ud.panelMessage = sent;
+   if (sent) schedulePanelAutoDelete(sent, player);
   }
   return;
  }
  ud.panelMessage = null;
- if (msg) await msg.edit(payload).catch(() => {});
+ if (msg) {
+  await msg.edit(payload).catch(() => {});
+  schedulePanelAutoDelete(msg);
+ }
 }
 
 // Gửi hoặc cập nhật thông báo trạng thái mic / kick khỏi phòng gọn gàng (chống spam kênh chat).
@@ -589,6 +623,7 @@ async function ensureVoiceSession({ guild, voiceChannel, textChannel, userId, in
     idleOpen: Boolean(initial247),
     panelMessage: null,
     panelTimer: null,
+    autoDeleteTimer: null,
     emptyTimer: null,
     ending: false,
     manualDisconnect: false,
@@ -753,7 +788,11 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
    }
    if (ev.shouldPause && !p.isPaused) p.pause();
    if (p.userdata.idleOpen && !p.queue?.currentTrack) {
-    void closeCurrentPanel(p, undefined, { keepIdle247: true });
+    if (p.userdata.panelMessage) {
+     void closeCurrentPanel(p, undefined, { keepIdle247: true });
+    } else {
+     nowPlayingHub.publish({ player: p, track: null });
+    }
    } else {
     schedulePanelUpdate(p, { paused: Boolean(p.isPaused), voiceMuted: true, muteReason: ev.muteReason });
    }
@@ -764,7 +803,11 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
   if (ev.action === 'unmuted') {
    if (ev.shouldResume && p.isPaused) p.resume();
    if (p.userdata.idleOpen && !p.queue?.currentTrack) {
-    void closeCurrentPanel(p, undefined, { keepIdle247: true });
+    if (p.userdata.panelMessage) {
+     void closeCurrentPanel(p, undefined, { keepIdle247: true });
+    } else {
+     nowPlayingHub.publish({ player: p, track: null });
+    }
    } else {
     schedulePanelUpdate(p, { paused: Boolean(p.isPaused), voiceMuted: false, muteReason: null });
    }
@@ -899,7 +942,11 @@ async function handlePlayerComponent(i) {
 
  // Trường hợp làm mới thanh tiến trình (chỉ cập nhật hiển thị thời gian, có giới hạn chống bấm liên tục).
  if (i.isButton() && i.customId === 'player_refresh') {
-  if (!p || !p.queue.currentTrack) return void await i.update(buildEndedPayload());
+  if (!p || !p.queue.currentTrack) {
+   await i.update(buildEndedPayload());
+   schedulePanelAutoDelete(i.message);
+   return;
+  }
   const now = Date.now();
   if (now - (refreshCooldown.get(i.guildId) ?? 0) < 2500) {
    return void await i.reply({ content: 'Thanh tiến trình đang tự động chạy theo nhạc mỗi 5 giây.', flags: MessageFlags.Ephemeral });
@@ -939,7 +986,11 @@ async function handlePlayerComponent(i) {
 
  // Tất cả các nút & mục menu thay đổi nhạc còn lại: bắt buộc cùng kênh thoại và là chủ bài đang phát.
  if (!p) {
-  if (i.isButton() || i.isStringSelectMenu()) return void await i.update(buildEndedPayload());
+  if (i.isButton() || i.isStringSelectMenu()) {
+   await i.update(buildEndedPayload());
+   schedulePanelAutoDelete(i.message);
+   return;
+  }
   throw new Error('Chưa có phiên phát nhạc nào.');
  }
 
@@ -988,11 +1039,16 @@ async function handlePlayerComponent(i) {
       p.userdata.ending = true;
       clearPanelTimer(p);
       stopProgressTicker(p);
+      clearAutoDeleteTimer(p);
       clearEmptyTimer(p);
       p.userdata.panelMessage = null;
       p.userdata.textChannel = null;
      }
-     await i.update(buildEndedPayload('Đã tắt chế độ 24/7 và rời khỏi kênh thoại.'));
+     const reason = 'Đã tắt chế độ 24/7 và rời khỏi kênh thoại.';
+     nowPlayingHub.publish({ player: null, track: null, reason });
+     updateBotPresence(null);
+     await i.update(buildEndedPayload(reason));
+     schedulePanelAutoDelete(i.message);
      manager.delete(i.guildId);
      return;
     }
@@ -1003,10 +1059,15 @@ async function handlePlayerComponent(i) {
       p.userdata.skipNextStopEvent = true;
       clearPanelTimer(p);
       stopProgressTicker(p);
+      clearAutoDeleteTimer(p);
       p.queue.reset();
       p.stop();
       p.clearLeaveTimeout?.();
-      await i.update(buildIdle247Payload(p, 'Đã dừng phát nhạc và xóa hàng đợi — Bot vẫn đang giữ kết nối 24/7.'));
+      const reason = 'Đã dừng phát nhạc và xóa hàng đợi — Bot vẫn đang giữ kết nối 24/7.';
+      nowPlayingHub.publish({ player: p, track: null, reason });
+      updateBotPresence(null);
+      await i.update(buildIdle247Payload(p, reason));
+      schedulePanelAutoDelete(i.message, p);
       return;
      }
      if (p.userdata) {
@@ -1014,11 +1075,16 @@ async function handlePlayerComponent(i) {
       p.userdata.ending = true;
       clearPanelTimer(p);
       stopProgressTicker(p);
+      clearAutoDeleteTimer(p);
       clearEmptyTimer(p);
       p.userdata.panelMessage = null;
       p.userdata.textChannel = null;
      }
-     await i.update(buildEndedPayload('Đã dừng phát nhạc, xóa hàng đợi và rời kênh thoại.'));
+     const reason = 'Đã dừng phát nhạc, xóa hàng đợi và rời kênh thoại.';
+     nowPlayingHub.publish({ player: null, track: null, reason });
+     updateBotPresence(null);
+     await i.update(buildEndedPayload(reason));
+     schedulePanelAutoDelete(i.message);
      manager.delete(i.guildId);
      return;
     }
@@ -1330,6 +1396,7 @@ async function shutdown(code = 0) {
   for (const p of manager.getAll()) {
    clearPanelTimer(p);
    stopProgressTicker(p);
+   clearAutoDeleteTimer(p);
    clearEmptyTimer(p);
   }
   manager.destroy();

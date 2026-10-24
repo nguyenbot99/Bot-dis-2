@@ -26,6 +26,7 @@ export const LOOP_LABELS = {
 };
 
 export const DEFAULT_NOW_PLAYING_WEB_URL = 'https://bot-dis-2.botmusicvip.workers.dev/';
+export const IDLE_PANEL_AUTO_DELETE_MS = 270000; // Tự xóa khung chờ 24/7 & khung kết thúc sau 4 phút 30 giây để giữ kênh chat sạch sẽ.
 
 // Tự động xác định link Website Now Playing công khai để gắn nút mở nhanh trên khung Discord.
 export function resolveNowPlayingWebUrl(env = process.env) {
@@ -344,7 +345,11 @@ export function buildPlayerPayload(player, overrides = {}) {
 }
 
 // Khung chờ tương tác khi bot đang treo kênh thoại 24/7 và hiện không phát bài nào.
-export function buildIdle247Payload(player, reason = 'Bot đang giữ kết nối 24/7 trong kênh thoại và sẵn sàng phát nhạc.') {
+export function buildIdle247Payload(
+ player,
+ reason = 'Bot đang giữ kết nối 24/7 trong kênh thoại và sẵn sàng phát nhạc.',
+ { autoDeleteMs = IDLE_PANEL_AUTO_DELETE_MS } = {},
+) {
  const voiceChannelId = player?.userdata?.voiceChannelId ?? null;
  const ownerId = player?.userdata?.ownerId ?? null;
  const roomLine = [
@@ -379,6 +384,10 @@ export function buildIdle247Payload(player, reason = 'Bot đang giữ kết nố
  const muteNotice = voiceMuted
   ? '🔇 **Cảnh báo:** Bot hiện đang bị **Tắt mic máy chủ (Server Mute)** — hãy mở lại mic cho bot để nghe được nhạc.'
   : null;
+ const deleteAtUnix = autoDeleteMs > 0 ? Math.floor((Date.now() + autoDeleteMs) / 1000) : null;
+ const autoCleanLine = deleteAtUnix
+  ? `-# 🧹 Khung thông báo này sẽ tự thu dọn <t:${deleteAtUnix}:R> cho gọn kênh chat (bot vẫn treo trong kênh thoại 24/7).`
+  : null;
 
  const container = new ContainerBuilder()
   .setAccentColor(voiceMuted ? 0xed4245 : 0x57f287)
@@ -389,6 +398,7 @@ export function buildIdle247Payload(player, reason = 'Bot đang giữ kết nố
     muteNotice,
     roomLine,
     '-# Bấm **Thêm bài hát** bên dưới hoặc gõ `/play` để mở nhạc • dùng `/247 mode:Tắt 24/7` hoặc `/leave` nếu muốn bot rời kênh.',
+    autoCleanLine,
    ].filter(Boolean).join('\n')),
   )
   .addActionRowComponents(buttonRow);
@@ -401,11 +411,16 @@ export function buildIdle247Payload(player, reason = 'Bot đang giữ kết nố
 }
 
 // Khung trạng thái gọn gàng khi phiên phát nhạc kết thúc hoặc bị dừng (vô hiệu hóa các nút cũ).
-export function buildEndedPayload(reason = 'Hàng đợi đã phát hết, bot đã rời kênh thoại.') {
+export function buildEndedPayload(
+ reason = 'Hàng đợi đã phát hết, bot đã rời kênh thoại.',
+ { autoDeleteMs = IDLE_PANEL_AUTO_DELETE_MS } = {},
+) {
+ const deleteAtUnix = autoDeleteMs > 0 ? Math.floor((Date.now() + autoDeleteMs) / 1000) : null;
+ const autoCleanLine = deleteAtUnix ? `\n-# 🧹 Thông báo này sẽ tự xóa <t:${deleteAtUnix}:R>.` : '';
  const container = new ContainerBuilder()
   .setAccentColor(0x4e5058)
   .addTextDisplayComponents(
-   new TextDisplayBuilder().setContent(`### ⏹️ Phiên phát nhạc đã kết thúc\n${reason}\n-# Dùng lệnh \`/play\` trong kênh thoại bất kỳ lúc nào để mở phiên nghe nhạc mới.`),
+   new TextDisplayBuilder().setContent(`### ⏹️ Phiên phát nhạc đã kết thúc\n${reason}\n-# Dùng lệnh \`/play\` trong kênh thoại bất kỳ lúc nào để mở phiên nghe nhạc mới.${autoCleanLine}`),
   );
 
  return {

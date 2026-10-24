@@ -9,6 +9,7 @@ import {
  buildPlayerPayload,
  buildQueueEmbed,
  formatDuration,
+ IDLE_PANEL_AUTO_DELETE_MS,
  renderSyncedProgress,
  safeHttpUrl,
 } from '../src/playerGui.js';
@@ -73,14 +74,18 @@ test('buildPlayerPayload handles missing URL/thumbnail and paused state graceful
 });
 
 test('buildEndedPayload, modal, and embeds serialize cleanly', () => {
+ assert.equal(IDLE_PANEL_AUTO_DELETE_MS, 270000);
  const ended = buildEndedPayload('Đã dừng.');
  assert.equal(ended.flags, MessageFlags.IsComponentsV2);
  assert.equal(ended.components[0].toJSON().type, 17);
+ assert.ok(/<t:\d+:R>/.test(JSON.stringify(ended.components[0].toJSON())));
 
  const idle247 = buildIdle247Payload(samplePlayer, 'Đang treo 24/7.');
  assert.equal(idle247.flags, MessageFlags.IsComponentsV2);
- assert.ok(JSON.stringify(idle247.components[0].toJSON()).includes('player_open_add'));
- assert.ok(JSON.stringify(idle247.components[0].toJSON()).includes('player_leave'));
+ const idleRaw = JSON.stringify(idle247.components[0].toJSON());
+ assert.ok(idleRaw.includes('player_open_add'));
+ assert.ok(idleRaw.includes('player_leave'));
+ assert.ok(/<t:\d+:R>/.test(idleRaw));
 
  const modal = buildAddSongModal().toJSON();
  assert.equal(modal.custom_id, 'player_add_modal');

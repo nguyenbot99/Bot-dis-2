@@ -20,6 +20,7 @@ import { fetchTrackLyrics, sanitizeLyricsTitle } from './src/lyrics.js';
 import { createNowPlayingHub } from './src/nowPlayingHub.js';
 import { deleteDiscordMessage, extractMessageRef, sweepChannelStaleNotices } from './src/messageCleaner.js';
 import { captureGatewayFallbackSessions, createRuntimeSessionStore, sealSessionPayload } from './src/sessionStore.js';
+import { createVoiceRoomStatusSync } from './src/voiceStatus.js';
 import { buildVoiceGuardEmbed, evaluateBotVoiceTransition } from './src/voiceGuard.js';
 import { buildHelpEmbed, commands } from './src/commands.js';
 import {
@@ -211,6 +212,9 @@ installSmartFallback(soundCloudPlugin, syncedTrack => {
 
 // Bộ lưu trạng thái phòng thoại & danh sách nhạc tự động khôi phục khi bot bị reset hoặc cập nhật tính năng.
 const sessionStore = createRuntimeSessionStore();
+
+// Bộ tự động đặt trạng thái Kênh Thoại (Voice Channel Status) theo tên bài hát đang phát & dọn sạch khi dừng nhạc/rời phòng.
+const voiceRoomStatus = createVoiceRoomStatusSync({ rest: client.rest, client });
 
 // Trung tâm Website "Now Playing" (giao diện kiểu Ziji V10 + SSE thời gian thực + tự động đồng bộ ra Cloudflare Worker).
 const nowPlayingHub = createNowPlayingHub({
@@ -502,6 +506,7 @@ function schedulePanelUpdate(player, overrides = {}) {
  if (player && !player.destroyed) {
   persistActiveSession(player);
   nowPlayingHub.publish({ player, ...overrides });
+  voiceRoomStatus.syncPlayer(player, overrides);
  }
  const ud = player?.userdata;
  if (!ud || player.destroyed || ud.ending || !ud.panelMessage) return;
@@ -532,6 +537,7 @@ async function closeCurrentPanel(player, reason, { keepIdle247 = false } = {}) {
   { immediatePush: Boolean(shouldKeepIdle) },
  );
  updateBotPresence(null);
+ voiceRoomStatus.syncPlayer(player, { track: null });
  const payload = shouldKeepIdle
   ? buildIdle247Payload(player, reason)
   : buildEndedPayload(reason);
@@ -783,6 +789,9 @@ async function destroyPlayerSession(guildId, reason) {
   }
   stopProgressTicker(p);
   clearEmptyTimer(p);
+  if (ud.voiceChannelId) {
+   await voiceRoomStatus.clearChannelNow(ud.voiceChannelId, guildId);
+  }
   await closeCurrentPanel(p, reason);
   ud.textChannel = null;
  }
@@ -812,6 +821,7 @@ manager.on('trackStart', (player, track) => {
  persistActiveSession(player, { immediate: true });
  nowPlayingHub.publish({ player, track, paused: Boolean(player?.isPaused) }, { immediatePush: true });
  updateBotPresence(track);
+ voiceRoomStatus.syncPlayer(player, { track, paused: Boolean(player?.isPaused) });
  void postFreshPanel(player, track);
 });
 manager.on('playerPause', player => {
@@ -1114,7 +1124,10 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
    p.userdata.voiceChannelId = newState.channelId;
    if (newState.channel?.bitrate) setAudioEnhancement({ channelBitrate: newState.channel.bitrate });
    persistActiveSession(p, { immediate: changedRoom });
-   if (changedRoom) nowPlayingHub.publish({ player: p }, { immediatePush: true });
+   if (changedRoom) {
+    nowPlayingHub.publish({ player: p }, { immediatePush: true });
+    voiceRoomStatus.handleRoomMove(oldState.channelId, newState.channelId, p);
+   }
   }
 
   if (ev.action === 'muted' || ev.action === 'joined_muted') {
@@ -1611,6 +1624,7 @@ async function handlePlayerComponent(i) {
     case 'player_leave': {
      guildKickSnapshots.delete(i.guildId);
      clearPersistedSession(i.guildId);
+     const leavingVcId = p.userdata?.voiceChannelId;
      if (p.userdata) {
       p.userdata.manualDisconnect = true;
       p.userdata.stay247 = false;
@@ -1625,6 +1639,7 @@ async function handlePlayerComponent(i) {
      const reason = 'Đã tắt chế độ 24/7 và rời khỏi kênh thoại.';
      nowPlayingHub.publish({ player: null, track: null, reason }, { immediatePush: true, clearRemoteSession: true });
      updateBotPresence(null);
+     if (leavingVcId) await voiceRoomStatus.clearChannelNow(leavingVcId, i.guildId);
      await i.update(buildEndedPayload(reason));
      schedulePanelAutoDelete(i.message, null, IDLE_PANEL_AUTO_DELETE_MS, i.channelId);
      manager.delete(i.guildId);
@@ -1646,11 +1661,13 @@ async function handlePlayerComponent(i) {
       persistActiveSession(p, { immediate: true });
       nowPlayingHub.publish({ player: p, track: null, reason }, { immediatePush: true });
       updateBotPresence(null);
+      voiceRoomStatus.syncPlayer(p, { track: null });
       await i.update(buildIdle247Payload(p, reason));
       schedulePanelAutoDelete(i.message, p, IDLE_PANEL_AUTO_DELETE_MS, i.channelId);
       return;
      }
      clearPersistedSession(i.guildId);
+     const stoppingVcId = p.userdata?.voiceChannelId;
      if (p.userdata) {
       p.userdata.manualDisconnect = true;
       p.userdata.ending = true;
@@ -1664,6 +1681,7 @@ async function handlePlayerComponent(i) {
      const reason = 'Đã dừng phát nhạc, xóa hàng đợi và rời kênh thoại.';
      nowPlayingHub.publish({ player: null, track: null, reason }, { immediatePush: true, clearRemoteSession: true });
      updateBotPresence(null);
+     if (stoppingVcId) await voiceRoomStatus.clearChannelNow(stoppingVcId, i.guildId);
      await i.update(buildEndedPayload(reason));
      schedulePanelAutoDelete(i.message, null, IDLE_PANEL_AUTO_DELETE_MS, i.channelId);
      manager.delete(i.guildId);
@@ -2035,7 +2053,7 @@ async function shutdown(code = 0) {
    pendingAutoDeletes.clear();
   }
 
-  const preExitTasks = [];
+  const preExitTasks = [voiceRoomStatus.clearAllNow().catch(() => {})];
   if (activePlayers.length > 0) {
    preExitTasks.push(nowPlayingHub.flushOutboundPush().catch(() => {}));
   }

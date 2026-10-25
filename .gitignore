@@ -5,3 +5,4 @@ node_modules/
 *.log
 *.zip
 .ssh/
+.runtime-session.json*

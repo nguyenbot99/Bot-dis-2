@@ -19,6 +19,7 @@ import { assertMusicAccess, isBotOwner, resolveHumanRequester } from './src/acce
 import { fetchTrackLyrics, sanitizeLyricsTitle } from './src/lyrics.js';
 import { createNowPlayingHub } from './src/nowPlayingHub.js';
 import { deleteDiscordMessage, extractMessageRef, sweepChannelStaleNotices } from './src/messageCleaner.js';
+import { createRuntimeSessionStore, sealSessionPayload } from './src/sessionStore.js';
 import { buildVoiceGuardEmbed, evaluateBotVoiceTransition } from './src/voiceGuard.js';
 import { buildHelpEmbed, commands } from './src/commands.js';
 import {
@@ -208,9 +209,16 @@ installSmartFallback(soundCloudPlugin, syncedTrack => {
  }
 });
 
+// Bộ lưu trạng thái phòng thoại & danh sách nhạc tự động khôi phục khi bot bị reset hoặc cập nhật tính năng.
+const sessionStore = createRuntimeSessionStore();
+
 // Trung tâm Website "Now Playing" (giao diện kiểu Ziji V10 + SSE thời gian thực + tự động đồng bộ ra Cloudflare Worker).
 const nowPlayingHub = createNowPlayingHub({
  getPlayer: () => manager.getAll()[0] ?? null,
+ getResumeSeal: () => {
+  const exported = sessionStore.exportSessionsObject();
+  return Object.keys(exported).length > 0 ? sealSessionPayload(exported, DISCORD_TOKEN) : null;
+ },
  client,
  botToken: DISCORD_TOKEN,
 });
@@ -344,13 +352,26 @@ function triggerChannelSweep(channelId, { clearAllKickAlerts = false, force = fa
  }).catch(() => {});
 }
 
+function persistActiveSession(player, { immediate = false } = {}) {
+ if (closing || !player || player.destroyed) return;
+ sessionStore.savePlayer(player, { immediate });
+}
+
+function clearPersistedSession(guildId) {
+ if (closing || !guildId) return;
+ sessionStore.removeGuild(guildId, { immediate: true });
+}
+
 function markPanelTouched(player, overrides = {}) {
  const ud = player?.userdata;
  if (ud) {
   ud.lastPanelEditAt = Date.now();
   ud.lastProgressText = renderSyncedProgress(player).barText;
  }
- if (player && !player.destroyed) nowPlayingHub.publish({ player, ...overrides });
+ if (player && !player.destroyed) {
+  persistActiveSession(player);
+  nowPlayingHub.publish({ player, ...overrides });
+ }
 }
 
 // Kiểm tra trong kênh thoại có ít nhất 1 người nghe thật (để không tốn API cập nhật thanh nhạc khi phòng trống).
@@ -427,6 +448,10 @@ function startProgressTicker(player) {
    return;
   }
   if (player.isPaused || !player.isPlaying || ud.panelEditInFlight || ud.panelTimer) return;
+  if (Date.now() - (ud.lastSessionPersistAt ?? 0) >= 10000) {
+   ud.lastSessionPersistAt = Date.now();
+   persistActiveSession(player);
+  }
   if (Date.now() - (ud.lastPanelEditAt ?? 0) < 4000) return;
   if (!hasHumanListener(player)) return;
   const nextBar = renderSyncedProgress(player).barText;
@@ -470,7 +495,10 @@ async function postFreshPanel(player, track) {
 
 // Gom các thay đổi liên tiếp (âm lượng, lặp, 24/7, hàng đợi, tạm dừng, tua nhạc) để cập nhật khung điều khiển & Website mượt mà.
 function schedulePanelUpdate(player, overrides = {}) {
- if (player && !player.destroyed) nowPlayingHub.publish({ player, ...overrides });
+ if (player && !player.destroyed) {
+  persistActiveSession(player);
+  nowPlayingHub.publish({ player, ...overrides });
+ }
  const ud = player?.userdata;
  if (!ud || player.destroyed || ud.ending || !ud.panelMessage) return;
  clearPanelTimer(player);
@@ -490,6 +518,7 @@ async function closeCurrentPanel(player, reason, { keepIdle247 = false } = {}) {
  stopProgressTicker(player);
  clearAutoDeleteTimer(player);
  const shouldKeepIdle = keepIdle247 && ud.stay247 && !ud.manualDisconnect;
+ if (shouldKeepIdle) persistActiveSession(player, { immediate: true });
  nowPlayingHub.publish({
   player: shouldKeepIdle ? player : null,
   track: null,
@@ -723,6 +752,7 @@ function updateBotPresence(track = null) {
 
 // Đóng toàn bộ phiên phát, xóa mọi bộ hẹn giờ/tham chiếu và cho bot rời khỏi kênh thoại.
 async function destroyPlayerSession(guildId, reason) {
+ clearPersistedSession(guildId);
  const p = manager.get(guildId);
  if (!p) {
   nowPlayingHub.publish({ player: null, track: null, reason });
@@ -765,6 +795,7 @@ manager.on('trackStart', (player, track) => {
   }, 250);
   pauseTimer.unref?.();
  }
+ persistActiveSession(player, { immediate: true });
  nowPlayingHub.publish({ player, track, paused: Boolean(player?.isPaused) });
  updateBotPresence(track);
  void postFreshPanel(player, track);
@@ -804,6 +835,7 @@ manager.on('playerStop', player => {
  void closeCurrentPanel(player, 'Đã dừng phát nhạc.');
 });
 manager.on('playerDestroy', player => {
+ clearPersistedSession(player?.guildId);
  clearEmptyTimer(player);
  void closeCurrentPanel(player, 'Phiên phát nhạc đã kết thúc, bot đã rời kênh thoại.');
  if (player.userdata) player.userdata.textChannel = null;
@@ -916,6 +948,7 @@ async function ensureVoiceSession({ guild, voiceChannel, textChannel, userId, in
   });
   if (!p.connection) await p.connect(voiceChannel);
   clearKickAlertsOnRejoin(guild.id, textChannel?.id ?? p.userdata?.textChannel?.id ?? null);
+  persistActiveSession(p, { immediate: true });
   return { player: p, created };
  } catch (e) {
   if (created) manager.delete(guild.id);
@@ -977,6 +1010,7 @@ async function enqueueAndPlay({ guild, voiceChannel, textChannel, rawQuery, user
 
 // Theo dõi biến động kênh thoại: phát hiện bị tắt mic (Server Mute / Stage), bị kick khỏi phòng, chuyển kênh AFK, hoặc kênh trống.
 client.on(Events.VoiceStateUpdate, (oldState, newState) => {
+ if (closing) return;
  const guild = newState.guild ?? oldState.guild;
  if ((newState.id ?? oldState.id) === client.user?.id && !oldState.channelId && newState.channelId) {
   clearKickAlertsOnRejoin(guild.id);
@@ -1043,6 +1077,7 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
    if (!oldState.channelId) clearKickAlertsOnRejoin(guild.id, p.userdata.textChannel?.id ?? null);
    p.userdata.voiceChannelId = newState.channelId;
    if (newState.channel?.bitrate) setAudioEnhancement({ channelBitrate: newState.channel.bitrate });
+   persistActiveSession(p, { immediate: oldState.channelId !== newState.channelId });
   }
 
   if (ev.action === 'muted' || ev.action === 'joined_muted') {
@@ -1147,11 +1182,134 @@ async function sweepStartupOrphanedNotices(readyClient) {
  }
 }
 
+// Tự động vào lại phòng thoại cũ và khôi phục chế độ 24/7 / bài đang phát / hàng đợi sau khi bot vừa reset hoặc cập nhật tính năng.
+async function restorePersistedSessionsOnStartup(readyClient) {
+ try {
+  if (!sessionStore.hasAny()) {
+   const remoteBackup = await nowPlayingHub.fetchRemoteSessionBackup();
+   if (remoteBackup) sessionStore.importFallbackSessions(remoteBackup);
+  }
+  await sweepStartupOrphanedNotices(readyClient);
+
+  const restorable = sessionStore.getRestorableSessions();
+  if (!restorable.length) {
+   nowPlayingHub.publish();
+   return;
+  }
+
+  for (const snap of restorable) {
+   if (manager.getAll().length > 0) break;
+   if (GUILD_ID && snap.guildId !== GUILD_ID) {
+    sessionStore.removeGuild(snap.guildId);
+    continue;
+   }
+   const guild = readyClient.guilds.cache.get(snap.guildId)
+    ?? await readyClient.guilds.fetch(snap.guildId).catch(() => null);
+   if (!guild) continue;
+
+   const voiceChannel = guild.channels.cache.get(snap.voiceChannelId)
+    ?? await guild.channels.fetch(snap.voiceChannelId).catch(() => null);
+   if (!voiceChannel || voiceChannel.type !== 2) {
+    sessionStore.removeGuild(snap.guildId);
+    continue;
+   }
+
+   const textChannel = snap.textChannelId
+    ? (guild.channels.cache.get(snap.textChannelId) ?? await guild.channels.fetch(snap.textChannelId).catch(() => null))
+    : null;
+   if (textChannel?.id) {
+    await sweepChannelStaleNotices({
+     rest: readyClient.rest,
+     channelId: textChannel.id,
+     botId: readyClient.user.id,
+     activeMessageIds: collectActiveMessageIds(),
+     pendingKeys: new Set(pendingAutoDeletes.keys()),
+     limit: 25,
+    }).catch(() => {});
+   }
+
+   const fallbackOwner = snap.ownerId || readyClient.user.id;
+   const { player: p } = await ensureVoiceSession({
+    guild,
+    voiceChannel,
+    textChannel,
+    userId: fallbackOwner,
+    initial247: Boolean(snap.stay247),
+   });
+
+   if (p.userdata) {
+    p.userdata.soundPreset = snap.soundPreset ?? 'hd';
+    p.userdata.ownerId = snap.ownerId ?? p.userdata.ownerId;
+   }
+   setAudioEnhancement({
+    preset: snap.soundPreset ?? 'hd',
+    channelBitrate: voiceChannel.bitrate,
+   });
+   if (typeof snap.volume === 'number' && snap.volume !== 100) p.setVolume(snap.volume);
+   if (snap.autoPlay) p.autoPlay(true);
+
+   const allTracks = [snap.currentTrack, ...(snap.upcomingTracks ?? [])].filter(Boolean);
+   if (allTracks.length > 0) {
+    const [firstTrack, ...restTracks] = allTracks;
+    if (p.userdata) p.userdata.idleOpen = false;
+    const played = await p.play(firstTrack, firstTrack.requestedBy || fallbackOwner).catch(() => false);
+    if (played) {
+     if (restTracks.length > 0) {
+      if (typeof p.queue?.addMultiple === 'function') p.queue.addMultiple(restTracks);
+      else for (const t of restTracks) p.queue?.insert?.(t, p.queue.size);
+     }
+     if (snap.loopMode && snap.loopMode !== 'off') p.loop(snap.loopMode);
+     if (snap.currentTrack && snap.positionMs >= 5000) {
+      await p.seek(snap.positionMs).catch(() => {});
+     }
+     if (snap.wasPaused && !p.isPaused) {
+      await p.pause().catch(() => {});
+     }
+     if (p.userdata && !p.userdata.panelMessage) {
+      p.userdata.pendingKickRestoreSync = true;
+     }
+     schedulePanelUpdate(p);
+     console.log(`[khôi-phục] Đã tự động vào lại phòng "${voiceChannel.name}" và phát tiếp nhạc sau khi restart.`);
+     return;
+    }
+   }
+
+   // Trường hợp trước khi reset bot chỉ đang treo trong phòng thoại (24/7 hoặc vừa /join chưa mở bài).
+   persistActiveSession(p, { immediate: true });
+   nowPlayingHub.publish({ player: p, track: null });
+   if (snap.stay247 && textChannel?.send) {
+    await closeCurrentPanel(
+     p,
+     `🔄 Bot vừa khởi động lại / cập nhật xong và đã **tự động vào lại phòng thoại <#${voiceChannel.id}>** (chế độ 24/7).`,
+     { keepIdle247: true },
+    );
+   } else if (!snap.stay247) {
+    const listeners = guild.voiceStates.cache.filter(vs => vs.channelId === voiceChannel.id && vs.id !== readyClient.user?.id).size;
+    if (listeners === 0 && p.userdata && !p.userdata.emptyTimer) {
+     p.userdata.emptyTimer = setTimeout(() => {
+      p.userdata.emptyTimer = null;
+      const remain = guild.voiceStates.cache.filter(vs => vs.channelId === voiceChannel.id && vs.id !== readyClient.user?.id).size;
+      if (!p.destroyed && !p.userdata?.stay247 && remain === 0) {
+       void destroyPlayerSession(guild.id, 'Kênh thoại không còn người nghe nên bot đã tự rời kênh.');
+      }
+     }, 30000);
+     p.userdata.emptyTimer.unref?.();
+    }
+   }
+   console.log(`[khôi-phục] Đã tự động kết nối lại phòng thoại "${voiceChannel.name}" sau khi restart.`);
+   return;
+  }
+  nowPlayingHub.publish();
+ } catch (e) {
+  console.warn('[khôi-phục] Không thể khôi phục phiên phòng thoại cũ:', e?.message ?? e?.name ?? 'Lỗi');
+  nowPlayingHub.publish();
+ }
+}
+
 client.once(Events.ClientReady, async c => {
  console.log(`[khởi-động] Đã đăng nhập: ${c.user.tag}`);
- nowPlayingHub.publish();
  updateBotPresence(null);
- void sweepStartupOrphanedNotices(c);
+ void restorePersistedSessionsOnStartup(c);
  const appInfo = await c.application.fetch().catch(() => null);
  if (appInfo?.interactionsEndpointURL) {
   console.warn(`[cảnh-báo] Phát hiện Interactions Endpoint URL cũ (${appInfo.interactionsEndpointURL}), đang tự động gỡ bỏ...`);
@@ -1369,6 +1527,7 @@ async function handlePlayerComponent(i) {
     }
     case 'player_leave': {
      guildKickSnapshots.delete(i.guildId);
+     clearPersistedSession(i.guildId);
      if (p.userdata) {
       p.userdata.manualDisconnect = true;
       p.userdata.stay247 = false;
@@ -1401,12 +1560,14 @@ async function handlePlayerComponent(i) {
       p.stop();
       p.clearLeaveTimeout?.();
       const reason = 'Đã dừng phát nhạc và xóa hàng đợi — Bot vẫn đang giữ kết nối 24/7.';
+      persistActiveSession(p, { immediate: true });
       nowPlayingHub.publish({ player: p, track: null, reason });
       updateBotPresence(null);
       await i.update(buildIdle247Payload(p, reason));
       schedulePanelAutoDelete(i.message, p, IDLE_PANEL_AUTO_DELETE_MS, i.channelId);
       return;
      }
+     clearPersistedSession(i.guildId);
      if (p.userdata) {
       p.userdata.manualDisconnect = true;
       p.userdata.ending = true;
@@ -1760,22 +1921,39 @@ client.on(Events.InteractionCreate, async i => {
  }
 });
 
-// Dọn dẹp tài nguyên phát nhạc, xóa ngay các thông báo tạm đang chờ tự xóa, kết nối Discord và cổng HTTP khi tắt tiến trình.
+// Lưu lại phòng thoại & nhạc đang phát trước khi tắt tiến trình để tự vào lại ngay sau khi reset/update, đồng thời xóa gọn khung cũ.
 async function shutdown(code = 0) {
  if (closing) return; closing = true;
  const timer = setTimeout(() => process.exit(code || 1), 5000); timer.unref();
  try {
-  for (const p of manager.getAll()) {
+  const activePlayers = manager.getAll();
+  sessionStore.flushAllSync(activePlayers);
+
+  const cleanupTargets = [];
+  for (const p of activePlayers) {
    clearPanelTimer(p);
    stopProgressTicker(p);
    clearEmptyTimer(p);
+   const chId = p.userdata?.textChannel?.id ?? null;
+   if (p.userdata?.panelMessage) {
+    cleanupTargets.push({ msg: p.userdata.panelMessage, channelId: chId });
+    p.userdata.panelMessage = null;
+   }
+   if (p.userdata?.voiceAlertMessage) {
+    cleanupTargets.push({ msg: p.userdata.voiceAlertMessage, channelId: chId });
+    p.userdata.voiceAlertMessage = null;
+   }
   }
   if (pendingAutoDeletes.size > 0) {
-   const entries = [...pendingAutoDeletes.values()];
+   for (const e of pendingAutoDeletes.values()) {
+    clearTimeout(e.timer);
+    cleanupTargets.push({ msg: e.msg, channelId: e.channelId });
+   }
    pendingAutoDeletes.clear();
-   for (const e of entries) clearTimeout(e.timer);
+  }
+  if (cleanupTargets.length > 0) {
    await Promise.race([
-    Promise.allSettled(entries.map(e => deleteDiscordMessage(client.rest, e.msg, e.channelId))),
+    Promise.allSettled(cleanupTargets.map(t => deleteDiscordMessage(client.rest, t.msg, t.channelId))),
     new Promise(r => setTimeout(r, 2000)),
    ]);
   }

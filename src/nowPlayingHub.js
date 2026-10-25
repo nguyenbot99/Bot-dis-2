@@ -2,6 +2,7 @@ import { createHmac } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { SOUND_PRESETS } from './audioEnhancer.js';
 import { cleanText, LOOP_LABELS, renderSyncedProgress, safeHttpUrl } from './playerGui.js';
+import { openSessionPayload } from './sessionStore.js';
 
 export const DEFAULT_NOW_PLAYING_PUSH_URL =
  'https://bot-dis-2.botmusicvip.workers.dev/api/now-playing';
@@ -176,6 +177,7 @@ export function serializeNowPlayingState({ player, client, overrides = {} } = {}
 // Bộ trung tâm phục vụ Website "Now Playing" (Express + SSE thời gian thực + đẩy dữ liệu ra Worker ngoài nếu cấu hình).
 export function createNowPlayingHub({
  getPlayer,
+ getResumeSeal = null,
  client,
  htmlPath = new URL('../web/index.html', import.meta.url),
  env = process.env,
@@ -216,6 +218,9 @@ export function createNowPlayingHub({
  async function executeOutboundPush() {
   if (!rawPushUrl) return;
   const snapshot = getSnapshot();
+  const outboundBody = typeof getResumeSeal === 'function'
+   ? { ...snapshot, resumeSeal: getResumeSeal() }
+   : snapshot;
   const headers = { 'Content-Type': 'application/json' };
   if (pushSecret) headers.Authorization = `Bearer ${pushSecret}`;
   if (ownerProof) headers['X-Bot-Proof'] = ownerProof;
@@ -223,7 +228,7 @@ export function createNowPlayingHub({
    const res = await fetchImpl(rawPushUrl, {
     method: 'POST',
     headers,
-    body: JSON.stringify(snapshot),
+    body: JSON.stringify(outboundBody),
     signal: AbortSignal.timeout(5000),
    });
    if (res && res.ok === false) {
@@ -352,10 +357,28 @@ export function createNowPlayingHub({
   sseClients.clear();
  }
 
+ async function fetchRemoteSessionBackup() {
+  if (!rawPushUrl || !botToken) return null;
+  try {
+   const res = await fetchImpl(rawPushUrl, {
+    method: 'GET',
+    headers: { Accept: 'application/json' },
+    signal: AbortSignal.timeout(4000),
+   });
+   if (!res?.ok) return null;
+   const data = await res.json();
+   if (!data?.resumeSeal) return null;
+   return openSessionPayload(data.resumeSeal, botToken);
+  } catch {
+   return null;
+  }
+ }
+
  return {
   getSnapshot,
   publish,
   mountRoutes,
+  fetchRemoteSessionBackup,
   close,
  };
 }

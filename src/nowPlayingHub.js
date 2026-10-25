@@ -182,6 +182,7 @@ export function createNowPlayingHub({
  htmlPath = new URL('../web/index.html', import.meta.url),
  env = process.env,
  botToken = '',
+ deferInitialPush = false,
  fetchImpl = fetch,
  logger = console,
 } = {}) {
@@ -191,6 +192,9 @@ export function createNowPlayingHub({
  let pushTimer = null;
  let lastPushOk = false;
  let lastWarnAt = 0;
+ let outboundPushPaused = Boolean(deferInitialPush);
+ let remoteBackupCheckFailed = false;
+ let explicitSealClear = false;
 
  const { pushUrl: rawPushUrl, pushSecret, ownerProof } = resolvePushEndpoint(env, botToken);
 
@@ -216,10 +220,18 @@ export function createNowPlayingHub({
  }
 
  async function executeOutboundPush() {
-  if (!rawPushUrl) return;
+  if (!rawPushUrl || outboundPushPaused) return false;
   const snapshot = getSnapshot();
+  const seal = typeof getResumeSeal === 'function' ? getResumeSeal() : undefined;
+  if (seal) {
+   remoteBackupCheckFailed = false;
+   explicitSealClear = false;
+  } else if (remoteBackupCheckFailed && !explicitSealClear) {
+   // Nếu lúc khởi động mạng lạnh chưa đọc được backup từ Cloudflare và cũng chưa có phiên mới hay lệnh /leave, không ghi đè mất backup cũ.
+   return false;
+  }
   const outboundBody = typeof getResumeSeal === 'function'
-   ? { ...snapshot, resumeSeal: getResumeSeal() }
+   ? { ...snapshot, resumeSeal: seal ?? null }
    : snapshot;
   const headers = { 'Content-Type': 'application/json' };
   if (pushSecret) headers.Authorization = `Bearer ${pushSecret}`;
@@ -240,21 +252,30 @@ export function createNowPlayingHub({
     } else {
      warnThrottled(`[web-now-playing] ⚠️ Không thể đẩy dữ liệu lên Website ngoài (HTTP ${res.status}).`);
     }
-    return;
+    return false;
    }
    if (!lastPushOk) {
     lastPushOk = true;
     logger?.log?.(`[web-now-playing] ✅ Đã kết nối & đồng bộ trạng thái nhạc lên Website: ${rawPushUrl}`);
    }
+   return true;
   } catch (err) {
    lastPushOk = false;
    warnThrottled(`[web-now-playing] ⚠️ Lỗi mạng khi đẩy dữ liệu lên Website ngoài: ${err?.name ?? 'Error'}`);
+   return false;
   }
  }
 
- function scheduleOutboundPush() {
-  if (!rawPushUrl) return;
-  if (pushTimer) clearTimeout(pushTimer);
+ function scheduleOutboundPush(immediate = false) {
+  if (!rawPushUrl || outboundPushPaused) return;
+  if (pushTimer) {
+   clearTimeout(pushTimer);
+   pushTimer = null;
+  }
+  if (immediate) {
+   void executeOutboundPush();
+   return;
+  }
   pushTimer = setTimeout(() => {
    pushTimer = null;
    void executeOutboundPush();
@@ -262,27 +283,42 @@ export function createNowPlayingHub({
   pushTimer.unref?.();
  }
 
- // Tự thử đồng bộ lại mỗi 20 giây nếu lần đẩy trước chưa thành công (ví dụ vừa mới thêm Secret trên Cloudflare) hoặc khi đang phát nhạc.
+ // Tự thử đồng bộ lại mỗi 20 giây nếu lần đẩy trước chưa thành công hoặc khi đang ở trong phòng thoại / phát nhạc.
  const resyncTimer = rawPushUrl
   ? setInterval(() => {
-     if (!client?.isReady?.()) return;
-     const hasActiveTrack = Boolean(getPlayer?.()?.queue?.currentTrack);
-     if (!lastPushOk || hasActiveTrack) {
+     if (!client?.isReady?.() || outboundPushPaused) return;
+     const activePl = getPlayer?.();
+     const hasActiveSession = Boolean(activePl && !activePl.destroyed);
+     if (!lastPushOk || hasActiveSession) {
       void executeOutboundPush();
      }
     }, 20000)
   : null;
  resyncTimer?.unref?.();
 
- function publish(overrides = {}) {
+ function publish(overrides = {}, { immediatePush = false, clearRemoteSession = false } = {}) {
   lastOverrides = overrides;
+  if (clearRemoteSession) explicitSealClear = true;
   if (sseClients.size > 0) {
    const frame = `event: state\ndata: ${JSON.stringify(getSnapshot(overrides))}\n\n`;
    for (const res of sseClients) {
     try { res.write(frame); } catch { sseClients.delete(res); }
    }
   }
-  scheduleOutboundPush();
+  scheduleOutboundPush(immediatePush);
+ }
+
+ function setOutboundPushPaused(paused) {
+  outboundPushPaused = Boolean(paused);
+ }
+
+ async function flushOutboundPush() {
+  if (pushTimer) {
+   clearTimeout(pushTimer);
+   pushTimer = null;
+  }
+  outboundPushPaused = false;
+  return executeOutboundPush();
  }
 
  function applyCors(_req, res) {
@@ -357,26 +393,35 @@ export function createNowPlayingHub({
   sseClients.clear();
  }
 
- async function fetchRemoteSessionBackup() {
+ // Đọc bản sao lưu phiên phòng thoại từ Cloudflare Durable Object (thử lại tối đa 3 lần nếu mạng container mới khởi động còn lạnh).
+ async function fetchRemoteSessionBackup({ retries = 3 } = {}) {
   if (!rawPushUrl || !botToken) return null;
-  try {
-   const res = await fetchImpl(rawPushUrl, {
-    method: 'GET',
-    headers: { Accept: 'application/json' },
-    signal: AbortSignal.timeout(4000),
-   });
-   if (!res?.ok) return null;
-   const data = await res.json();
-   if (!data?.resumeSeal) return null;
-   return openSessionPayload(data.resumeSeal, botToken);
-  } catch {
-   return null;
+  for (let attempt = 0; attempt < retries; attempt++) {
+   if (attempt > 0) {
+    await new Promise(r => setTimeout(r, attempt === 1 ? 1000 : 2200));
+   }
+   try {
+    const res = await fetchImpl(rawPushUrl, {
+     method: 'GET',
+     headers: { Accept: 'application/json' },
+     signal: AbortSignal.timeout(4500),
+    });
+    if (!res?.ok) continue;
+    const data = await res.json();
+    remoteBackupCheckFailed = false;
+    if (!data?.resumeSeal) return null;
+    return openSessionPayload(data.resumeSeal, botToken);
+   } catch {}
   }
+  remoteBackupCheckFailed = true;
+  return null;
  }
 
  return {
   getSnapshot,
   publish,
+  setOutboundPushPaused,
+  flushOutboundPush,
   mountRoutes,
   fetchRemoteSessionBackup,
   close,

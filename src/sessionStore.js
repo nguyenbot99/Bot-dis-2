@@ -1,10 +1,14 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { resolveHumanRequester } from './access.js';
 import { renderSyncedProgress } from './playerGui.js';
 
-export const DEFAULT_SESSION_FILE = resolve(process.cwd(), '.runtime-session.json');
+const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+export const DEFAULT_SESSION_FILE = resolve(PROJECT_ROOT, '.runtime-session.json');
+export const DEFAULT_TMP_BACKUP_FILE = join(tmpdir(), 'bot-dis-2-runtime-session.json');
 export const RESTART_NORMAL_TTL_MS = 2 * 60 * 60 * 1000;       // Phiên thường: tự vào lại phòng nếu bot vừa reset/update trong vòng 2 giờ.
 export const RESTART_247_TTL_MS = 7 * 24 * 60 * 60 * 1000;     // Phiên 24/7: tự vào lại phòng ngay cả sau khi bảo trì dài hạn (tối đa 7 ngày).
 
@@ -67,6 +71,35 @@ export function capturePlayerSessionSnapshot(player, now = Date.now()) {
  };
 }
 
+// Dự phòng lớp 3: Ngay khoảnh khắc bot vừa đăng nhập lại sau cú crash/reset nhanh, kiểm tra xem Discord Gateway còn giữ trạng thái bot trong phòng thoại nào không.
+export function captureGatewayFallbackSessions(readyClient, now = Date.now()) {
+ const botId = readyClient?.user?.id;
+ if (!botId || !readyClient?.guilds?.cache) return {};
+ const out = {};
+ for (const guild of readyClient.guilds.cache.values()) {
+  const vs = guild?.voiceStates?.cache?.get?.(botId);
+  if (vs?.channelId && vs.channelId !== guild.afkChannelId) {
+   out[String(guild.id)] = {
+    guildId: String(guild.id),
+    voiceChannelId: String(vs.channelId),
+    textChannelId: null,
+    ownerId: null,
+    stay247: false,
+    volume: 100,
+    soundPreset: 'hd',
+    loopMode: 'off',
+    autoPlay: false,
+    wasPaused: false,
+    currentTrack: null,
+    positionMs: 0,
+    upcomingTracks: [],
+    savedAt: now,
+   };
+  }
+ }
+ return out;
+}
+
 export function isSessionSnapshotFresh(snap, now = Date.now()) {
  if (!snap || typeof snap !== 'object' || !snap.guildId || !snap.voiceChannelId) return false;
  const savedAt = Number(snap.savedAt) || 0;
@@ -114,26 +147,53 @@ export function openSessionPayload(sealed, secret) {
  }
 }
 
-// Bộ lưu trữ phiên hoạt động bền vững trên ổ đĩa cục bộ (ghi nguyên tử .tmp -> rename chống hỏng file khi tắt đột ngột).
+function readSessionsFileSafe(targetPath) {
+ if (!targetPath || !existsSync(targetPath)) return [];
+ try {
+  const raw = JSON.parse(readFileSync(targetPath, 'utf8'));
+  return raw?.sessions && typeof raw.sessions === 'object' ? Object.values(raw.sessions) : [];
+ } catch {
+  return [];
+ }
+}
+
+function writeAtomicJsonSafe(targetPath, payloadStr) {
+ if (!targetPath) return;
+ try {
+  const tmpPath = `${targetPath}.tmp`;
+  writeFileSync(tmpPath, payloadStr, 'utf8');
+  renameSync(tmpPath, targetPath);
+ } catch {}
+}
+
+function unlinkSafe(targetPath) {
+ if (!targetPath) return;
+ try {
+  if (existsSync(targetPath)) unlinkSync(targetPath);
+ } catch {}
+}
+
+// Bộ lưu trữ phiên hoạt động bền vững trên 2 vị trí đĩa cục bộ (thư mục bot + /tmp chống git clean).
 export function createRuntimeSessionStore({
  filePath = DEFAULT_SESSION_FILE,
+ backupFilePath = filePath === DEFAULT_SESSION_FILE ? DEFAULT_TMP_BACKUP_FILE : null,
  nowFn = () => Date.now(),
 } = {}) {
  const sessions = new Map();
  let writeTimer = null;
 
  function loadFromDisk() {
-  if (!filePath || !existsSync(filePath)) return;
-  try {
-   const raw = JSON.parse(readFileSync(filePath, 'utf8'));
-   const entries = raw?.sessions && typeof raw.sessions === 'object' ? Object.values(raw.sessions) : [];
-   const now = nowFn();
-   for (const snap of entries) {
-    if (isSessionSnapshotFresh(snap, now)) {
-     sessions.set(String(snap.guildId), snap);
+  const now = nowFn();
+  for (const p of [filePath, backupFilePath]) {
+   for (const snap of readSessionsFileSafe(p)) {
+    if (!isSessionSnapshotFresh(snap, now)) continue;
+    const gid = String(snap.guildId);
+    const prev = sessions.get(gid);
+    if (!prev || (Number(snap.savedAt) || 0) >= (Number(prev.savedAt) || 0)) {
+     sessions.set(gid, snap);
     }
    }
-  } catch {}
+  }
  }
 
  function writeToDiskSync() {
@@ -141,24 +201,25 @@ export function createRuntimeSessionStore({
    clearTimeout(writeTimer);
    writeTimer = null;
   }
-  if (!filePath) return;
-  try {
-   const now = nowFn();
-   for (const [gid, snap] of sessions) {
-    if (!isSessionSnapshotFresh(snap, now)) sessions.delete(gid);
-   }
-   if (sessions.size === 0) {
-    if (existsSync(filePath)) unlinkSync(filePath);
-    return;
-   }
-   const obj = Object.fromEntries(sessions.entries());
-   const tmpPath = `${filePath}.tmp`;
-   writeFileSync(tmpPath, JSON.stringify({ v: 1, updatedAt: now, sessions: obj }), 'utf8');
-   renameSync(tmpPath, filePath);
-  } catch {}
+  const now = nowFn();
+  for (const [gid, snap] of sessions) {
+   if (!isSessionSnapshotFresh(snap, now)) sessions.delete(gid);
+  }
+  if (sessions.size === 0) {
+   unlinkSafe(filePath);
+   unlinkSafe(backupFilePath);
+   return;
+  }
+  const payloadStr = JSON.stringify({
+   v: 1,
+   updatedAt: now,
+   sessions: Object.fromEntries(sessions.entries()),
+  });
+  writeAtomicJsonSafe(filePath, payloadStr);
+  writeAtomicJsonSafe(backupFilePath, payloadStr);
  }
 
- function scheduleWrite(delayMs = 600) {
+ function scheduleWrite(delayMs = 500) {
   if (writeTimer) return;
   writeTimer = setTimeout(() => {
    writeTimer = null;
@@ -186,7 +247,7 @@ export function createRuntimeSessionStore({
   removeGuild(guildId, { immediate = true } = {}) {
    if (!guildId) return;
    const deleted = sessions.delete(String(guildId));
-   if (!deleted) return;
+   if (!deleted && !existsSync(filePath || '') && !existsSync(backupFilePath || '')) return;
    if (immediate) writeToDiskSync();
    else scheduleWrite();
   },

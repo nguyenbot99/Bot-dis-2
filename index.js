@@ -19,7 +19,7 @@ import { assertMusicAccess, isBotOwner, resolveHumanRequester } from './src/acce
 import { fetchTrackLyrics, sanitizeLyricsTitle } from './src/lyrics.js';
 import { createNowPlayingHub } from './src/nowPlayingHub.js';
 import { deleteDiscordMessage, extractMessageRef, sweepChannelStaleNotices } from './src/messageCleaner.js';
-import { createRuntimeSessionStore, sealSessionPayload } from './src/sessionStore.js';
+import { captureGatewayFallbackSessions, createRuntimeSessionStore, sealSessionPayload } from './src/sessionStore.js';
 import { buildVoiceGuardEmbed, evaluateBotVoiceTransition } from './src/voiceGuard.js';
 import { buildHelpEmbed, commands } from './src/commands.js';
 import {
@@ -221,6 +221,7 @@ const nowPlayingHub = createNowPlayingHub({
  },
  client,
  botToken: DISCORD_TOKEN,
+ deferInitialPush: true,
 });
 
 // Máy chủ HTTP nhẹ phục vụ Website "Now Playing" (/) + API thời gian thực (/api/now-playing) + kiểm tra sức khỏe (/healthz).
@@ -374,20 +375,23 @@ function markPanelTouched(player, overrides = {}) {
  }
 }
 
-// Kiểm tra trong kênh thoại có ít nhất 1 người nghe thật (để không tốn API cập nhật thanh nhạc khi phòng trống).
+// Kiểm tra trong kênh thoại có ít nhất 1 người nghe thật qua voiceStates (chính xác tuyệt đối ngay cả khi GuildMemberManager giới hạn bộ đệm).
 function hasHumanListener(player) {
  const guild = client.guilds.cache.get(player?.guildId);
  const channelId = player?.userdata?.voiceChannelId ?? guild?.members?.me?.voice?.channelId;
  if (!guild || !channelId) return true;
- const ch = guild.channels.cache.get(channelId);
- if (!ch?.members) return true;
- return ch.members.some(m => !m.user?.bot);
+ if (!guild.voiceStates?.cache) return true;
+ return guild.voiceStates.cache.some(vs => vs.channelId === channelId && vs.id !== client.user?.id && !vs.member?.user?.bot);
 }
 
 function clearEmptyTimer(player) {
  if (player?.userdata?.emptyTimer) {
   clearTimeout(player.userdata.emptyTimer);
   player.userdata.emptyTimer = null;
+ }
+ if (player?.userdata?.restoreReconnectTimer) {
+  clearTimeout(player.userdata.restoreReconnectTimer);
+  player.userdata.restoreReconnectTimer = null;
  }
 }
 
@@ -519,11 +523,14 @@ async function closeCurrentPanel(player, reason, { keepIdle247 = false } = {}) {
  clearAutoDeleteTimer(player);
  const shouldKeepIdle = keepIdle247 && ud.stay247 && !ud.manualDisconnect;
  if (shouldKeepIdle) persistActiveSession(player, { immediate: true });
- nowPlayingHub.publish({
-  player: shouldKeepIdle ? player : null,
-  track: null,
-  reason,
- });
+ nowPlayingHub.publish(
+  {
+   player: shouldKeepIdle ? player : null,
+   track: null,
+   reason,
+  },
+  { immediatePush: Boolean(shouldKeepIdle) },
+ );
  updateBotPresence(null);
  const payload = shouldKeepIdle
   ? buildIdle247Payload(player, reason)
@@ -617,7 +624,13 @@ async function restoreKickSnapshotIfAny(player, voiceChannel, fallbackUserId) {
  const [firstTrack, ...restTracks] = allTracks;
 
  const origOwner = resolveHumanRequester(firstTrack.requestedBy) || snap.ownerId;
- const ownerStillInRoom = Boolean(origOwner && voiceChannel?.members?.has?.(origOwner));
+ const guildObj = voiceChannel?.guild ?? client.guilds.cache.get(guildId);
+ const ownerStillInRoom = Boolean(
+  origOwner && (
+   guildObj?.voiceStates?.cache?.get(origOwner)?.channelId === voiceChannel?.id ||
+   voiceChannel?.members?.has?.(origOwner)
+  ),
+ );
  const effectiveOwner = ownerStillInRoom ? origOwner : fallbackUserId;
  if (!ownerStillInRoom) firstTrack.requestedBy = fallbackUserId;
 
@@ -755,7 +768,7 @@ async function destroyPlayerSession(guildId, reason) {
  clearPersistedSession(guildId);
  const p = manager.get(guildId);
  if (!p) {
-  nowPlayingHub.publish({ player: null, track: null, reason });
+  nowPlayingHub.publish({ player: null, track: null, reason }, { immediatePush: true, clearRemoteSession: true });
   updateBotPresence(null);
   return;
  }
@@ -763,6 +776,7 @@ async function destroyPlayerSession(guildId, reason) {
  if (ud) {
   ud.manualDisconnect = true;
   ud.stay247 = false;
+  ud.restoringUntil = 0;
   if (ud.voiceAlertMessage) {
    void deleteDiscordMessage(client.rest, ud.voiceAlertMessage, ud.textChannel?.id);
    ud.voiceAlertMessage = null;
@@ -773,7 +787,7 @@ async function destroyPlayerSession(guildId, reason) {
   ud.textChannel = null;
  }
  manager.delete(guildId);
- nowPlayingHub.publish({ player: null, track: null, reason });
+ nowPlayingHub.publish({ player: null, track: null, reason }, { immediatePush: true, clearRemoteSession: true });
  updateBotPresence(null);
 }
 
@@ -796,7 +810,7 @@ manager.on('trackStart', (player, track) => {
   pauseTimer.unref?.();
  }
  persistActiveSession(player, { immediate: true });
- nowPlayingHub.publish({ player, track, paused: Boolean(player?.isPaused) });
+ nowPlayingHub.publish({ player, track, paused: Boolean(player?.isPaused) }, { immediatePush: true });
  updateBotPresence(track);
  void postFreshPanel(player, track);
 });
@@ -1020,6 +1034,27 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
 
  // Trường hợp trạng thái thoại của chính bot thay đổi (vào phòng, bị tắt/mở mic, bị kéo phòng hoặc bị kick).
  if ((newState.id ?? oldState.id) === client.user?.id) {
+  // Trong 15 giây đầu vừa khôi phục sau restart, nếu Discord dọn trễ phiên voice cũ gây rớt thoáng qua thì tự nối lại êm ái thay vì báo nhầm bị kick.
+  if (p.userdata.restoringUntil && Date.now() < p.userdata.restoringUntil && !p.userdata.manualDisconnect) {
+   if (newState.channelId) {
+    p.userdata.kickHandled = false;
+    p.userdata.voiceChannelId = newState.channelId;
+    if (newState.channel?.bitrate) setAudioEnhancement({ channelBitrate: newState.channel.bitrate });
+   } else if (oldState.channelId) {
+    const target = guild.channels.cache.get(p.userdata.voiceChannelId);
+    if (target && !p.userdata.restoreReconnectTimer) {
+     p.userdata.restoreReconnectTimer = setTimeout(() => {
+      p.userdata.restoreReconnectTimer = null;
+      if (!p.destroyed && !p.userdata?.manualDisconnect) {
+       p.connect(target).catch(() => {});
+      }
+     }, 1500);
+     p.userdata.restoreReconnectTimer.unref?.();
+    }
+    return;
+   }
+  }
+
   const ev = evaluateBotVoiceTransition(oldState, newState, p.userdata, {
    afkChannelId: guild.afkChannelId,
    isPlaying: Boolean(p.isPlaying || p.queue?.currentTrack),
@@ -1075,9 +1110,11 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
   if (newState.channelId) {
    p.userdata.kickHandled = false;
    if (!oldState.channelId) clearKickAlertsOnRejoin(guild.id, p.userdata.textChannel?.id ?? null);
+   const changedRoom = oldState.channelId !== newState.channelId;
    p.userdata.voiceChannelId = newState.channelId;
    if (newState.channel?.bitrate) setAudioEnhancement({ channelBitrate: newState.channel.bitrate });
-   persistActiveSession(p, { immediate: oldState.channelId !== newState.channelId });
+   persistActiveSession(p, { immediate: changedRoom });
+   if (changedRoom) nowPlayingHub.publish({ player: p }, { immediatePush: true });
   }
 
   if (ev.action === 'muted' || ev.action === 'joined_muted') {
@@ -1183,19 +1220,32 @@ async function sweepStartupOrphanedNotices(readyClient) {
 }
 
 // Tự động vào lại phòng thoại cũ và khôi phục chế độ 24/7 / bài đang phát / hàng đợi sau khi bot vừa reset hoặc cập nhật tính năng.
-async function restorePersistedSessionsOnStartup(readyClient) {
+async function restorePersistedSessionsOnStartup(readyClient, gatewayFallback = {}) {
+ let restoredOk = false;
  try {
-  if (!sessionStore.hasAny()) {
+  let sourceLabel = sessionStore.hasAny() ? 'ổ đĩa cục bộ' : null;
+  if (!sourceLabel) {
    const remoteBackup = await nowPlayingHub.fetchRemoteSessionBackup();
-   if (remoteBackup) sessionStore.importFallbackSessions(remoteBackup);
+   if (remoteBackup && sessionStore.importFallbackSessions(remoteBackup) > 0) {
+    sourceLabel = 'bản sao lưu đám mây';
+   }
   }
-  await sweepStartupOrphanedNotices(readyClient);
+  if (!sourceLabel && gatewayFallback && Object.keys(gatewayFallback).length > 0) {
+   if (sessionStore.importFallbackSessions(gatewayFallback) > 0) {
+    sourceLabel = 'trạng thái phòng Discord trực tiếp';
+   }
+  }
 
   const restorable = sessionStore.getRestorableSessions();
   if (!restorable.length) {
+   nowPlayingHub.setOutboundPushPaused(false);
    nowPlayingHub.publish();
+   void sweepStartupOrphanedNotices(readyClient);
    return;
   }
+
+  console.log(`[khôi-phục] Tìm thấy phiên phòng thoại trước khi restart (${sourceLabel ?? 'đã lưu'}), đang chờ 1.5s để nối lại...`);
+  await new Promise(r => setTimeout(r, 1500));
 
   for (const snap of restorable) {
    if (manager.getAll().length > 0) break;
@@ -1209,7 +1259,8 @@ async function restorePersistedSessionsOnStartup(readyClient) {
 
    const voiceChannel = guild.channels.cache.get(snap.voiceChannelId)
     ?? await guild.channels.fetch(snap.voiceChannelId).catch(() => null);
-   if (!voiceChannel || voiceChannel.type !== 2) {
+   const isVoiceRoom = Boolean(voiceChannel && (voiceChannel.type === 2 || voiceChannel.type === 13 || voiceChannel.isVoiceBased?.()));
+   if (!isVoiceRoom) {
     sessionStore.removeGuild(snap.guildId);
     continue;
    }
@@ -1229,15 +1280,32 @@ async function restorePersistedSessionsOnStartup(readyClient) {
    }
 
    const fallbackOwner = snap.ownerId || readyClient.user.id;
-   const { player: p } = await ensureVoiceSession({
-    guild,
-    voiceChannel,
-    textChannel,
-    userId: fallbackOwner,
-    initial247: Boolean(snap.stay247),
-   });
+   let connectedPlayer = null;
+   let lastConnectErr = null;
+   for (let attempt = 1; attempt <= 3; attempt++) {
+    if (attempt > 1) {
+     await new Promise(r => setTimeout(r, attempt === 2 ? 2500 : 4500));
+    }
+    try {
+     const { player } = await ensureVoiceSession({
+      guild,
+      voiceChannel,
+      textChannel,
+      userId: fallbackOwner,
+      initial247: Boolean(snap.stay247),
+     });
+     connectedPlayer = player;
+     break;
+    } catch (err) {
+     lastConnectErr = err;
+     console.warn(`[khôi-phục] Lần thử ${attempt}/3 nối lại phòng "${voiceChannel.name}" chưa thành công:`, err?.message ?? 'Lỗi');
+    }
+   }
+   if (!connectedPlayer) throw lastConnectErr ?? new Error('Không thể kết nối lại kênh thoại sau 3 lần thử.');
 
+   const p = connectedPlayer;
    if (p.userdata) {
+    p.userdata.restoringUntil = Date.now() + 15000;
     p.userdata.soundPreset = snap.soundPreset ?? 'hd';
     p.userdata.ownerId = snap.ownerId ?? p.userdata.ownerId;
    }
@@ -1248,6 +1316,7 @@ async function restorePersistedSessionsOnStartup(readyClient) {
    if (typeof snap.volume === 'number' && snap.volume !== 100) p.setVolume(snap.volume);
    if (snap.autoPlay) p.autoPlay(true);
 
+   nowPlayingHub.setOutboundPushPaused(false);
    const allTracks = [snap.currentTrack, ...(snap.upcomingTracks ?? [])].filter(Boolean);
    if (allTracks.length > 0) {
     const [firstTrack, ...restTracks] = allTracks;
@@ -1268,15 +1337,18 @@ async function restorePersistedSessionsOnStartup(readyClient) {
      if (p.userdata && !p.userdata.panelMessage) {
       p.userdata.pendingKickRestoreSync = true;
      }
+     persistActiveSession(p, { immediate: true });
      schedulePanelUpdate(p);
-     console.log(`[khôi-phục] Đã tự động vào lại phòng "${voiceChannel.name}" và phát tiếp nhạc sau khi restart.`);
-     return;
+     nowPlayingHub.publish({ player: p }, { immediatePush: true });
+     restoredOk = true;
+     console.log(`[khôi-phục] ✅ Đã tự động vào lại phòng "${voiceChannel.name}" và phát tiếp nhạc sau khi restart.`);
+     break;
     }
    }
 
    // Trường hợp trước khi reset bot chỉ đang treo trong phòng thoại (24/7 hoặc vừa /join chưa mở bài).
    persistActiveSession(p, { immediate: true });
-   nowPlayingHub.publish({ player: p, track: null });
+   nowPlayingHub.publish({ player: p, track: null }, { immediatePush: true });
    if (snap.stay247 && textChannel?.send) {
     await closeCurrentPanel(
      p,
@@ -1284,6 +1356,13 @@ async function restorePersistedSessionsOnStartup(readyClient) {
      { keepIdle247: true },
     );
    } else if (!snap.stay247) {
+    if (textChannel?.send) {
+     const notice = await textChannel.send({
+      content: `🔄 Bot vừa khởi động lại / cập nhật xong và đã **tự động vào lại phòng thoại <#${voiceChannel.id}>**.`,
+      allowedMentions: { parse: [] },
+     }).catch(() => null);
+     if (notice) schedulePanelAutoDelete(notice, null, 90000, textChannel.id);
+    }
     const listeners = guild.voiceStates.cache.filter(vs => vs.channelId === voiceChannel.id && vs.id !== readyClient.user?.id).size;
     if (listeners === 0 && p.userdata && !p.userdata.emptyTimer) {
      p.userdata.emptyTimer = setTimeout(() => {
@@ -1292,24 +1371,28 @@ async function restorePersistedSessionsOnStartup(readyClient) {
       if (!p.destroyed && !p.userdata?.stay247 && remain === 0) {
        void destroyPlayerSession(guild.id, 'Kênh thoại không còn người nghe nên bot đã tự rời kênh.');
       }
-     }, 30000);
+     }, 60000);
      p.userdata.emptyTimer.unref?.();
     }
    }
-   console.log(`[khôi-phục] Đã tự động kết nối lại phòng thoại "${voiceChannel.name}" sau khi restart.`);
-   return;
+   restoredOk = true;
+   console.log(`[khôi-phục] ✅ Đã tự động kết nối lại phòng thoại "${voiceChannel.name}" sau khi restart.`);
+   break;
   }
-  nowPlayingHub.publish();
  } catch (e) {
   console.warn('[khôi-phục] Không thể khôi phục phiên phòng thoại cũ:', e?.message ?? e?.name ?? 'Lỗi');
-  nowPlayingHub.publish();
+ } finally {
+  nowPlayingHub.setOutboundPushPaused(false);
+  if (!restoredOk) nowPlayingHub.publish();
+  void sweepStartupOrphanedNotices(readyClient);
  }
 }
 
 client.once(Events.ClientReady, async c => {
  console.log(`[khởi-động] Đã đăng nhập: ${c.user.tag}`);
+ const gatewayFallback = captureGatewayFallbackSessions(c);
  updateBotPresence(null);
- void restorePersistedSessionsOnStartup(c);
+ void restorePersistedSessionsOnStartup(c, gatewayFallback);
  const appInfo = await c.application.fetch().catch(() => null);
  if (appInfo?.interactionsEndpointURL) {
   console.warn(`[cảnh-báo] Phát hiện Interactions Endpoint URL cũ (${appInfo.interactionsEndpointURL}), đang tự động gỡ bỏ...`);
@@ -1540,7 +1623,7 @@ async function handlePlayerComponent(i) {
       p.userdata.textChannel = null;
      }
      const reason = 'Đã tắt chế độ 24/7 và rời khỏi kênh thoại.';
-     nowPlayingHub.publish({ player: null, track: null, reason });
+     nowPlayingHub.publish({ player: null, track: null, reason }, { immediatePush: true, clearRemoteSession: true });
      updateBotPresence(null);
      await i.update(buildEndedPayload(reason));
      schedulePanelAutoDelete(i.message, null, IDLE_PANEL_AUTO_DELETE_MS, i.channelId);
@@ -1561,7 +1644,7 @@ async function handlePlayerComponent(i) {
       p.clearLeaveTimeout?.();
       const reason = 'Đã dừng phát nhạc và xóa hàng đợi — Bot vẫn đang giữ kết nối 24/7.';
       persistActiveSession(p, { immediate: true });
-      nowPlayingHub.publish({ player: p, track: null, reason });
+      nowPlayingHub.publish({ player: p, track: null, reason }, { immediatePush: true });
       updateBotPresence(null);
       await i.update(buildIdle247Payload(p, reason));
       schedulePanelAutoDelete(i.message, p, IDLE_PANEL_AUTO_DELETE_MS, i.channelId);
@@ -1579,7 +1662,7 @@ async function handlePlayerComponent(i) {
       p.userdata.textChannel = null;
      }
      const reason = 'Đã dừng phát nhạc, xóa hàng đợi và rời kênh thoại.';
-     nowPlayingHub.publish({ player: null, track: null, reason });
+     nowPlayingHub.publish({ player: null, track: null, reason }, { immediatePush: true, clearRemoteSession: true });
      updateBotPresence(null);
      await i.update(buildEndedPayload(reason));
      schedulePanelAutoDelete(i.message, null, IDLE_PANEL_AUTO_DELETE_MS, i.channelId);
@@ -1736,7 +1819,7 @@ client.on(Events.InteractionCreate, async i => {
      return await reply(`▶️ Đã vào lại <#${channel.id}> và **phát tiếp nhạc lúc trước khi bị kick**: **${cleanText(restored.track.title, 85)}**${posNote}${queueNote}!`);
     }
    }
-   nowPlayingHub.publish({ player: joinedPlayer });
+   nowPlayingHub.publish({ player: joinedPlayer }, { immediatePush: true });
    return await reply(alreadyConnected ? `✅ Bot đang ở sẵn trong kênh thoại <#${channel.id}>.` : `✅ Đã tham gia kênh thoại <#${channel.id}>. Dùng \`/play\` để phát nhạc hoặc \`/247\` để giữ bot ở lại 24/7.`);
   }
 
@@ -1921,7 +2004,7 @@ client.on(Events.InteractionCreate, async i => {
  }
 });
 
-// Lưu lại phòng thoại & nhạc đang phát trước khi tắt tiến trình để tự vào lại ngay sau khi reset/update, đồng thời xóa gọn khung cũ.
+// Lưu lại phòng thoại & nhạc đang phát ra cả ổ đĩa cục bộ lẫn đám mây trước khi tắt tiến trình để tự vào lại ngay sau khi reset/update.
 async function shutdown(code = 0) {
  if (closing) return; closing = true;
  const timer = setTimeout(() => process.exit(code || 1), 5000); timer.unref();
@@ -1951,21 +2034,35 @@ async function shutdown(code = 0) {
    }
    pendingAutoDeletes.clear();
   }
+
+  const preExitTasks = [];
+  if (activePlayers.length > 0) {
+   preExitTasks.push(nowPlayingHub.flushOutboundPush().catch(() => {}));
+  }
   if (cleanupTargets.length > 0) {
+   preExitTasks.push(Promise.allSettled(cleanupTargets.map(t => deleteDiscordMessage(client.rest, t.msg, t.channelId))));
+  }
+  if (preExitTasks.length > 0) {
    await Promise.race([
-    Promise.allSettled(cleanupTargets.map(t => deleteDiscordMessage(client.rest, t.msg, t.channelId))),
+    Promise.allSettled(preExitTasks),
     new Promise(r => setTimeout(r, 2000)),
    ]);
   }
-  manager.destroy();
-  client.destroy();
+
+  // Dừng tiến trình âm thanh FFmpeg cục bộ nhưng KHÔNG gọi manager.destroy() để tránh ép Discord ngắt voice hoặc phát sinh thông báo thừa trước khi restart.
+  for (const p of activePlayers) {
+   try { p.destroyCurrentStream?.(); } catch {}
+   try { p.audioPlayer?.stop?.(true); } catch {}
+  }
   nowPlayingHub.close();
+  client.destroy();
   server.close(() => process.exit(code));
  } catch { process.exit(1); }
 }
 function fatal(e) { console.error('[lỗi-nghiêm-trọng]', e?.name ?? 'Error'); void shutdown(1); }
 process.once('SIGTERM', () => shutdown());
 process.once('SIGINT', () => shutdown());
+process.once('SIGHUP', () => shutdown());
 process.on('unhandledRejection', fatal);
 process.on('uncaughtException', fatal);
 await client.login(DISCORD_TOKEN).catch(fatal);

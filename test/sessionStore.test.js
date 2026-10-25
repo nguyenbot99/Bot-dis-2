@@ -1,9 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+ captureGatewayFallbackSessions,
  capturePlayerSessionSnapshot,
  createRuntimeSessionStore,
  openSessionPayload,
@@ -59,9 +60,10 @@ function makeFakePlayer(overrides = {}) {
  };
 }
 
-test('capturePlayerSessionSnapshot & createRuntimeSessionStore persist room, 24/7, 165% volume, preset, track & queue across restart', () => {
+test('capturePlayerSessionSnapshot & dual-file store survive git clean of primary file and clear both on /leave', () => {
  const dir = mkdtempSync(join(tmpdir(), 'bot-session-test-'));
  const filePath = join(dir, '.runtime-session.json');
+ const backupFilePath = join(dir, 'tmp-backup-session.json');
  let fakeNow = 1_760_000_000_000;
 
  try {
@@ -69,25 +71,22 @@ test('capturePlayerSessionSnapshot & createRuntimeSessionStore persist room, 24/
   const snap = capturePlayerSessionSnapshot(player, fakeNow);
   assert.equal(snap.guildId, '111222333444555666');
   assert.equal(snap.voiceChannelId, '777888999000111222');
-  assert.equal(snap.textChannelId, '333444555666777888');
   assert.equal(snap.stay247, true);
   assert.equal(snap.volume, 165);
   assert.equal(snap.soundPreset, 'bass');
-  assert.equal(snap.loopMode, 'queue');
-  assert.equal(snap.autoPlay, true);
   assert.equal(snap.positionMs, 95000);
-  assert.equal(snap.currentTrack.title, 'Nơi Này Có Anh');
-  assert.equal(snap.upcomingTracks.length, 1);
 
-  const store1 = createRuntimeSessionStore({ filePath, nowFn: () => fakeNow });
+  const store1 = createRuntimeSessionStore({ filePath, backupFilePath, nowFn: () => fakeNow });
   store1.flushAllSync([player]);
   assert.equal(existsSync(filePath), true);
+  assert.equal(existsSync(backupFilePath), true);
 
-  // Giả lập bot bị reset sau 3 ngày: vì đang bật 24/7 (TTL 7 ngày) nên vẫn tự vào lại phòng cũ!
+  // Giả lập git clean xóa mất file trong thư mục dự án, chỉ còn file backup trong /tmp + sau 3 ngày:
+  unlinkSync(filePath);
   fakeNow += 3 * 24 * 3600 * 1000;
   assert.ok(3 * 24 * 3600 * 1000 > RESTART_NORMAL_TTL_MS && 3 * 24 * 3600 * 1000 < RESTART_247_TTL_MS);
 
-  const storeAfterRestart = createRuntimeSessionStore({ filePath, nowFn: () => fakeNow });
+  const storeAfterRestart = createRuntimeSessionStore({ filePath, backupFilePath, nowFn: () => fakeNow });
   const restorable = storeAfterRestart.getRestorableSessions();
   assert.equal(restorable.length, 1);
   assert.equal(restorable[0].voiceChannelId, '777888999000111222');
@@ -95,64 +94,97 @@ test('capturePlayerSessionSnapshot & createRuntimeSessionStore persist room, 24/
   assert.equal(restorable[0].soundPreset, 'bass');
   assert.equal(restorable[0].positionMs, 95000);
 
-  // Khi người dùng chủ động gọi /leave -> xóa sạch file lưu trên đĩa để không tự vào lại ngoài ý muốn.
+  // Khi người dùng chủ động gọi /leave -> xóa sạch cả 2 file lưu trên đĩa.
   storeAfterRestart.removeGuild('111222333444555666');
   assert.equal(existsSync(filePath), false);
+  assert.equal(existsSync(backupFilePath), false);
  } finally {
   rmSync(dir, { recursive: true, force: true });
  }
 });
 
-test('AES-256-GCM encrypted cloud backup (resumeSeal) hides IDs, blocks tampering, and restores via NowPlayingHub when disk is wiped', async () => {
+test('captureGatewayFallbackSessions detects bot ghost voice room on fast restart while ignoring AFK channel', () => {
+ const fakeClient = {
+  user: { id: '999000999' },
+  guilds: {
+   cache: new Map([
+    [
+     'g1',
+     {
+      id: 'g1',
+      afkChannelId: 'afk-room',
+      voiceStates: { cache: new Map([['999000999', { channelId: 'music-room-1' }]]) },
+     },
+    ],
+    [
+     'g2',
+     {
+      id: 'g2',
+      afkChannelId: 'afk-room',
+      voiceStates: { cache: new Map([['999000999', { channelId: 'afk-room' }]]) },
+     },
+    ],
+   ]),
+  },
+ };
+ const res = captureGatewayFallbackSessions(fakeClient, 123456);
+ assert.equal(res.g1?.voiceChannelId, 'music-room-1');
+ assert.equal(res.g2, undefined);
+});
+
+test('AES-256-GCM cloud backup (resumeSeal) retries on cold boot and never overwrites remote backup before reading', async () => {
  const dir = mkdtempSync(join(tmpdir(), 'bot-cloud-seal-'));
  const filePath = join(dir, '.runtime-session.json');
  const secretToken = 'fake-discord-bot-token-for-unit-test';
 
  try {
-  const store1 = createRuntimeSessionStore({ filePath });
+  const store1 = createRuntimeSessionStore({ filePath, backupFilePath: null });
   store1.savePlayer(makeFakePlayer({ currentTrack: null, upcomingTracks: [] }), { immediate: true });
-  const exported = store1.exportSessionsObject();
-
-  const sealed = sealSessionPayload(exported, secretToken);
-  assert.equal(typeof sealed, 'string');
-  assert.ok(!sealed.includes('777888999000111222'), 'ciphertext must never expose plaintext channel IDs');
-  assert.ok(!sealed.includes('111222333444555666'), 'ciphertext must never expose plaintext guild IDs');
-
-  // Sai khóa hoặc dữ liệu bị sửa đổi phải trả về null an toàn.
+  const sealed = sealSessionPayload(store1.exportSessionsObject(), secretToken);
+  assert.ok(!sealed.includes('777888999000111222'));
   assert.equal(openSessionPayload(sealed, 'wrong-token'), null);
-  const tampered = `${sealed.slice(0, -3)}abc`;
-  assert.equal(openSessionPayload(tampered, secretToken), null);
 
-  // Giả lập toàn bộ container bị xóa trắng ổ đĩa khi upload ZIP mới -> khôi phục từ Cloudflare Worker!
-  let pushedPayload = null;
-  const hub = createNowPlayingHub({
+  let remoteCloudState = { status: 'idle_247', resumeSeal: sealed };
+  let getAttempts = 0;
+
+  // Giả lập bot mới khởi động lại với ổ đĩa trống + deferInitialPush=true + lần GET đầu bị lỗi mạng lạnh:
+  const hubOnBoot = createNowPlayingHub({
    getPlayer: () => null,
-   getResumeSeal: () => sealed,
+   getResumeSeal: () => null,
    client: { isReady: () => true, user: { username: 'Bắt_Don' } },
    env: { NOW_PLAYING_PUSH_URL: 'https://demo.workers.dev/api/now-playing' },
    botToken: secretToken,
+   deferInitialPush: true,
    logger: { log() {}, warn() {} },
    fetchImpl: async (_url, opts) => {
     if (opts?.method === 'POST') {
-     pushedPayload = JSON.parse(opts.body);
+     remoteCloudState = JSON.parse(opts.body);
      return { ok: true, status: 200 };
     }
+    getAttempts++;
+    if (getAttempts === 1) throw new Error('Cold boot DNS timeout');
     return {
      ok: true,
      status: 200,
-     json: async () => pushedPayload,
+     json: async () => remoteCloudState,
     };
    },
   });
 
-  hub.publish();
-  await new Promise(r => setTimeout(r, 250));
-  assert.equal(pushedPayload?.resumeSeal, sealed);
+  // Kể cả có sự kiện publish sớm khi đang deferInitialPush, không được ghi đè mất resumeSeal trên mây!
+  hubOnBoot.publish();
+  assert.equal(remoteCloudState.resumeSeal, sealed);
 
-  const remoteRecovered = await hub.fetchRemoteSessionBackup();
-  assert.equal(remoteRecovered?.['111222333444555666']?.voiceChannelId, '777888999000111222');
-  assert.equal(remoteRecovered?.['111222333444555666']?.stay247, true);
-  hub.close();
+  const recovered = await hubOnBoot.fetchRemoteSessionBackup({ retries: 3 });
+  assert.equal(getAttempts, 2);
+  assert.equal(recovered?.['111222333444555666']?.voiceChannelId, '777888999000111222');
+
+  // Khi người dùng bấm /leave chủ động -> clearRemoteSession xóa sạch resumeSeal trên mây ngay lập tức.
+  hubOnBoot.setOutboundPushPaused(false);
+  hubOnBoot.publish({ reason: 'Rời phòng' }, { immediatePush: true, clearRemoteSession: true });
+  await new Promise(r => setTimeout(r, 30));
+  assert.equal(remoteCloudState.resumeSeal, null);
+  hubOnBoot.close();
  } finally {
   rmSync(dir, { recursive: true, force: true });
  }

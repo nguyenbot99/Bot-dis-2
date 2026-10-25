@@ -235,13 +235,140 @@ export function getNextSoundPreset(current = activePreset) {
  return SOUND_PRESET_ORDER[(idx + 1) % SOUND_PRESET_ORDER.length];
 }
 
-// Mở khóa giới hạn âm lượng 0% – 200% trên phiên phát ZiPlayer và đồng bộ trực tiếp xuống AudioResource đang phát.
+// Mở khóa giới hạn âm lượng 0% – 200%, chống tự cắt luồng sau 5 phút & giữ nguyên bài đang tạm dừng không bao giờ nhảy sang bài kế tiếp.
 export function configurePlayerAudio(player) {
  if (!player || player.__audioConfigured) return player;
  const graph = player.runtimeGraph;
  const vc = graph?.volumeController;
  const pc = graph?.playbackController;
  const ap = graph?.audioPlayer;
+ const sm = graph?.streamManager ?? player.streamManager;
+ const sc = graph?.streamController;
+
+ // 1. Khắc phục lỗi StreamManager của ZiPlayer tự hủy luồng nhạc sau 5 phút (gây đứt nhạc hoặc tự nhảy bài khi đang Tạm dừng).
+ if (sm && typeof sm.cleanupExpiredStreams === 'function' && !sm.__pauseSafePatched) {
+  const origCleanup = sm.cleanupExpiredStreams.bind(sm);
+  sm.cleanupExpiredStreams = function patchedCleanupExpiredStreams() {
+   const now = Date.now();
+   const activeStreamId = sc?.current?.streamId ?? null;
+   const currentTrack = player.queue?.currentTrack ?? player.currentTrack ?? null;
+   const curKey = currentTrack ? (currentTrack.id || currentTrack.url || currentTrack.title) : null;
+   if (this.streams instanceof Map) {
+    for (const [id, managed] of this.streams.entries()) {
+     const mKey = managed?.track ? (managed.track.id || managed.track.url || managed.track.title) : null;
+     const isCurrent = (activeStreamId && id === activeStreamId) || (curKey && mKey === curKey);
+     if (isCurrent || managed?.status === 'paused' || (!managed?.metadata?.isPreload && !player.isIdle)) {
+      managed.lastAccessed = now;
+     }
+    }
+   }
+   return origCleanup();
+  };
+  sm.__pauseSafePatched = true;
+ }
+
+ // 2. Bảo vệ tuyệt đối trạng thái Tạm dừng: nếu ngưng lâu làm CDN đóng kết nối ngầm, giữ nguyên bài đang dừng (KHÔNG nhảy qua bài tiếp theo) và tự nạp lại đúng giây khi bấm Tiếp tục.
+ if (pc && ap && !pc.__pauseGuardInstalled) {
+  let pausedDropped = null; // { sessionId, positionMs }
+
+  Object.defineProperty(pc, 'status', {
+   configurable: true,
+   get() {
+    if (pausedDropped && pc.activeSession?.id === pausedDropped.sessionId) {
+     return 'paused';
+    }
+    return ap.state?.status;
+   },
+  });
+
+  if (typeof player.bus?.onAction === 'function') {
+   player.bus.onAction(action => {
+    if (action?.type === 'STOP' || action?.type === 'SKIP' || action?.type === 'PLAY') {
+     pausedDropped = null;
+    }
+   });
+  }
+
+  if (
+   typeof pc.onStateChange === 'function' &&
+   typeof pc.onError === 'function' &&
+   typeof ap.removeListener === 'function' &&
+   typeof ap.on === 'function'
+  ) {
+   ap.removeListener('stateChange', pc.onStateChange);
+   ap.removeListener('error', pc.onError);
+
+   const origOnStateChange = pc.onStateChange;
+   const origOnError = pc.onError;
+
+   pc.onError = error => {
+    const session = pc.activeSession;
+    if (session?.isActive?.() && (session.status === 'paused' || ap.state?.status === 'paused')) {
+     pausedDropped = {
+      sessionId: session.id,
+      positionMs: Math.max(0, Number(pc.position ?? session.position ?? 0)),
+     };
+     pc.clearStuckWatchdog?.();
+     return;
+    }
+    return origOnError(error);
+   };
+
+   pc.onStateChange = (oldState, newState) => {
+    const session = pc.activeSession;
+    if (pausedDropped && session?.id !== pausedDropped.sessionId) {
+     pausedDropped = null;
+    }
+    const wasIntentionallyPaused = Boolean(
+     session?.isActive?.() &&
+      session.status === 'paused' &&
+      (oldState?.status === 'paused' || pausedDropped?.sessionId === session.id),
+    );
+    if (wasIntentionallyPaused && newState?.status === 'idle') {
+     if (!pausedDropped || pausedDropped.sessionId !== session.id) {
+      pausedDropped = {
+       sessionId: session.id,
+       positionMs: Math.max(0, Number(pc.position ?? session.position ?? 0)),
+      };
+     }
+     pc.clearStuckWatchdog?.();
+     return;
+    }
+    if (newState?.status === 'playing') {
+     pausedDropped = null;
+    }
+    return origOnStateChange(oldState, newState);
+   };
+
+   ap.on('stateChange', pc.onStateChange);
+   ap.on('error', pc.onError);
+  }
+
+  if (typeof pc.resume === 'function') {
+   const origResume = pc.resume.bind(pc);
+   pc.resume = function patchedResume() {
+    const session = pc.activeSession;
+    if (pausedDropped && session?.isActive?.() && session.id === pausedDropped.sessionId && ap.state?.status === 'idle') {
+     const resumePos = pausedDropped.positionMs;
+     pausedDropped = null;
+     void player.bus?.requestRpc?.('playback.refreshResource', { position: resumePos })?.catch?.(() => {});
+     return true;
+    }
+    pausedDropped = null;
+    return origResume();
+   };
+  }
+
+  if (typeof pc.stop === 'function') {
+   const origStop = pc.stop.bind(pc);
+   pc.stop = function patchedStop() {
+    pausedDropped = null;
+    return origStop();
+   };
+  }
+
+  pc.__pauseGuardInstalled = true;
+ }
 
  if (vc) {
   vc.clamp = value => clampVolumePercent(value);

@@ -101,6 +101,13 @@ function mapSoundCloudRawTrack(item, requestedBy) {
 const soundCloudPlugin = new SoundCloudPlugin();
 soundCloudPlugin.priority = 20;
 soundCloudPlugin.ready = soundCloudPlugin.ready.catch(() => {});
+// Gỡ giới hạn timeout 12 giây của Axios đối với luồng tải âm thanh trực tiếp để khi tạm dừng nhạc không bị tự ngắt socket.
+if (soundCloudPlugin.client?.http?.interceptors?.request) {
+ soundCloudPlugin.client.http.interceptors.request.use(cfg => {
+  if (cfg?.responseType === 'stream') cfg.timeout = 0;
+  return cfg;
+ });
+}
 const rawSoundCloudSearch = soundCloudPlugin.search.bind(soundCloudPlugin);
 
 soundCloudPlugin.search = async function patchedSoundCloudSearch(query, requestedBy) {

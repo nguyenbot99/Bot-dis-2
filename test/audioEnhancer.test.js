@@ -199,3 +199,108 @@ test('real FFmpeg SoX + Realtime DSP + Opus pipeline produces distinct audible v
  assert.ok(vocalPreset3600 - flatVocal > 5.5, `expected vocal preset to boost 3.6kHz >5.5 dB over flat, got ${(vocalPreset3600 - flatVocal).toFixed(2)} dB`);
  assert.ok(hdPreset3600 - flatVocal > 2.5, `expected hd preset to boost 3.6kHz >2.5 dB over flat, got ${(hdPreset3600 - flatVocal).toFixed(2)} dB`);
 });
+
+test('configurePlayerAudio prevents StreamManager 5m expiry & holds paused track on stream drop without skipping to next track', () => {
+ const EventEmitter = req('node:events');
+ const ap = new EventEmitter();
+ ap.state = { status: 'paused', resource: {} };
+
+ let trackEndCount = 0;
+ let trackErrorCount = 0;
+ let refreshedAtPos = null;
+ let actionHandler = null;
+
+ const session = {
+  id: 'sess-1',
+  status: 'paused',
+  position: 42500,
+  isActive() { return this.status !== 'ended' && this.status !== 'stopped'; },
+ };
+
+ const pc = {
+  activeSession: session,
+  activeResource: {},
+  position: 42500,
+  onStateChange(_oldS, newS) {
+   if (newS.status === 'idle') trackEndCount += 1;
+  },
+  onError() {
+   trackErrorCount += 1;
+  },
+  resume() {
+   ap.state = { status: 'playing', resource: {} };
+   return true;
+  },
+  stop() {
+   this.activeSession = null;
+   ap.state = { status: 'idle' };
+   return true;
+  },
+ };
+ ap.on('stateChange', pc.onStateChange);
+ ap.on('error', pc.onError);
+
+ const now = Date.now();
+ const streams = new Map([
+  ['active-1', { track: { id: 't1' }, status: 'paused', lastAccessed: now - 600_000, metadata: {} }],
+  ['preload-2', { track: { id: 't2' }, status: 'active', lastAccessed: now - 600_000, metadata: { isPreload: true } }],
+ ]);
+ const evicted = [];
+ const sm = {
+  streams,
+  cleanupExpiredStreams() {
+   const cutoff = Date.now() - 300_000;
+   for (const [id, m] of this.streams.entries()) {
+    if (m.lastAccessed < cutoff) evicted.push(id);
+   }
+  },
+ };
+
+ const player = {
+  isIdle: false,
+  queue: { currentTrack: { id: 't1' } },
+  bus: {
+   onAction(fn) { actionHandler = fn; },
+   requestRpc(name, payload) {
+    if (name === 'playback.refreshResource') refreshedAtPos = payload.position;
+    return Promise.resolve(true);
+   },
+  },
+  runtimeGraph: {
+   playbackController: pc,
+   audioPlayer: ap,
+   streamManager: sm,
+   streamController: { current: { streamId: 'active-1' } },
+  },
+ };
+
+ configurePlayerAudio(player);
+
+ // 1) StreamManager cleanup chỉ dọn luồng preload hết hạn, bảo vệ tuyệt đối bài đang phát / đang tạm dừng dù quá 5 phút
+ sm.cleanupExpiredStreams();
+ assert.deepEqual(evicted, ['preload-2']);
+
+ // 2) Nếu socket CDN đóng khi đang tạm dừng, KHÔNG phát TRACK_END / TRACK_ERROR (không tự nhảy qua bài kế tiếp)
+ ap.emit('error', new Error('Premature close'));
+ const prevState = ap.state;
+ ap.state = { status: 'idle' };
+ ap.emit('stateChange', prevState, ap.state);
+
+ assert.equal(trackErrorCount, 0);
+ assert.equal(trackEndCount, 0);
+ assert.equal(pc.status, 'paused');
+
+ // 3) Khi người dùng bấm Tiếp tục, tự nạp lại luồng tại đúng vị trí 42.5s đã tạm dừng
+ assert.equal(pc.resume(), true);
+ assert.equal(refreshedAtPos, 42500);
+
+ // 4) Nếu đang tạm dừng mà người dùng chủ động bấm /skip hoặc /stop thì cho phép chuyển bài bình thường
+ session.status = 'paused';
+ ap.state = { status: 'paused', resource: {} };
+ ap.emit('error', new Error('Socket timeout'));
+ ap.state = { status: 'idle' };
+ assert.equal(pc.status, 'paused');
+ actionHandler?.({ type: 'SKIP' });
+ assert.equal(pc.status, 'idle');
+});
+

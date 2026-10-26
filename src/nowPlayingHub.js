@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { SOUND_PRESETS } from './audioEnhancer.js';
 import { cleanText, LOOP_LABELS, renderSyncedProgress, safeHttpUrl } from './playerGui.js';
 import { openSessionPayload } from './sessionStore.js';
+import { sanitizeWebAudioDescriptor } from './webAudio.js';
 
 export const DEFAULT_NOW_PLAYING_PUSH_URL =
  'https://bot-dis-2.botmusicvip.workers.dev/api/now-playing';
@@ -131,6 +132,9 @@ export function serializeNowPlayingState({ player, client, overrides = {} } = {}
  let trackPayload = null;
  if (rawTrack) {
   const { currentMs, totalMs } = renderSyncedProgress(player, rawTrack, isPaused || voiceMuted);
+  const webAudio = sanitizeWebAudioDescriptor(
+   overrides.webAudio ?? rawTrack.metadata?.webAudio ?? rawTrack.webAudio ?? null,
+  );
   trackPayload = {
    title: cleanText(rawTrack.title ?? 'Không rõ tiêu đề', 120),
    author: cleanText(rawTrack.metadata?.author ?? 'Nghệ sĩ', 65),
@@ -140,6 +144,7 @@ export function serializeNowPlayingState({ player, client, overrides = {} } = {}
    sourceLabel: formatSourceLabel(rawTrack.source),
    positionMs: Math.max(0, Math.round(currentMs ?? 0)),
    durationMs: Math.max(0, Math.round(totalMs ?? 0)),
+   ...(webAudio ? { webAudio } : {}),
   };
  }
 

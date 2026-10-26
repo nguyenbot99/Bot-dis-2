@@ -21,6 +21,7 @@ import { createNowPlayingHub } from './src/nowPlayingHub.js';
 import { deleteDiscordMessage, extractMessageRef, sweepChannelStaleNotices } from './src/messageCleaner.js';
 import { captureGatewayFallbackSessions, createRuntimeSessionStore, sealSessionPayload } from './src/sessionStore.js';
 import { createVoiceRoomStatusSync } from './src/voiceStatus.js';
+import { resolveTrackWebAudio, WEB_AUDIO_REFRESH_MS } from './src/webAudio.js';
 import { buildVoiceGuardEmbed, evaluateBotVoiceTransition } from './src/voiceGuard.js';
 import { buildHelpEmbed, commands } from './src/commands.js';
 import {
@@ -525,6 +526,39 @@ function schedulePanelUpdate(player, overrides = {}) {
  ud.panelTimer.unref?.();
 }
 
+function clearWebAudioTimer(player) {
+ if (player?.userdata?.webAudioTimer) {
+  clearTimeout(player.userdata.webAudioTimer);
+  player.userdata.webAudioTimer = null;
+ }
+}
+
+// Đồng bộ luồng âm thanh trực tiếp lên Website để trình duyệt phát nhạc cùng nhịp với Bot mà không tốn băng thông/RAM của bot.
+async function syncTrackWebAudio(player, track, { forceRefresh = false } = {}) {
+ clearWebAudioTimer(player);
+ if (!player || player.destroyed || !track) return;
+ const webAudio = await resolveTrackWebAudio(soundCloudPlugin.client, track, {
+  forceRefreshDetails: forceRefresh,
+ });
+ if (!webAudio || player.destroyed) return;
+ const active = player.queue?.currentTrack ?? player.currentTrack ?? null;
+ if (!active || (active !== track && active.url !== track.url)) return;
+
+ active.metadata = { ...(active.metadata || {}), webAudio };
+ track.metadata = active.metadata;
+ nowPlayingHub.publish(
+  { player, track: active, paused: Boolean(player.isPaused), webAudio },
+  { immediatePush: true },
+ );
+
+ if (player.userdata) {
+  player.userdata.webAudioTimer = setTimeout(() => {
+   void syncTrackWebAudio(player, active);
+  }, WEB_AUDIO_REFRESH_MS);
+  player.userdata.webAudioTimer.unref?.();
+ }
+}
+
 // Đóng khung điều khiển của bài hiện tại (hoặc chuyển sang khung chờ 24/7 nếu đang bật 24/7) và hẹn giờ tự xóa sau 4.5 phút.
 async function closeCurrentPanel(player, reason, { keepIdle247 = false } = {}) {
  const ud = player?.userdata;
@@ -533,6 +567,7 @@ async function closeCurrentPanel(player, reason, { keepIdle247 = false } = {}) {
  clearPanelTimer(player);
  stopProgressTicker(player);
  clearAutoDeleteTimer(player);
+ clearWebAudioTimer(player);
  const shouldKeepIdle = keepIdle247 && ud.stay247 && !ud.manualDisconnect;
  if (shouldKeepIdle) persistActiveSession(player, { immediate: true });
  nowPlayingHub.publish(
@@ -575,6 +610,11 @@ async function closeCurrentPanel(player, reason, { keepIdle247 = false } = {}) {
 // Sao lưu gọn nhẹ bài hát đang phát, mốc thời gian và hàng đợi trước khi phiên bị hủy do bot bị kick khỏi phòng.
 function cloneSavedTrack(t) {
  if (!t || typeof t !== 'object') return null;
+ let cleanMeta;
+ if (t.metadata && typeof t.metadata === 'object') {
+  const { webAudio: _wa, ...rest } = t.metadata;
+  cleanMeta = rest;
+ }
  return {
   id: t.id,
   title: t.title,
@@ -584,7 +624,7 @@ function cloneSavedTrack(t) {
   requestedBy: t.requestedBy,
   source: t.source,
   isLive: t.isLive,
-  metadata: t.metadata ? { ...t.metadata } : undefined,
+  metadata: cleanMeta,
  };
 }
 
@@ -829,6 +869,7 @@ manager.on('trackStart', (player, track) => {
  nowPlayingHub.publish({ player, track, paused: Boolean(player?.isPaused) }, { immediatePush: true });
  updateBotPresence(track);
  voiceRoomStatus.syncPlayer(player, { track, paused: Boolean(player?.isPaused) });
+ void syncTrackWebAudio(player, track);
  void postFreshPanel(player, track);
 });
 manager.on('playerPause', player => {
@@ -868,6 +909,7 @@ manager.on('playerStop', player => {
 manager.on('playerDestroy', player => {
  clearPersistedSession(player?.guildId);
  clearEmptyTimer(player);
+ clearWebAudioTimer(player);
  void closeCurrentPanel(player, 'Phiên phát nhạc đã kết thúc, bot đã rời kênh thoại.');
  if (player.userdata) player.userdata.textChannel = null;
 });

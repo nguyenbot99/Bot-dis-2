@@ -205,7 +205,7 @@
       border-radius: var(--radius-xl);
       box-shadow: var(--shadow);
       backdrop-filter: blur(28px);
-      -webkit-backdrop-filter: blur(28px);
+      -webkit-backdrop-filter: blur(24px);
     }
 
     /* Khung chính Now Playing */
@@ -214,7 +214,7 @@
       display: flex;
       flex-direction: column;
       justify-content: space-between;
-      gap: 24px;
+      gap: 20px;
     }
 
     .hero-top {
@@ -303,13 +303,13 @@
       height: 5px;
       border-radius: 3px;
       background: linear-gradient(180deg, var(--accent-2), var(--accent));
-      transition: height 0.2s ease;
+      transition: height 0.08s linear;
     }
 
-    .is-playing .eq-bar:nth-child(1) { animation: eqBounce 0.75s ease-in-out infinite; }
-    .is-playing .eq-bar:nth-child(2) { animation: eqBounce 0.55s ease-in-out infinite 0.15s; }
-    .is-playing .eq-bar:nth-child(3) { animation: eqBounce 0.85s ease-in-out infinite 0.3s; }
-    .is-playing .eq-bar:nth-child(4) { animation: eqBounce 0.65s ease-in-out infinite 0.1s; }
+    .is-playing:not(.fft-driven) .eq-bar:nth-child(1) { animation: eqBounce 0.75s ease-in-out infinite; }
+    .is-playing:not(.fft-driven) .eq-bar:nth-child(2) { animation: eqBounce 0.55s ease-in-out infinite 0.15s; }
+    .is-playing:not(.fft-driven) .eq-bar:nth-child(3) { animation: eqBounce 0.85s ease-in-out infinite 0.3s; }
+    .is-playing:not(.fft-driven) .eq-bar:nth-child(4) { animation: eqBounce 0.65s ease-in-out infinite 0.1s; }
 
     @keyframes eqBounce {
       0%, 100% { height: 4px; }
@@ -413,19 +413,68 @@
       }
     }
 
+    .listen-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      padding: 10px 18px;
+      border-radius: 13px;
+      font-size: 0.88rem;
+      font-weight: 700;
+      color: #ffffff;
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      cursor: pointer;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      box-shadow: 0 10px 26px rgba(139, 92, 246, 0.35);
+      transition: transform 0.16s ease, filter 0.16s ease, box-shadow 0.2s ease;
+    }
+
+    .listen-btn:hover {
+      transform: translateY(-1px);
+      filter: brightness(1.08);
+    }
+
+    .listen-btn.active {
+      background: linear-gradient(135deg, #16a34a, #059669);
+      box-shadow: 0 10px 26px rgba(34, 197, 94, 0.34);
+    }
+
+    .listen-btn.waiting {
+      background: linear-gradient(135deg, #6366f1, #8b5cf6);
+    }
+
+    .live-pulse {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: #ffffff;
+      flex-shrink: 0;
+    }
+
+    .listen-btn.active .live-pulse {
+      background: #bbf7d0;
+      box-shadow: 0 0 10px #86efac;
+      animation: liveBlink 1.3s ease-in-out infinite;
+    }
+
+    @keyframes liveBlink {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.45; transform: scale(0.82); }
+    }
+
     .open-link-btn {
       display: none;
       align-items: center;
-      gap: 8px;
-      padding: 9px 16px;
+      gap: 7px;
+      padding: 9px 14px;
       border-radius: 12px;
-      font-size: 0.86rem;
+      font-size: 0.84rem;
       font-weight: 600;
-      color: #ffffff;
+      color: var(--text-main);
       text-decoration: none;
-      background: linear-gradient(135deg, var(--accent), var(--accent-2));
-      box-shadow: 0 10px 24px rgba(139, 92, 246, 0.32);
-      transition: transform 0.16s ease, filter 0.16s ease;
+      background: var(--surface-soft);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      transition: background 0.16s ease, transform 0.16s ease;
     }
 
     .open-link-btn.visible {
@@ -434,7 +483,125 @@
 
     .open-link-btn:hover {
       transform: translateY(-1px);
-      filter: brightness(1.08);
+      background: var(--surface-hover);
+    }
+
+    /* Thanh điều khiển Live Radio + Sóng nhạc theo nhịp thật + EQ + Âm lượng Web */
+    .live-audio-bar {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      padding: 15px 18px;
+      border-radius: var(--radius-lg);
+      background: linear-gradient(180deg, rgba(139, 92, 246, 0.09), rgba(236, 72, 153, 0.05));
+      border: 1px solid rgba(139, 92, 246, 0.24);
+    }
+
+    .live-audio-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .live-audio-status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      font-size: 0.81rem;
+      font-weight: 600;
+      color: var(--text-sub);
+    }
+
+    .eq-mode-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 0.74rem;
+      font-weight: 700;
+      background: rgba(139, 92, 246, 0.2);
+      border: 1px solid rgba(139, 92, 246, 0.36);
+      color: #e9d5ff;
+    }
+
+    .resync-btn {
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--text-main);
+      font-size: 0.74rem;
+      font-weight: 600;
+      padding: 4px 10px;
+      border-radius: 999px;
+      cursor: pointer;
+      display: none;
+      transition: background 0.15s ease;
+    }
+
+    .resync-btn.visible {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .resync-btn:hover {
+      background: rgba(255, 255, 255, 0.14);
+    }
+
+    .web-vol-box {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 175px;
+    }
+
+    .mute-icon-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-sub);
+      cursor: pointer;
+      font-size: 1rem;
+      line-height: 1;
+      padding: 3px;
+    }
+
+    .mute-icon-btn:hover {
+      color: var(--text-main);
+    }
+
+    .vol-slider {
+      flex: 1;
+      accent-color: var(--accent);
+      height: 5px;
+      cursor: pointer;
+    }
+
+    .vol-pct {
+      font-size: 0.78rem;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      color: var(--text-main);
+      min-width: 36px;
+      text-align: right;
+    }
+
+    .spectrum-wrap {
+      width: 100%;
+      height: 44px;
+      border-radius: 10px;
+      background: rgba(8, 9, 15, 0.46);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      overflow: hidden;
+      padding: 4px 8px;
+    }
+
+    #spectrumCanvas {
+      width: 100%;
+      height: 100%;
+      display: block;
     }
 
     /* Thanh thời gian đồng bộ thời gian thực */
@@ -522,7 +689,7 @@
       display: flex;
       flex-direction: column;
       gap: 16px;
-      max-height: 580px;
+      max-height: 650px;
     }
 
     .tabs-bar {
@@ -714,14 +881,37 @@
             <p id="trackAuthor" class="track-author">Gõ lệnh /play trong kênh thoại Discord để bắt đầu</p>
 
             <div class="actions-row">
+              <button id="listenToggleBtn" class="listen-btn" type="button">
+                <span class="live-pulse"></span>
+                <span id="listenBtnLabel">🔊 Nghe cùng Bot</span>
+              </button>
               <a id="openTrackLink" class="open-link-btn" href="#" target="_blank" rel="noopener noreferrer">
-                <span>Mở bài hát gốc</span>
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">
+                <span>Mở bài gốc</span>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">
                   <path d="M7 17L17 7"></path>
                   <path d="M7 7h10v10"></path>
                 </svg>
               </a>
             </div>
+          </div>
+        </div>
+
+        <!-- Khung Live Radio đồng bộ âm thanh & Studio EQ theo thời gian thực -->
+        <div class="live-audio-bar">
+          <div class="live-audio-top">
+            <div class="live-audio-status">
+              <span id="liveAudioHint">📻 Bấm "Nghe cùng Bot" để phát tiếng trực tiếp trên trình duyệt</span>
+              <span id="webEqTag" class="eq-mode-tag">🎚️ EQ: Rõ nét HD</span>
+              <button id="resyncBtn" class="resync-btn" type="button" title="Đồng bộ lại đúng giây với Bot">↻ Khớp nhịp</button>
+            </div>
+            <div class="web-vol-box" title="Âm lượng riêng trên trình duyệt của bạn">
+              <button id="webMuteBtn" class="mute-icon-btn" type="button" aria-label="Bật/Tắt tiếng trên Web">🔊</button>
+              <input id="webVolSlider" class="vol-slider" type="range" min="0" max="150" value="90" />
+              <span id="webVolLabel" class="vol-pct">90%</span>
+            </div>
+          </div>
+          <div class="spectrum-wrap">
+            <canvas id="spectrumCanvas" width="640" height="44"></canvas>
           </div>
         </div>
 
@@ -741,7 +931,7 @@
             <span id="chipSound" class="chip-value">Rõ nét HD</span>
           </div>
           <div class="info-chip">
-            <span class="chip-label">Âm lượng</span>
+            <span class="chip-label">Âm lượng Bot</span>
             <span id="chipVolume" class="chip-value">100%</span>
           </div>
           <div class="info-chip">
@@ -755,7 +945,7 @@
         </div>
 
         <p class="display-note">
-          🎧 Website chỉ hiển thị trạng thái trực tiếp — âm thanh vẫn do bot phát trong kênh thoại Discord. Dùng lệnh <strong>/play</strong>, <strong>/skip</strong>, <strong>/pause</strong> hoặc khung điều khiển trong Discord để đổi nhạc.
+          🎧 Chế độ <strong>Live Radio</strong> phát nhạc trực tiếp từ CDN gốc, tự khớp đúng bài, đúng giây & cấu hình Studio EQ (<strong>HD / Rõ lời / Bass Boost / Nguyên bản</strong>) đang mở trong kênh thoại Discord mà không tốn RAM của bot. Thanh âm lượng phía trên chỉ chỉnh riêng cho trình duyệt của bạn.
         </p>
       </section>
 
@@ -772,13 +962,13 @@
   </div>
 
   <footer class="footer">
-    Đồng bộ tự động với trình phát nhạc Discord • Không cần tải lại trang
+    Đồng bộ tự động với trình phát nhạc Discord • Live Radio & Studio EQ thời gian thực
   </footer>
+
+  <audio id="liveAudioEl" crossorigin="anonymous" preload="none" playsinline style="display:none"></audio>
 
   <script>
     (function () {
-      // Nếu triển khai trang HTML tĩnh riêng (GitHub Pages / Cloudflare Pages), có thể truyền ?api=https://domain-cua-ban
-      // hoặc điền trực tiếp URL vào hằng số DEFAULT_API_BASE bên dưới.
       const DEFAULT_API_BASE = "";
       const params = new URLSearchParams(window.location.search);
       const rawBase = (params.get("api") || window.NOW_PLAYING_API_BASE || DEFAULT_API_BASE || "").trim().replace(/\/+$/, "");
@@ -813,11 +1003,21 @@
         heroCard: document.getElementById("heroCard"),
         artworkImg: document.getElementById("artworkImg"),
         vinylSvg: document.getElementById("vinylSvg"),
+        eqBars: Array.from(document.querySelectorAll(".eq-bar")),
         statusBadge: document.getElementById("statusBadge"),
         sourceBadge: document.getElementById("sourceBadge"),
         trackTitle: document.getElementById("trackTitle"),
         trackAuthor: document.getElementById("trackAuthor"),
+        listenToggleBtn: document.getElementById("listenToggleBtn"),
+        listenBtnLabel: document.getElementById("listenBtnLabel"),
         openTrackLink: document.getElementById("openTrackLink"),
+        liveAudioHint: document.getElementById("liveAudioHint"),
+        webEqTag: document.getElementById("webEqTag"),
+        resyncBtn: document.getElementById("resyncBtn"),
+        webMuteBtn: document.getElementById("webMuteBtn"),
+        webVolSlider: document.getElementById("webVolSlider"),
+        webVolLabel: document.getElementById("webVolLabel"),
+        spectrumCanvas: document.getElementById("spectrumCanvas"),
         progressFill: document.getElementById("progressFill"),
         currentTime: document.getElementById("currentTime"),
         totalTime: document.getElementById("totalTime"),
@@ -828,11 +1028,672 @@
         tabQueueBtn: document.getElementById("tabQueueBtn"),
         tabHistoryBtn: document.getElementById("tabHistoryBtn"),
         trackList: document.getElementById("trackList"),
+        audio: document.getElementById("liveAudioEl"),
+      };
+
+      // Cấu hình Studio EQ 6 tầng khớp 1-1 với bộ DSP thời gian thực trên Bot Discord (src/audioEnhancer.js)
+      const WEB_EQ_PRESETS = {
+        hd: {
+          label: "Rõ nét HD",
+          preDb: -2.2,
+          makeupDb: 1.8,
+          stages: [
+            { type: "highpass", freq: 30, q: 0.707, gain: 0 },
+            { type: "lowshelf", freq: 95, q: 0.75, gain: 4.5 },
+            { type: "peaking", freq: 280, q: 1.15, gain: -3.0 },
+            { type: "peaking", freq: 3800, q: 1.0, gain: 4.0 },
+            { type: "highshelf", freq: 9200, q: 0.707, gain: 5.5 },
+          ],
+        },
+        vocal: {
+          label: "Rõ lời & Sáng tiếng",
+          preDb: -2.0,
+          makeupDb: 2.2,
+          stages: [
+            { type: "highpass", freq: 115, q: 0.707, gain: 0 },
+            { type: "lowshelf", freq: 170, q: 0.75, gain: -6.0 },
+            { type: "peaking", freq: 310, q: 1.2, gain: -3.2 },
+            { type: "peaking", freq: 1650, q: 0.95, gain: 4.5 },
+            { type: "peaking", freq: 3600, q: 1.0, gain: 5.8 },
+            { type: "highshelf", freq: 8500, q: 0.707, gain: 3.5 },
+          ],
+        },
+        bass: {
+          label: "Bass Ấm & Căng",
+          preDb: -4.8,
+          makeupDb: 2.4,
+          stages: [
+            { type: "highpass", freq: 26, q: 0.707, gain: 0 },
+            { type: "lowshelf", freq: 85, q: 0.72, gain: 9.5 },
+            { type: "peaking", freq: 64, q: 1.15, gain: 4.2 },
+            { type: "peaking", freq: 270, q: 1.15, gain: -3.8 },
+            { type: "peaking", freq: 3400, q: 1.1, gain: 1.8 },
+            { type: "highshelf", freq: 7500, q: 0.707, gain: -1.5 },
+          ],
+        },
+        flat: {
+          label: "Nguyên bản",
+          preDb: 0,
+          makeupDb: 0,
+          stages: [],
+        },
       };
 
       let latestState = null;
       let receivedClientMs = 0;
       let activeTab = "queue";
+
+      // Trạng thái Live Radio & Web Audio DSP
+      let isListening = false;
+      let webMuted = false;
+      let webVolPercent = 90;
+      try {
+        const savedVol = Number(localStorage.getItem("bot_dis_web_vol"));
+        if (Number.isFinite(savedVol) && savedVol >= 0 && savedVol <= 150) {
+          webVolPercent = savedVol;
+        }
+      } catch {}
+      els.webVolSlider.value = String(webVolPercent);
+      els.webVolLabel.textContent = webVolPercent + "%";
+
+      let audioGraph = null; // { ctx, preGain, filters[], makeupGain, compressor, analyser, masterGain, freqData }
+      let activeMse = null;  // Phiên MediaSource hiện tại
+      let loadedTrackKey = "";
+      let appliedPresetKey = "";
+      let quickRefetchTimer = null;
+
+      function dbToLinear(db) {
+        return Math.pow(10, db / 20);
+      }
+
+      function computeWebGain(pct) {
+        if (webMuted || pct <= 0) return 0;
+        const r = pct / 100;
+        return r <= 1 ? Math.pow(r, 1.65) : 1 + (r - 1) * 1.15;
+      }
+
+      function ensureWebAudioGraph() {
+        if (audioGraph) {
+          if (audioGraph.ctx.state === "suspended") {
+            audioGraph.ctx.resume().catch(function () {});
+          }
+          return audioGraph;
+        }
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (!AudioCtx) return null;
+        try {
+          const ctx = new AudioCtx();
+          const source = ctx.createMediaElementSource(els.audio);
+          const preGain = ctx.createGain();
+          const filters = [];
+          for (let i = 0; i < 6; i++) {
+            const f = ctx.createBiquadFilter();
+            f.type = "peaking";
+            f.frequency.value = 1000;
+            f.Q.value = 0.707;
+            f.gain.value = 0;
+            filters.push(f);
+          }
+          const makeupGain = ctx.createGain();
+          const compressor = ctx.createDynamicsCompressor();
+          compressor.threshold.value = -3.0;
+          compressor.knee.value = 6.0;
+          compressor.ratio.value = 8.0;
+          compressor.attack.value = 0.003;
+          compressor.release.value = 0.12;
+
+          const analyser = ctx.createAnalyser();
+          analyser.fftSize = 128;
+          analyser.smoothingTimeConstant = 0.78;
+
+          const masterGain = ctx.createGain();
+          masterGain.gain.value = computeWebGain(webVolPercent);
+
+          source.connect(preGain);
+          let prev = preGain;
+          for (let i = 0; i < filters.length; i++) {
+            prev.connect(filters[i]);
+            prev = filters[i];
+          }
+          prev.connect(makeupGain);
+          makeupGain.connect(compressor);
+          compressor.connect(analyser);
+          analyser.connect(masterGain);
+          masterGain.connect(ctx.destination);
+
+          if (ctx.state === "suspended") {
+            ctx.resume().catch(function () {});
+          }
+
+          audioGraph = {
+            ctx: ctx,
+            preGain: preGain,
+            filters: filters,
+            makeupGain: makeupGain,
+            compressor: compressor,
+            analyser: analyser,
+            masterGain: masterGain,
+            freqData: new Uint8Array(analyser.frequencyBinCount),
+          };
+          els.audio.volume = 1;
+          appliedPresetKey = "";
+          applyWebEqPreset(latestState?.settings?.soundPreset || "hd");
+          return audioGraph;
+        } catch {
+          return null;
+        }
+      }
+
+      function applyWebEqPreset(presetKey) {
+        const key = WEB_EQ_PRESETS[presetKey] ? presetKey : "hd";
+        const preset = WEB_EQ_PRESETS[key];
+        els.webEqTag.textContent = "🎚️ EQ: " + preset.label;
+        if (!audioGraph || appliedPresetKey === key) return;
+        appliedPresetKey = key;
+
+        const now = audioGraph.ctx.currentTime;
+        audioGraph.preGain.gain.setTargetAtTime(dbToLinear(preset.preDb), now, 0.025);
+        audioGraph.makeupGain.gain.setTargetAtTime(dbToLinear(preset.makeupDb), now, 0.025);
+
+        for (let i = 0; i < audioGraph.filters.length; i++) {
+          const node = audioGraph.filters[i];
+          const st = preset.stages[i];
+          if (st) {
+            node.type = st.type;
+            node.frequency.setTargetAtTime(st.freq, now, 0.025);
+            node.Q.setTargetAtTime(st.q, now, 0.025);
+            node.gain.setTargetAtTime(st.gain || 0, now, 0.025);
+          } else {
+            node.type = "peaking";
+            node.frequency.setTargetAtTime(1000, now, 0.025);
+            node.Q.setTargetAtTime(0.707, now, 0.025);
+            node.gain.setTargetAtTime(0, now, 0.025);
+          }
+        }
+      }
+
+      function syncWebVolumeGain() {
+        const gainVal = computeWebGain(webVolPercent);
+        els.webMuteBtn.textContent = (webMuted || webVolPercent === 0) ? "🔇" : (webVolPercent < 50 ? "🔉" : "🔊");
+        els.webVolLabel.textContent = (webMuted ? 0 : webVolPercent) + "%";
+        if (audioGraph) {
+          audioGraph.masterGain.gain.setTargetAtTime(gainVal, audioGraph.ctx.currentTime, 0.02);
+        } else {
+          els.audio.volume = Math.min(1, gainVal);
+        }
+      }
+
+      els.webVolSlider.addEventListener("input", function () {
+        webVolPercent = Number(els.webVolSlider.value) || 0;
+        if (webVolPercent > 0 && webMuted) webMuted = false;
+        try { localStorage.setItem("bot_dis_web_vol", String(webVolPercent)); } catch {}
+        syncWebVolumeGain();
+      });
+
+      els.webMuteBtn.addEventListener("click", function () {
+        webMuted = !webMuted;
+        syncWebVolumeGain();
+      });
+
+      function getExpectedBotPositionMs() {
+        const track = latestState?.track;
+        if (!track) return 0;
+        const total = Math.max(0, Number(track.durationMs) || 0);
+        let pos = Math.max(0, Number(track.positionMs) || 0);
+        if (latestState.status === "playing" && receivedClientMs > 0) {
+          pos += Math.max(0, Date.now() - receivedClientMs);
+        }
+        if (total > 0 && pos > total) pos = total;
+        return pos;
+      }
+
+      function getMediaSourceCtor(mime) {
+        const MS = window.ManagedMediaSource || window.MediaSource;
+        if (MS && typeof MS.isTypeSupported === "function" && MS.isTypeSupported(mime)) {
+          return MS;
+        }
+        return null;
+      }
+
+      function buildSegmentUrl(wa, idx) {
+        const base = safeHttpUrl(wa.baseUrl);
+        if (!base) return null;
+        let file = null;
+        if (Array.isArray(wa.files) && wa.files[idx]) {
+          file = wa.files[idx];
+        } else if (typeof wa.prefix === "string" && wa.ext) {
+          file = wa.prefix + String(idx).padStart(wa.pad || 3, "0") + wa.ext;
+        }
+        if (!file) return null;
+        return base + file + (wa.auth || "");
+      }
+
+      function buildInitUrl(wa) {
+        const base = safeHttpUrl(wa.baseUrl);
+        if (!base || !wa.init) return null;
+        return base + wa.init + (wa.auth || "");
+      }
+
+      function findBufferedEndAt(sb, timeSec) {
+        const ranges = sb.buffered;
+        for (let i = 0; i < ranges.length; i++) {
+          const start = ranges.start(i);
+          const end = ranges.end(i);
+          if (timeSec >= start - 0.45 && timeSec <= end + 0.15) {
+            return end;
+          }
+        }
+        return null;
+      }
+
+      function isSegmentBuffered(sb, segIdx, segDur) {
+        const mid = (segIdx + 0.5) * segDur;
+        const ranges = sb.buffered;
+        for (let i = 0; i < ranges.length; i++) {
+          if (mid >= ranges.start(i) && mid <= ranges.end(i)) return true;
+        }
+        return false;
+      }
+
+      function waitSourceBufferUpdate(sb, abortSignal) {
+        if (!sb.updating) return Promise.resolve();
+        return new Promise(function (resolve, reject) {
+          function done() {
+            sb.removeEventListener("updateend", done);
+            sb.removeEventListener("error", onErr);
+            resolve();
+          }
+          function onErr() {
+            sb.removeEventListener("updateend", done);
+            sb.removeEventListener("error", onErr);
+            reject(new Error("SourceBuffer error"));
+          }
+          if (abortSignal?.aborted) return reject(new Error("Aborted"));
+          sb.addEventListener("updateend", done, { once: true });
+          sb.addEventListener("error", onErr, { once: true });
+        });
+      }
+
+      function destroyCurrentAudioStream() {
+        if (activeMse) {
+          activeMse.abort.abort();
+          if (activeMse.wake) activeMse.wake();
+          if (activeMse.objectUrl) {
+            try { URL.revokeObjectURL(activeMse.objectUrl); } catch {}
+          }
+          activeMse = null;
+        }
+        try {
+          els.audio.pause();
+          els.audio.playbackRate = 1.0;
+          els.audio.removeAttribute("src");
+          els.audio.load();
+        } catch {}
+        loadedTrackKey = "";
+      }
+
+      async function startFmp4MseSession(trackKey, wa, initialSec) {
+        const mime = wa.mime || 'audio/mp4; codecs="mp4a.40.2"';
+        const MSCtor = getMediaSourceCtor(mime);
+        if (!MSCtor) return false;
+
+        destroyCurrentAudioStream();
+        loadedTrackKey = trackKey;
+
+        const abort = new AbortController();
+        const ms = new MSCtor();
+        const objectUrl = URL.createObjectURL(ms);
+        els.audio.disableRemotePlayback = true;
+        els.audio.preservesPitch = true;
+        els.audio.src = objectUrl;
+
+        let wakeResolver = null;
+        const session = {
+          trackKey: trackKey,
+          wa: wa,
+          abort: abort,
+          ms: ms,
+          objectUrl: objectUrl,
+          wake: function () {
+            if (wakeResolver) {
+              const r = wakeResolver;
+              wakeResolver = null;
+              r();
+            }
+          },
+        };
+        activeMse = session;
+
+        try {
+          await new Promise(function (resolve, reject) {
+            ms.addEventListener("sourceopen", resolve, { once: true });
+            abort.signal.addEventListener("abort", function () { reject(new Error("Aborted")); }, { once: true });
+          });
+          if (abort.signal.aborted) return false;
+
+          const sb = ms.addSourceBuffer(mime);
+          const totalDurSec = (Number(latestState?.track?.durationMs) || 0) / 1000;
+          if (totalDurSec > 0 && Number.isFinite(totalDurSec)) {
+            try { ms.duration = totalDurSec; } catch {}
+          }
+
+          const initRes = await fetch(buildInitUrl(session.wa), { signal: abort.signal });
+          if (!initRes.ok) throw new Error("Init segment HTTP " + initRes.status);
+          const initBuf = await initRes.arrayBuffer();
+          if (abort.signal.aborted) return false;
+          sb.appendBuffer(initBuf);
+          await waitSourceBufferUpdate(sb, abort.signal);
+
+          const startSec = Math.max(0, initialSec);
+          try { els.audio.currentTime = startSec; } catch {}
+
+          // Vòng nạp phân đoạn thông minh: nhảy thẳng tới đúng giây của Bot, chỉ đệm trước ~25 giây & giải phóng bộ nhớ cũ
+          (async function pumpSegments() {
+            while (!abort.signal.aborted && ms.readyState === "open") {
+              try {
+                const curWa = session.wa;
+                const segDur = Number(curWa.segDur) || 10;
+                const count = Number(curWa.count) || 0;
+                const curSec = Math.max(0, Number(els.audio.currentTime) || 0);
+
+                // Giải phóng vùng đệm cũ hơn 38 giây phía sau để nghe Nonstop 2 tiếng vẫn tốn < 3MB RAM trình duyệt
+                if (curSec > 42 && sb.buffered.length > 0 && sb.buffered.start(0) < curSec - 38) {
+                  sb.remove(0, curSec - 32);
+                  await waitSourceBufferUpdate(sb, abort.signal);
+                }
+
+                const bufferedEnd = findBufferedEndAt(sb, curSec);
+                const ahead = bufferedEnd !== null ? (bufferedEnd - curSec) : 0;
+
+                if (ahead < 24 && count > 0) {
+                  const targetFetchSec = bufferedEnd !== null
+                    ? bufferedEnd + 0.05
+                    : Math.max(0, curSec - 0.35);
+                  let segIdx = Math.floor(targetFetchSec / segDur);
+                  if (segIdx < 0) segIdx = 0;
+
+                  if (segIdx < count && !isSegmentBuffered(sb, segIdx, segDur)) {
+                    const segUrl = buildSegmentUrl(curWa, segIdx);
+                    if (segUrl) {
+                      const segRes = await fetch(segUrl, { signal: abort.signal });
+                      if (segRes.status === 403 || segRes.status === 401) {
+                        scheduleQuickRefetch();
+                      }
+                      if (segRes.ok) {
+                        const segBuf = await segRes.arrayBuffer();
+                        if (abort.signal.aborted || ms.readyState !== "open") break;
+                        sb.appendBuffer(segBuf);
+                        await waitSourceBufferUpdate(sb, abort.signal);
+
+                        if (isListening && latestState?.status === "playing" && els.audio.paused) {
+                          els.audio.play().catch(function () {});
+                        }
+                        continue;
+                      }
+                    }
+                  }
+                }
+              } catch {
+                if (abort.signal.aborted) break;
+              }
+
+              await new Promise(function (resolve) {
+                wakeResolver = resolve;
+                setTimeout(function () {
+                  if (wakeResolver === resolve) wakeResolver = null;
+                  resolve();
+                }, 650);
+              });
+            }
+          })();
+
+          if (isListening && latestState?.status === "playing") {
+            els.audio.play().catch(function () {});
+          }
+          return true;
+        } catch {
+          if (activeMse === session) destroyCurrentAudioStream();
+          return false;
+        }
+      }
+
+      function startDirectUrlStream(trackKey, streamUrl, initialSec) {
+        const cleanUrl = safeHttpUrl(streamUrl);
+        if (!cleanUrl) return false;
+        destroyCurrentAudioStream();
+        loadedTrackKey = trackKey;
+        els.audio.preservesPitch = true;
+        els.audio.src = cleanUrl;
+        const onMeta = function () {
+          try { els.audio.currentTime = Math.max(0, initialSec); } catch {}
+          if (isListening && latestState?.status === "playing") {
+            els.audio.play().catch(function () {});
+          }
+        };
+        els.audio.addEventListener("loadedmetadata", onMeta, { once: true });
+        els.audio.load();
+        return true;
+      }
+
+      function getTrackKey(track) {
+        if (!track) return "";
+        return String(track.url || "") + "::" + String(track.title || "");
+      }
+
+      function renderListenUi() {
+        const hasTrack = Boolean(latestState?.track);
+        const botPlaying = latestState?.status === "playing";
+        els.resyncBtn.classList.toggle("visible", isListening && hasTrack && botPlaying);
+
+        if (!isListening) {
+          els.listenToggleBtn.className = "listen-btn";
+          els.listenBtnLabel.textContent = "🔊 Nghe cùng Bot";
+          els.liveAudioHint.textContent = hasTrack
+            ? '📻 Bấm "Nghe cùng Bot" để phát tiếng trực tiếp khớp đúng giây với Discord'
+            : '📻 Bấm "Nghe cùng Bot" để bật sẵn — tự phát ngay khi Bot mở bài mới';
+          return;
+        }
+
+        if (!hasTrack) {
+          els.listenToggleBtn.className = "listen-btn waiting";
+          els.listenBtnLabel.textContent = "🎧 Đang chờ Bot phát nhạc";
+          els.liveAudioHint.textContent = "✨ Đã bật Live Radio — tự động phát tiếng ngay khi có bài mới trong Discord";
+          return;
+        }
+
+        if (!botPlaying) {
+          els.listenToggleBtn.className = "listen-btn waiting";
+          els.listenBtnLabel.textContent = "⏸️ Đang tạm dừng theo Bot";
+          els.liveAudioHint.textContent = "⏸️ Bot đang tạm dừng/tắt mic trong Discord — Web sẽ tự phát tiếp khi Bot tiếp tục";
+          return;
+        }
+
+        els.listenToggleBtn.className = "listen-btn active";
+        els.listenBtnLabel.textContent = "🔴 Đang nghe trực tiếp";
+        els.liveAudioHint.textContent = latestState.track.webAudio
+          ? "🔊 Đang phát trực tiếp đồng bộ thời gian thực cùng kênh thoại Discord"
+          : "⏳ Đang đồng bộ luồng âm thanh trực tiếp từ Bot...";
+      }
+
+      async function syncWebAudioPlayback({ forceHardSeek = false } = {}) {
+        renderListenUi();
+        if (!isListening) return;
+
+        const track = latestState?.track;
+        if (!track) {
+          if (loadedTrackKey) destroyCurrentAudioStream();
+          return;
+        }
+
+        const wa = track.webAudio;
+        if (!wa) {
+          scheduleQuickRefetch();
+          return;
+        }
+
+        const key = getTrackKey(track);
+        const targetSec = getExpectedBotPositionMs() / 1000;
+
+        // Cập nhật chữ ký mới tại chỗ nếu vẫn cùng bài hát (không làm giật tiếng)
+        if (key === loadedTrackKey && activeMse && wa.kind === "hls_fmp4") {
+          activeMse.wa = wa;
+        }
+
+        if (key !== loadedTrackKey) {
+          const mseMime = wa.mime || 'audio/mp4; codecs="mp4a.40.2"';
+          const canUseMse = wa.kind === "hls_fmp4" && Boolean(getMediaSourceCtor(mseMime));
+          if (canUseMse || wa.kind === "progressive") {
+            ensureWebAudioGraph();
+            syncWebVolumeGain();
+          }
+          if (canUseMse) {
+            await startFmp4MseSession(key, wa, targetSec);
+          } else if (wa.kind === "progressive" && wa.url) {
+            startDirectUrlStream(key, wa.url, targetSec);
+          } else if (wa.m3u8Url) {
+            syncWebVolumeGain();
+            startDirectUrlStream(key, wa.m3u8Url, targetSec);
+          }
+          return;
+        }
+
+        if (latestState.status !== "playing") {
+          if (!els.audio.paused) els.audio.pause();
+          return;
+        }
+
+        if (forceHardSeek) {
+          try {
+            els.audio.playbackRate = 1.0;
+            els.audio.currentTime = targetSec;
+            if (activeMse?.wake) activeMse.wake();
+          } catch {}
+        }
+
+        if (els.audio.paused) {
+          els.audio.play().catch(function () {});
+        }
+      }
+
+      // Bộ giữ nhịp thông minh (kiểu Discord Stage / Spotify Jam): lệch > 2.2s thì nhảy thẳng, lệch nhẹ 0.45s - 2.2s thì bù mượt ±3% không gây vấp tiếng
+      setInterval(function () {
+        if (!isListening || !latestState?.track || latestState.status !== "playing" || !loadedTrackKey) return;
+        if (els.audio.paused || els.audio.readyState < 2) {
+          if (activeMse?.wake) activeMse.wake();
+          return;
+        }
+        const expectedSec = getExpectedBotPositionMs() / 1000;
+        const actualSec = Number(els.audio.currentTime) || 0;
+        const diff = expectedSec - actualSec;
+        const absDiff = Math.abs(diff);
+
+        if (absDiff > 2.2) {
+          try {
+            els.audio.playbackRate = 1.0;
+            els.audio.currentTime = expectedSec;
+            if (activeMse?.wake) activeMse.wake();
+          } catch {}
+        } else if (absDiff > 0.45) {
+          els.audio.playbackRate = diff > 0 ? 1.03 : 0.97;
+        } else if (els.audio.playbackRate !== 1.0) {
+          els.audio.playbackRate = 1.0;
+        }
+      }, 1000);
+
+      els.listenToggleBtn.addEventListener("click", function () {
+        isListening = !isListening;
+        if (isListening) {
+          if (getMediaSourceCtor('audio/mp4; codecs="mp4a.40.2"')) {
+            ensureWebAudioGraph();
+          } else if (audioGraph?.ctx?.state === "suspended") {
+            audioGraph.ctx.resume().catch(function () {});
+          }
+          syncWebVolumeGain();
+          void syncWebAudioPlayback({ forceHardSeek: true });
+        } else {
+          destroyCurrentAudioStream();
+          renderListenUi();
+        }
+        restartPollingWithAdaptiveRate();
+      });
+
+      els.resyncBtn.addEventListener("click", function () {
+        if (!isListening) return;
+        void syncWebAudioPlayback({ forceHardSeek: true });
+      });
+
+      // Vẽ sóng nhạc phổ tần số 60fps từ bộ phân tích FFT thật của Web Audio API
+      (function startSpectrumVisualizer() {
+        const canvas = els.spectrumCanvas;
+        const ctx2d = canvas.getContext("2d");
+        const BAR_COUNT = 32;
+        const smoothBars = new Float32Array(BAR_COUNT);
+
+        function drawFrame(ts) {
+          const w = canvas.width;
+          const h = canvas.height;
+          ctx2d.clearRect(0, 0, w, h);
+
+          const realAudioActive = Boolean(
+            isListening &&
+            audioGraph &&
+            latestState?.status === "playing" &&
+            !els.audio.paused
+          );
+          els.heroCard.classList.toggle("fft-driven", realAudioActive);
+
+          if (realAudioActive) {
+            audioGraph.analyser.getByteFrequencyData(audioGraph.freqData);
+            const bins = audioGraph.freqData;
+            for (let i = 0; i < BAR_COUNT; i++) {
+              const binIdx = Math.min(bins.length - 1, Math.floor((i / BAR_COUNT) * (bins.length * 0.78)));
+              const target = (bins[binIdx] || 0) / 255;
+              smoothBars[i] = smoothBars[i] * 0.55 + target * 0.45;
+            }
+            // Đồng bộ luôn 4 cột sóng nhỏ góc ảnh bìa theo nhịp trống & lời ca thật
+            const miniBins = [1, 5, 11, 18];
+            for (let m = 0; m < els.eqBars.length; m++) {
+              const v = (bins[miniBins[m]] || 0) / 255;
+              els.eqBars[m].style.height = Math.round(4 + v * 14) + "px";
+            }
+          } else {
+            const ambientPlaying = latestState?.status === "playing";
+            for (let i = 0; i < BAR_COUNT; i++) {
+              const target = ambientPlaying
+                ? (0.14 + 0.16 * Math.sin(ts * 0.0045 + i * 0.48) + 0.08 * Math.cos(ts * 0.008 - i * 0.3))
+                : 0.05;
+              smoothBars[i] = smoothBars[i] * 0.85 + Math.max(0.05, target) * 0.15;
+            }
+            for (let m = 0; m < els.eqBars.length; m++) {
+              els.eqBars[m].style.height = "";
+            }
+          }
+
+          const gap = 4;
+          const barW = (w - gap * (BAR_COUNT - 1)) / BAR_COUNT;
+          const grad = ctx2d.createLinearGradient(0, h, 0, 0);
+          grad.addColorStop(0, "rgba(139, 92, 246, 0.88)");
+          grad.addColorStop(1, "rgba(236, 72, 153, 0.96)");
+          ctx2d.fillStyle = grad;
+
+          for (let i = 0; i < BAR_COUNT; i++) {
+            const barH = Math.max(3, Math.min(h - 2, smoothBars[i] * (h - 2)));
+            const x = i * (barW + gap);
+            const y = h - barH;
+            ctx2d.beginPath();
+            if (ctx2d.roundRect) {
+              ctx2d.roundRect(x, y, barW, barH, 3);
+            } else {
+              ctx2d.rect(x, y, barW, barH);
+            }
+            ctx2d.fill();
+          }
+
+          requestAnimationFrame(drawFrame);
+        }
+
+        requestAnimationFrame(drawFrame);
+      })();
 
       function setConnectionBadge(mode, text) {
         els.connDot.className = "dot" + (mode === "live" ? " live" : mode === "warn" ? " warn" : "");
@@ -945,11 +1806,7 @@
           return;
         }
         const total = Math.max(0, Number(track.durationMs) || 0);
-        let pos = Math.max(0, Number(track.positionMs) || 0);
-        if (latestState.status === "playing" && receivedClientMs > 0) {
-          pos += Math.max(0, Date.now() - receivedClientMs);
-        }
-        if (total > 0 && pos > total) pos = total;
+        const pos = getExpectedBotPositionMs();
         const pct = total > 0 ? Math.min(100, (pos / total) * 100) : 0;
         els.progressFill.style.width = pct.toFixed(2) + "%";
         els.currentTime.textContent = formatTime(pos);
@@ -1021,16 +1878,19 @@
         els.chipLoop.textContent = st.loopLabel || "Tắt lặp";
         els.chipModes.textContent = "Auto: " + (st.autoPlay ? "Bật" : "Tắt") + " • 24/7: " + (st.stay247 ? "Bật" : "Tắt");
 
+        applyWebEqPreset(st.soundPreset || "hd");
         renderProgressTick();
         renderSideList();
+        void syncWebAudioPlayback();
       }
 
       setInterval(renderProgressTick, 250);
 
-      // Tự động kết nối thời gian thực bằng SSE (/api/now-playing/events) và tự chuyển sang hỏi định kỳ (/api/now-playing) nếu qua Worker/tĩnh.
+      // Kết nối thời gian thực qua SSE (/api/now-playing/events) hoặc hỏi định kỳ thích ứng trên Cloudflare Worker (/api/now-playing)
       const apiEndpoint = rawBase + "/api/now-playing";
       const sseEndpoint = rawBase + "/api/now-playing/events";
       let pollTimer = null;
+      let usingPolling = false;
 
       async function fetchSnapshotOnce() {
         try {
@@ -1046,10 +1906,26 @@
         }
       }
 
+      function scheduleQuickRefetch() {
+        if (quickRefetchTimer) return;
+        quickRefetchTimer = setTimeout(function () {
+          quickRefetchTimer = null;
+          void fetchSnapshotOnce();
+        }, 700);
+      }
+
+      function restartPollingWithAdaptiveRate() {
+        if (!usingPolling) return;
+        if (pollTimer) clearInterval(pollTimer);
+        const intervalMs = isListening ? 2400 : 4000;
+        pollTimer = setInterval(fetchSnapshotOnce, intervalMs);
+      }
+
       function startPollingFallback() {
-        if (pollTimer) return;
+        if (usingPolling) return;
+        usingPolling = true;
         fetchSnapshotOnce();
-        pollTimer = setInterval(fetchSnapshotOnce, 4000);
+        restartPollingWithAdaptiveRate();
       }
 
       if (window.location.protocol === "http:" || window.location.protocol === "https:" || rawBase) {

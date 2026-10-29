@@ -801,6 +801,79 @@
       line-height: 1.55;
     }
 
+    /* Giao diện Karaoke lời bài hát chạy theo từng câu thời gian thực */
+    .lyrics-header-tag {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 6px 10px;
+      border-radius: 9px;
+      background: rgba(139, 92, 246, 0.12);
+      border: 1px solid rgba(139, 92, 246, 0.24);
+      font-size: 0.74rem;
+      font-weight: 600;
+      color: #e9d5ff;
+      flex-shrink: 0;
+    }
+
+    .karaoke-line {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      padding: 9px 12px;
+      border-radius: 11px;
+      border: 1px solid transparent;
+      color: rgba(247, 248, 255, 0.42);
+      font-size: 0.9rem;
+      font-weight: 600;
+      line-height: 1.45;
+      transition: transform 0.24s ease, color 0.22s ease, background 0.24s ease, border-color 0.24s ease;
+    }
+
+    .karaoke-line.past {
+      color: rgba(247, 248, 255, 0.28);
+    }
+
+    .karaoke-line.active {
+      color: #ffffff;
+      font-size: 0.98rem;
+      font-weight: 800;
+      background: linear-gradient(135deg, rgba(139, 92, 246, 0.28), rgba(236, 72, 153, 0.18));
+      border-color: rgba(236, 72, 153, 0.42);
+      box-shadow: 0 8px 22px rgba(139, 92, 246, 0.22);
+      transform: translateX(3px);
+    }
+
+    .karaoke-time {
+      font-size: 0.71rem;
+      font-variant-numeric: tabular-nums;
+      color: var(--text-muted);
+      font-weight: 700;
+      flex-shrink: 0;
+      min-width: 34px;
+    }
+
+    .karaoke-line.active .karaoke-time {
+      color: #f9a8d4;
+    }
+
+    .plain-lyrics-box {
+      white-space: pre-wrap;
+      word-break: break-word;
+      padding: 12px 14px;
+      border-radius: 12px;
+      background: var(--surface-soft);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      color: var(--text-main);
+      font-size: 0.87rem;
+      line-height: 1.68;
+    }
+
+    .tab-btn.has-karaoke:not(.active) {
+      color: #f9a8d4;
+    }
+
     .footer {
       position: relative;
       z-index: 1;
@@ -945,12 +1018,13 @@
         </div>
 
         <p class="display-note">
-          🎧 Chế độ <strong>Live Radio</strong> phát nhạc trực tiếp từ CDN gốc, tự khớp đúng bài, đúng giây & cấu hình Studio EQ (<strong>HD / Rõ lời / Bass Boost / Nguyên bản</strong>) đang mở trong kênh thoại Discord mà không tốn RAM của bot. Thanh âm lượng phía trên chỉ chỉnh riêng cho trình duyệt của bạn.
+          🎧 Chế độ <strong>Live Radio</strong> phát nhạc trực tiếp từ CDN gốc, tự khớp đúng bài, đúng giây, lời <strong>Karaoke chạy chữ</strong> & cấu hình Studio EQ (<strong>HD / Rõ lời / Bass Boost / 8D 360° / Nguyên bản</strong>) đang mở trong kênh thoại Discord mà không tốn RAM của bot. Thanh âm lượng phía trên chỉ chỉnh riêng cho trình duyệt của bạn.
         </p>
       </section>
 
       <aside class="glass-card side-card">
         <div class="tabs-bar">
+          <button id="tabLyricsBtn" class="tab-btn" type="button">🎤 Karaoke</button>
           <button id="tabQueueBtn" class="tab-btn active" type="button">Sắp phát (0)</button>
           <button id="tabHistoryBtn" class="tab-btn" type="button">Vừa phát (0)</button>
         </div>
@@ -1025,6 +1099,7 @@
         chipVolume: document.getElementById("chipVolume"),
         chipLoop: document.getElementById("chipLoop"),
         chipModes: document.getElementById("chipModes"),
+        tabLyricsBtn: document.getElementById("tabLyricsBtn"),
         tabQueueBtn: document.getElementById("tabQueueBtn"),
         tabHistoryBtn: document.getElementById("tabHistoryBtn"),
         trackList: document.getElementById("trackList"),
@@ -1069,6 +1144,19 @@
             { type: "peaking", freq: 270, q: 1.15, gain: -3.8 },
             { type: "peaking", freq: 3400, q: 1.1, gain: 1.8 },
             { type: "highshelf", freq: 7500, q: 0.707, gain: -1.5 },
+          ],
+        },
+        "8d": {
+          label: "8D Xoay Vòng 360°",
+          preDb: -3.2,
+          makeupDb: 2.0,
+          orbitDepth: 0.9,
+          stages: [
+            { type: "highpass", freq: 30, q: 0.707, gain: 0 },
+            { type: "lowshelf", freq: 92, q: 0.75, gain: 4.8 },
+            { type: "peaking", freq: 275, q: 1.15, gain: -2.8 },
+            { type: "peaking", freq: 3900, q: 1.0, gain: 3.6 },
+            { type: "highshelf", freq: 9500, q: 0.707, gain: 5.2 },
           ],
         },
         flat: {
@@ -1146,6 +1234,21 @@
           analyser.fftSize = 128;
           analyser.smoothingTimeConstant = 0.78;
 
+          let stereoPanner = null;
+          let orbitGain = null;
+          if (typeof ctx.createStereoPanner === "function") {
+            stereoPanner = ctx.createStereoPanner();
+            stereoPanner.pan.value = 0;
+            const orbitOsc = ctx.createOscillator();
+            orbitOsc.type = "sine";
+            orbitOsc.frequency.value = 0.11; // 1 vòng 360° mỗi ~9 giây giống hệt Bot Discord
+            orbitGain = ctx.createGain();
+            orbitGain.gain.value = 0;
+            orbitOsc.connect(orbitGain);
+            orbitGain.connect(stereoPanner.pan);
+            orbitOsc.start();
+          }
+
           const masterGain = ctx.createGain();
           masterGain.gain.value = computeWebGain(webVolPercent);
 
@@ -1157,7 +1260,12 @@
           }
           prev.connect(makeupGain);
           makeupGain.connect(compressor);
-          compressor.connect(analyser);
+          if (stereoPanner) {
+            compressor.connect(stereoPanner);
+            stereoPanner.connect(analyser);
+          } else {
+            compressor.connect(analyser);
+          }
           analyser.connect(masterGain);
           masterGain.connect(ctx.destination);
 
@@ -1171,6 +1279,8 @@
             filters: filters,
             makeupGain: makeupGain,
             compressor: compressor,
+            stereoPanner: stereoPanner,
+            orbitGain: orbitGain,
             analyser: analyser,
             masterGain: masterGain,
             freqData: new Uint8Array(analyser.frequencyBinCount),
@@ -1194,6 +1304,13 @@
         const now = audioGraph.ctx.currentTime;
         audioGraph.preGain.gain.setTargetAtTime(dbToLinear(preset.preDb), now, 0.025);
         audioGraph.makeupGain.gain.setTargetAtTime(dbToLinear(preset.makeupDb), now, 0.025);
+        if (audioGraph.orbitGain && audioGraph.stereoPanner) {
+          const depth = preset.orbitDepth || 0;
+          audioGraph.orbitGain.gain.setTargetAtTime(depth, now, 0.08);
+          if (!depth) {
+            audioGraph.stereoPanner.pan.setTargetAtTime(0, now, 0.08);
+          }
+        }
 
         for (let i = 0; i < audioGraph.filters.length; i++) {
           const node = audioGraph.filters[i];
@@ -1721,13 +1838,144 @@
         updateArtwork(null);
       });
 
+      let renderedLyricsKey = "";
+      let karaokeLineEls = [];
+      let activeKaraokeIdx = -1;
+      let userSelectedTabManually = false;
+
+      function getEffectiveKaraokePositionMs() {
+        if (isListening && els.audio && !els.audio.paused && Number.isFinite(els.audio.currentTime) && els.audio.currentTime > 0) {
+          return Math.round(els.audio.currentTime * 1000);
+        }
+        return getExpectedBotPositionMs();
+      }
+
+      function syncKaraokeHighlight(forceScroll) {
+        if (activeTab !== "lyrics" || !karaokeLineEls.length) return;
+        const synced = latestState?.track?.lyrics?.synced;
+        if (!Array.isArray(synced) || !synced.length) return;
+
+        const posMs = getEffectiveKaraokePositionMs() + 180; // Bù nhẹ 180ms để chữ sáng đúng nhịp ca sĩ cất giọng
+        let nextIdx = -1;
+        let lo = 0, hi = synced.length - 1;
+        while (lo <= hi) {
+          const mid = (lo + hi) >> 1;
+          if (synced[mid].t <= posMs) {
+            nextIdx = mid;
+            lo = mid + 1;
+          } else {
+            hi = mid - 1;
+          }
+        }
+
+        if (nextIdx === activeKaraokeIdx && !forceScroll) return;
+        activeKaraokeIdx = nextIdx;
+
+        for (let i = 0; i < karaokeLineEls.length; i++) {
+          const el = karaokeLineEls[i];
+          el.classList.toggle("active", i === nextIdx);
+          el.classList.toggle("past", nextIdx >= 0 && i < nextIdx);
+        }
+
+        if (nextIdx >= 0 && karaokeLineEls[nextIdx]) {
+          const lineEl = karaokeLineEls[nextIdx];
+          const container = els.trackList;
+          const targetTop = Math.max(
+            0,
+            lineEl.offsetTop - container.offsetTop - (container.clientHeight / 2) + (lineEl.clientHeight / 2)
+          );
+          try {
+            container.scrollTo({ top: targetTop, behavior: forceScroll ? "auto" : "smooth" });
+          } catch {
+            container.scrollTop = targetTop;
+          }
+        }
+      }
+
       function renderSideList() {
         const upcoming = Array.isArray(latestState?.upcoming) ? latestState.upcoming : [];
         const history = Array.isArray(latestState?.history) ? latestState.history : [];
+        const lyricsObj = latestState?.track?.lyrics || null;
+        const hasSynced = Array.isArray(lyricsObj?.synced) && lyricsObj.synced.length > 0;
+        const hasPlain = Boolean(lyricsObj?.plain);
+
+        els.tabLyricsBtn.textContent = hasSynced ? "🎤 Karaoke • Live" : "🎤 Karaoke";
+        els.tabLyricsBtn.classList.toggle("has-karaoke", hasSynced);
         els.tabQueueBtn.textContent = "Sắp phát (" + upcoming.length + ")";
         els.tabHistoryBtn.textContent = "Vừa phát (" + history.length + ")";
+
+        els.tabLyricsBtn.classList.toggle("active", activeTab === "lyrics");
         els.tabQueueBtn.classList.toggle("active", activeTab === "queue");
         els.tabHistoryBtn.classList.toggle("active", activeTab === "history");
+
+        if (activeTab === "lyrics") {
+          const curTrack = latestState?.track;
+          const nextLyricsKey = curTrack
+            ? (curTrack.url || curTrack.title || "") + "|" + (hasSynced ? "S" + lyricsObj.synced.length : hasPlain ? "P" + lyricsObj.plain.length : "none")
+            : "idle";
+          if (renderedLyricsKey === nextLyricsKey) {
+            syncKaraokeHighlight(false);
+            return;
+          }
+          renderedLyricsKey = nextLyricsKey;
+          karaokeLineEls = [];
+          activeKaraokeIdx = -1;
+          els.trackList.replaceChildren();
+
+          if (!curTrack) {
+            const empty = document.createElement("div");
+            empty.className = "empty-list";
+            empty.textContent = "Chưa có bài hát nào đang phát để hiển thị lời Karaoke.";
+            els.trackList.appendChild(empty);
+            return;
+          }
+
+          if (hasSynced) {
+            const header = document.createElement("div");
+            header.className = "lyrics-header-tag";
+            header.textContent = "✨ Lời Karaoke tự cuộn theo nhạc • Nguồn: " + (lyricsObj.source || "LRCLIB");
+            els.trackList.appendChild(header);
+
+            lyricsObj.synced.forEach(function (line) {
+              const row = document.createElement("div");
+              row.className = "karaoke-line";
+              const ts = document.createElement("span");
+              ts.className = "karaoke-time";
+              ts.textContent = formatTime(line.t);
+              const txt = document.createElement("span");
+              txt.textContent = line.text;
+              row.appendChild(ts);
+              row.appendChild(txt);
+              els.trackList.appendChild(row);
+              karaokeLineEls.push(row);
+            });
+            syncKaraokeHighlight(true);
+            return;
+          }
+
+          if (hasPlain) {
+            const header = document.createElement("div");
+            header.className = "lyrics-header-tag";
+            header.textContent = "📝 Lời bài hát tĩnh • Nguồn: " + (lyricsObj.source || "LRCLIB");
+            els.trackList.appendChild(header);
+
+            const box = document.createElement("div");
+            box.className = "plain-lyrics-box";
+            box.textContent = lyricsObj.plain;
+            els.trackList.appendChild(box);
+            return;
+          }
+
+          const empty = document.createElement("div");
+          empty.className = "empty-list";
+          empty.textContent = "Đang dò lời Karaoke hoặc bài hát này chưa có bản lời trên LRCLIB.";
+          els.trackList.appendChild(empty);
+          return;
+        }
+
+        renderedLyricsKey = "";
+        karaokeLineEls = [];
+        activeKaraokeIdx = -1;
 
         const items = activeTab === "queue" ? upcoming : history;
         els.trackList.replaceChildren();
@@ -1788,11 +2036,18 @@
         });
       }
 
+      els.tabLyricsBtn.addEventListener("click", function () {
+        userSelectedTabManually = true;
+        activeTab = "lyrics";
+        renderSideList();
+      });
       els.tabQueueBtn.addEventListener("click", function () {
+        userSelectedTabManually = true;
         activeTab = "queue";
         renderSideList();
       });
       els.tabHistoryBtn.addEventListener("click", function () {
+        userSelectedTabManually = true;
         activeTab = "history";
         renderSideList();
       });
@@ -1811,6 +2066,7 @@
         els.progressFill.style.width = pct.toFixed(2) + "%";
         els.currentTime.textContent = formatTime(pos);
         els.totalTime.textContent = formatTime(total);
+        syncKaraokeHighlight(false);
       }
 
       function applyState(state) {
@@ -1876,7 +2132,12 @@
         els.chipSound.textContent = st.soundLabel || "Rõ nét HD";
         els.chipVolume.textContent = (st.volume ?? 100) + "%";
         els.chipLoop.textContent = st.loopLabel || "Tắt lặp";
-        els.chipModes.textContent = "Auto: " + (st.autoPlay ? "Bật" : "Tắt") + " • 24/7: " + (st.stay247 ? "Bật" : "Tắt");
+        els.chipModes.textContent = "Auto: " + (st.autoPlay ? "Bật" : "Tắt") + " • 24/7: " + (st.stay247 ? "Bật" : "Tắt") + (st.sleepTimerLabel ? " • 💤 " + st.sleepTimerLabel : "");
+
+        // Tự động mở sẵn tab Karaoke nếu bài hát có lời chạy chữ và người nghe chưa tự bấm chuyển sang tab khác
+        if (!userSelectedTabManually && Array.isArray(track?.lyrics?.synced) && track.lyrics.synced.length > 0 && !(state.upcoming && state.upcoming.length > 0)) {
+          activeTab = "lyrics";
+        }
 
         applyWebEqPreset(st.soundPreset || "hd");
         renderProgressTick();

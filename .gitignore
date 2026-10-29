@@ -6,3 +6,4 @@ node_modules/
 *.zip
 .ssh/
 .runtime-session.json*
+.runtime-favorites.json*

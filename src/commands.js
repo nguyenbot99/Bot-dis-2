@@ -9,6 +9,9 @@ const definitions = [
  ['leave', 'Cho bot dừng nhạc, tắt chế độ 24/7 và rời khỏi kênh thoại'],
  ['247', 'Bật hoặc tắt chế độ treo kênh thoại 24/7 (không tự rời khi hết nhạc)'],
  ['tts', 'Đọc văn bản bằng giọng chị Google trong kênh thoại (tự dừng & phát tiếp nhạc)'],
+ ['sfx', 'Phát tiếng động Meme tấu hài trong kênh thoại (tự dừng & phát tiếp nhạc)'],
+ ['fav', 'Quản lý & phát Tủ nhạc Yêu thích cá nhân của riêng bạn'],
+ ['sleeptimer', 'Hẹn giờ tự động giảm nhỏ âm lượng rồi tắt nhạc êm ái khi đi ngủ'],
  ['play', 'Phát nhạc từ tên bài hoặc link lẻ YouTube / SoundCloud / Spotify'],
  ['pause', 'Tạm dừng bài hát đang phát'],
  ['resume', 'Tiếp tục phát bài hát đang tạm dừng'],
@@ -50,24 +53,24 @@ export function buildHelpEmbed(botUser) {
   ].filter(Boolean).join('\n'))
   .addFields(
    {
-    name: '🎙️ Kết nối, Đọc TTS & 24/7',
+    name: '🎙️ Kết nối, Giải trí & 24/7',
     value: [
-     '`/join` — Gọi bot vào kênh thoại hiện tại của bạn',
-     '`/leave` — Dừng nhạc, tắt 24/7 và cho bot rời khỏi kênh thoại',
+     '`/join` • `/leave` — Gọi bot vào hoặc rời khỏi kênh thoại hiện tại',
      '`/247` `[mode]` — Bật / tắt chế độ treo kênh thoại 24/7 không tự thoát',
-     '`/tts` `text` `[lang]` `[slow]` — Đọc giọng chị Google trong phòng thoại (ai cùng phòng cũng dùng được)',
+     '`/tts` `text` `[lang]` `[slow]` — Đọc giọng chị Google trong phòng thoại',
+     '`/sfx` `effect` — Thả tiếng động Meme tấu hài trong phòng thoại',
      '`/autoplay` `[mode]` — Tự động phát tiếp nhạc cùng gu khi hết hàng đợi',
     ].join('\n'),
    },
    {
-    name: '▶️ Phát & Điều khiển chính',
+    name: '▶️ Phát, Tủ nhạc & Hẹn giờ ngủ',
     value: [
-     '`/play` `query` `[next]` — Phát từ tên bài hoặc link lẻ YouTube / SoundCloud / Spotify (`next` = chèn phát kế tiếp)',
-     '`/pause` • `/resume` — Tạm dừng hoặc tiếp tục bài đang phát',
-     '`/skip` `[to]` — Bỏ qua bài hiện tại (hoặc nhảy thẳng tới vị trí `to`)',
-     '`/previous` — Quay lại bài hát vừa phát trước đó',
+     '`/play` `query` `[next]` — Phát từ tên bài hoặc link lẻ YouTube / SoundCloud / Spotify',
+     '`/fav` `action` `[query]` `[position]` — Lưu, xem & phát Tủ nhạc Yêu thích cá nhân',
+     '`/sleeptimer` `[minutes]` `[after_track]` — Hẹn giờ giảm dần âm lượng tắt nhạc đi ngủ',
+     '`/pause` • `/resume` • `/stop` — Tạm dừng, tiếp tục hoặc dừng hẳn nhạc',
+     '`/skip` `[to]` • `/previous` — Qua bài (hoặc nhảy vị trí `to`) / quay lại bài trước',
      '`/seek` `time` — Tua nhanh tới mốc thời gian (ví dụ `1:30` hoặc `90`)',
-     '`/stop` — Dừng nhạc và xóa toàn bộ hàng đợi',
     ].join('\n'),
    },
    {
@@ -93,7 +96,7 @@ export function buildHelpEmbed(botUser) {
    },
    {
     name: '🎧 Nguồn & Chất âm',
-    value: 'YouTube, SoundCloud & link bài Spotify\nChuẩn **SoX 24-bit + Opus Music HD**',
+    value: 'YouTube, SoundCloud & Spotify\n**HD • Vocal • Bass • 8D 360°**',
     inline: true,
    },
    {
@@ -227,6 +230,63 @@ export const commands = definitions.map(([name, description]) => {
   c.addBooleanOption(o => o
    .setName('slow')
    .setDescription('Đọc chậm rãi từng chữ kiểu tấu hài (mặc định: tắt)')
+   .setRequired(false));
+ }
+ if (name === 'sfx') {
+  c.addStringOption(o => o
+   .setName('effect')
+   .setDescription('Chọn hiệu ứng tiếng động Meme muốn phát trong phòng thoại')
+   .setRequired(true)
+   .addChoices(
+    { name: '🥁 Trống Ba-dum-tss (Chốt câu tấu hài)', value: 'badumtss' },
+    { name: '🦗 Tiếng dế kêu (Quê độ / Im phăng phắc)', value: 'crickets' },
+    { name: '📯 Còi hơi Airhorn (Khuấy động phòng)', value: 'airhorn' },
+    { name: '💥 Bass Drop Cực Căng (Sub-bass chấn động)', value: 'bassdrop' },
+    { name: '🎺 Kèn quê độ Wah-Wah-Waaah (Thất bại)', value: 'sadtrombone' },
+    { name: '💻 Windows XP Tắt máy (Tạm biệt đi ngủ)', value: 'winxp' },
+    { name: '🎉 Kèn Fanfare & Pháo tay chúc mừng', value: 'applause' },
+    { name: '🤬 Tiếng Bíp che từ nhạy cảm (Censor 1kHz)', value: 'beep' },
+   ));
+ }
+ if (name === 'fav') {
+  c.addStringOption(o => o
+   .setName('action')
+   .setDescription('Thao tác với Tủ nhạc Yêu thích cá nhân của bạn')
+   .setRequired(true)
+   .addChoices(
+    { name: '❤️ Lưu bài đang phát (hoặc theo tên/link)', value: 'add' },
+    { name: '▶️ Phát toàn bộ Tủ nhạc Yêu thích', value: 'play' },
+    { name: '🔀 Trộn ngẫu nhiên & phát Tủ nhạc Yêu thích', value: 'shuffle' },
+    { name: '📋 Xem danh sách Tủ nhạc Yêu thích của bạn', value: 'list' },
+    { name: '➖ Xóa 1 bài khỏi Tủ nhạc theo số thứ tự', value: 'remove' },
+    { name: '🗑️ Xóa sạch toàn bộ Tủ nhạc của bạn', value: 'clear' },
+   ));
+  c.addStringOption(o => o
+   .setName('query')
+   .setDescription('Tên bài hoặc link muốn lưu (chỉ dùng cho action=add khi muốn lưu bài bất kỳ)')
+   .setRequired(false)
+   .setMaxLength(400));
+  c.addIntegerOption(o => o
+   .setName('position')
+   .setDescription('Số thứ tự bài muốn xóa trong danh sách /fav list (1–25)')
+   .setRequired(false)
+   .setMinValue(1)
+   .setMaxValue(25));
+ }
+ if (name === 'sleeptimer') {
+  c.addIntegerOption(o => o
+   .setName('minutes')
+   .setDescription('Số phút hẹn giờ tắt nhạc (nhập 0 để hủy hẹn giờ, 1–180 phút)')
+   .setRequired(false)
+   .setMinValue(0)
+   .setMaxValue(180));
+  c.addBooleanOption(o => o
+   .setName('after_track')
+   .setDescription('Đặt True để tự tắt nhạc ngay khi phát xong bài hiện tại')
+   .setRequired(false));
+  c.addBooleanOption(o => o
+   .setName('leave_voice')
+   .setDescription('Đặt True để tự rời phòng thoại luôn sau khi tắt nhạc (kể cả đang bật 24/7)')
    .setRequired(false));
  }
  return c.toJSON();

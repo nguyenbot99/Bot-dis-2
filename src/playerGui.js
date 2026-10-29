@@ -166,9 +166,10 @@ export function buildPlayerPayload(player, overrides = {}) {
  const container = new ContainerBuilder().setAccentColor(accentColor);
 
  // Phần đầu khung: Tiêu đề bài hát, nghệ sĩ, thông số phát và nút mở bài gốc.
+ const sleepLabel = player?.userdata?.sleepTimerLabel ? ` • 💤 **${player.userdata.sleepTimerLabel}**` : '';
  const titleLine = trackUrl ? `### 🎵 [**${title}**](${trackUrl})` : `### 🎵 **${title}**`;
  const metaLine = `👤 Nghệ sĩ: **${author}** • 📡 Nguồn: **${sourceName}** • 🎧 Chất âm: **${soundLabel}**`;
- const stateLine = `🔊 **${volume}%** • 🔁 **${LOOP_LABELS[loopMode] ?? LOOP_LABELS.off}** • ✨ Tự phát: **${autoPlay ? 'Bật' : 'Tắt'}** • 🌙 24/7: **${stay247 ? 'Bật' : 'Tắt'}** • 📌 Chờ: **${upcoming.length}**`;
+ const stateLine = `🔊 **${volume}%** • 🔁 **${LOOP_LABELS[loopMode] ?? LOOP_LABELS.off}** • ✨ Tự phát: **${autoPlay ? 'Bật' : 'Tắt'}** • 🌙 24/7: **${stay247 ? 'Bật' : 'Tắt'}** • 📌 Chờ: **${upcoming.length}**${sleepLabel}`;
  const roomLine = [
   voiceChannelId ? `🎙️ Kênh: <#${voiceChannelId}>` : '🎙️ Kênh thoại đang kết nối',
   ownerId ? `👑 Điều khiển: <@${ownerId}>` : '👑 Điều khiển: Người gọi bài',
@@ -233,6 +234,16 @@ export function buildPlayerPayload(player, overrides = {}) {
      .setValue('add_song')
      .setEmoji('➕'),
     new StringSelectMenuOptionBuilder()
+     .setLabel('Lưu vào Tủ nhạc Yêu thích')
+     .setDescription('Lưu bài đang phát vào Tủ nhạc cá nhân của riêng bạn (ai cũng bấm được)')
+     .setValue('save_fav')
+     .setEmoji('❤️'),
+    new StringSelectMenuOptionBuilder()
+     .setLabel('Nạp Tủ nhạc Yêu thích')
+     .setDescription('Đưa toàn bộ bài trong Tủ nhạc cá nhân của bạn vào hàng đợi')
+     .setValue('play_fav')
+     .setEmoji('💖'),
+    new StringSelectMenuOptionBuilder()
      .setLabel('Tùy chỉnh âm lượng (0% – 200%)')
      .setDescription(`Nhập số phần trăm bất kỳ từ 0 đến 200 (hiện tại: ${volume}%)`)
      .setValue('custom_volume')
@@ -272,6 +283,11 @@ export function buildPlayerPayload(player, overrides = {}) {
      .setDescription('Tăng mạnh lực sub-bass & trống trầm đập chắc, chống rè')
      .setValue('preset_bass')
      .setEmoji('🔥'),
+    new StringSelectMenuOptionBuilder()
+     .setLabel(`Chất âm: 8D Xoay Vòng 360°${soundPreset === '8d' ? ' (Đang bật)' : ''}`)
+     .setDescription('Âm thanh vòm binaural chạy vòng quanh đầu 360° (đeo tai nghe cực phê)')
+     .setValue('preset_8d')
+     .setEmoji('🌀'),
     new StringSelectMenuOptionBuilder()
      .setLabel(`Chất âm: Nguyên bản${soundPreset === 'flat' ? ' (Đang bật)' : ''}`)
      .setDescription('Giữ nguyên EQ gốc tự nhiên 100% của bản thu')

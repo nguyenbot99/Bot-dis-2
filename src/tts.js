@@ -203,7 +203,10 @@ export function createGuildTtsController({
   return null;
  }
 
- function playSingleBuffer(ttsPlayer, mp3Buffer, state) {
+ function playSingleBuffer(ttsPlayer, item, state) {
+  const mp3Buffer = Buffer.isBuffer(item) ? item : item?.buffer;
+  const presetKey = (!Buffer.isBuffer(item) && item?.presetKey) || 'vocal';
+  const volLevel = (!Buffer.isBuffer(item) && typeof item?.volume === 'number') ? item.volume : 1.35;
   return new Promise(resolve => {
    if (state.cancelled) return resolve();
    let settled = false;
@@ -243,10 +246,9 @@ export function createGuildTtsController({
      inlineVolume: true,
     });
     if (resource?.volume) {
-     // Luôn dùng cấu hình Rõ lời (Vocal) + tăng nhẹ độ rõ 135% để tiếng chị Google to, sáng, không bị ù bass.
-     resource.volume._forcePresetKey = 'vocal';
+     resource.volume._forcePresetKey = presetKey;
      if (typeof resource.volume.setVolume === 'function') {
-      resource.volume.setVolume(1.35);
+      resource.volume.setVolume(volLevel);
      }
     }
     ttsPlayer.play(resource);
@@ -337,10 +339,10 @@ export function createGuildTtsController({
   }
  }
 
- async function enqueueSpeech({ guildId, player, getPlayer, mp3Buffer }) {
+ async function enqueueSpeech({ guildId, player, getPlayer, mp3Buffer, presetKey = 'vocal', volume = 1.35 }) {
   const state = getOrCreateState(guildId);
   if (state.queue.length >= MAX_TTS_QUEUE_PER_GUILD) {
-   throw new Error('Hàng chờ đọc giọng chị Google đang đầy (tối đa 5 câu liên tiếp), vui lòng chờ vài giây.');
+   throw new Error('Hàng chờ âm thanh thoại đang đầy (tối đa 5 lượt liên tiếp), vui lòng chờ vài giây.');
   }
   const resolvePlayer = typeof getPlayer === 'function' ? getPlayer : () => player;
   if (!resolveConnection(guildId, resolvePlayer())) {
@@ -348,7 +350,7 @@ export function createGuildTtsController({
   }
 
   const wasAlreadySpeaking = state.speaking;
-  state.queue.push(mp3Buffer);
+  state.queue.push({ buffer: mp3Buffer, presetKey, volume });
   if (!wasAlreadySpeaking) {
    void drainQueue(state, resolvePlayer).catch(() => {});
   }

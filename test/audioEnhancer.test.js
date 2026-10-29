@@ -97,10 +97,11 @@ async function renderWavThroughPipeline(wav, { volumeRatio = 1, preset = 'flat' 
 }
 
 test('sound preset rotation and bitrate clamping work cleanly', () => {
- assert.deepEqual(SOUND_PRESET_ORDER, ['hd', 'vocal', 'bass', 'flat']);
+ assert.deepEqual(SOUND_PRESET_ORDER, ['hd', 'vocal', 'bass', '8d', 'flat']);
  assert.equal(getNextSoundPreset('hd'), 'vocal');
  assert.equal(getNextSoundPreset('vocal'), 'bass');
- assert.equal(getNextSoundPreset('bass'), 'flat');
+ assert.equal(getNextSoundPreset('bass'), '8d');
+ assert.equal(getNextSoundPreset('8d'), 'flat');
  assert.equal(getNextSoundPreset('flat'), 'hd');
 
  assert.deepEqual(setAudioEnhancement({ preset: 'vocal', channelBitrate: 64000 }), {

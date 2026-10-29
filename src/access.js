@@ -1,5 +1,6 @@
 // Các lệnh chỉ đọc thông tin, ai trong máy chủ cũng có thể xem được.
 const readOnlyCommands = new Set(['help', 'queue', 'nowplaying', 'history', 'lyrics', 'ping']);
+const sharedVoiceFunCommands = new Set(['tts', 'sfx']);
 
 // ID Discord chủ bot có toàn quyền điều khiển mọi phiên nhạc bất kể ai là người bắt bài.
 export const DEFAULT_BOT_OWNER_IDS = Object.freeze(['1243061570247069696']);
@@ -29,7 +30,7 @@ export function resolveHumanRequester(id) {
 // Ngoài ra khi chế độ 24/7 đang bật và bot đang nghỉ hoàn toàn (hết nhạc, idleOpen = true),
 // người trong kênh thoại được phép gọi /play để mở lượt phát nhạc mới; còn /leave và /247 vẫn khóa theo chủ phiên (hoặc chủ bot).
 export function assertMusicAccess(command, userId, player, env = process.env) {
- if (!player || readOnlyCommands.has(command) || command === 'tts' || isBotOwner(userId, env)) return;
+ if (!player || readOnlyCommands.has(command) || sharedVoiceFunCommands.has(command) || isBotOwner(userId, env)) return;
  if (
   command === 'play'
   && !player.queue?.currentTrack

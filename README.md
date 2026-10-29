@@ -28,7 +28,7 @@ cp .env.example .env
 - DISCORD_TOKEN: Bot Token từ Discord Developer Portal (cũng chấp nhận alias `BOT_TOKEN`).
 - CLIENT_ID: *(tùy chọn)* Application ID — nếu để trống, bot/script tự lấy từ token.
 - GUILD_ID: *(tùy chọn)* Server ID được phép sử dụng bot (17–20 chữ số). Nếu để trống, bot tự đồng bộ lệnh slash cho các server bot tham gia (tối đa 5 server) và vẫn giới hạn tối đa 1 phiên phát đồng thời.
-- AUTO_REGISTER: *(mặc định `true`)* tự đồng bộ 23 lệnh slash khi bot kết nối (`ClientReady` / `GuildCreate`). Đặt `false` nếu chỉ muốn đăng ký thủ công qua `npm run register`.
+- AUTO_REGISTER: *(mặc định `true`)* tự đồng bộ 27 lệnh slash khi bot kết nối (`ClientReady` / `GuildCreate`). Đặt `false` nếu chỉ muốn đăng ký thủ công qua `npm run register`.
 - PORT: cổng web host cấp. Nếu không đặt, chương trình đọc SERVER_PORT hoặc dùng 3000 (tự chuyển cổng trống nếu 3000 bận).
 - NODE_OPTIONS: giới hạn old-space 128 MB; KHÔNG giới hạn tổng RAM.
 
@@ -49,7 +49,7 @@ Script start chính xác là `node index.js`. Không cần build TypeScript.
 5. Không bật Message Content, Presence hoặc Server Members privileged intent. Bot chỉ dùng Guilds và GuildVoiceStates.
 6. Vào kênh voice thường rồi `/play query: tên bài`.
 
-Lệnh: `/help`, `/join`, `/leave`, `/247 [mode:on|off]`, `/autoplay [mode:on|off]`, `/play query [next]`, `/pause`, `/resume`, `/skip [to]`, `/previous`, `/seek time`, `/stop`, `/loop mode:off|track|queue`, `/shuffle`, `/move from to`, `/remove position:1–20`, `/clear`, `/volume percent:0–200`, `/queue`, `/history`, `/nowplaying`, `/lyrics [query]`, `/ping` *(Discord không cho dấu `/` trong tên lệnh nên 24/7 được đặt là `/247`)*.
+Lệnh: `/help`, `/join`, `/leave`, `/247 [mode:on|off]`, `/tts text [lang] [slow]`, `/sfx effect`, `/fav action [query] [position]`, `/sleeptimer [minutes] [after_track] [leave_voice]`, `/autoplay [mode:on|off]`, `/play query [next]`, `/pause`, `/resume`, `/skip [to]`, `/previous`, `/seek time`, `/stop`, `/loop mode:off|track|queue`, `/shuffle`, `/move from to`, `/remove position:1–20`, `/clear`, `/volume percent:0–200`, `/queue`, `/history`, `/nowplaying`, `/lyrics [query]`, `/ping` *(Discord không cho dấu `/` trong tên lệnh nên 24/7 được đặt là `/247`)*.
 Lệnh phản hồi riêng cho người dùng; chỉ người cùng voice và là người yêu cầu bài đang phát mới điều khiển được (không có ngoại lệ cho admin). Quyền áp dụng cả /play khi đã có phiên phát, pause/resume/skip/stop/loop/shuffle/volume/remove. Khi chuyển bài, quyền đi theo requestedBy của bài mới. Trong khoảng chuyển bài, quyền giữ theo bài trước; trước bài đầu tiên dùng người tạo phiên. `/help`, `/queue`, `/nowplaying` và `/ping` là lệnh xem thông tin, không bị giới hạn này. `/queue` hiển thị 10 bài; không gửi mention từ tiêu đề. Bot không lưu hàng đợi ra đĩa; restart sẽ mất phiên phát.
 
 ## 4. Chính sách tiết kiệm tài nguyên

@@ -1,6 +1,7 @@
 import { createHmac } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { SOUND_PRESETS } from './audioEnhancer.js';
+import { openFavoritesPayload } from './favoritesStore.js';
 import { cleanText, LOOP_LABELS, renderSyncedProgress, safeHttpUrl } from './playerGui.js';
 import { openSessionPayload } from './sessionStore.js';
 import { sanitizeWebAudioDescriptor } from './webAudio.js';
@@ -42,6 +43,32 @@ function serializeMiniTrack(track, position = null) {
   sourceLabel: formatSourceLabel(track.source),
   durationMs,
  };
+}
+
+function sanitizeWebLyricsDescriptor(rawLyrics) {
+ if (!rawLyrics || typeof rawLyrics !== 'object') return null;
+ const source = cleanText(rawLyrics.source ?? 'LRCLIB', 24) || 'LRCLIB';
+ if (Array.isArray(rawLyrics.synced) && rawLyrics.synced.length > 0) {
+  const synced = [];
+  for (const item of rawLyrics.synced) {
+   if (!item || typeof item !== 'object') continue;
+   const t = Math.max(0, Math.round(Number(item.t) || 0));
+   const text = String(item.text ?? '').trim().slice(0, 140);
+   if (!text) continue;
+   synced.push({ t, text });
+   if (synced.length >= 180) break;
+  }
+  if (synced.length > 0) {
+   return { source, synced, plain: null };
+  }
+ }
+ const plain = typeof rawLyrics.plain === 'string'
+  ? rawLyrics.plain.trim().slice(0, 3200)
+  : '';
+ if (plain) {
+  return { source, synced: null, plain };
+ }
+ return null;
 }
 
 // Chuẩn hóa địa chỉ đẩy dữ liệu lên Cloudflare Worker (tự tạo khóa băm một chiều từ token bot nếu chưa đặt biến tay).
@@ -135,6 +162,9 @@ export function serializeNowPlayingState({ player, client, overrides = {} } = {}
   const webAudio = sanitizeWebAudioDescriptor(
    overrides.webAudio ?? rawTrack.metadata?.webAudio ?? rawTrack.webAudio ?? null,
   );
+  const webLyrics = sanitizeWebLyricsDescriptor(
+   overrides.webLyrics ?? rawTrack.metadata?.webLyrics ?? rawTrack.webLyrics ?? null,
+  );
   trackPayload = {
    title: cleanText(rawTrack.title ?? 'Không rõ tiêu đề', 120),
    author: cleanText(rawTrack.metadata?.author ?? 'Nghệ sĩ', 65),
@@ -145,8 +175,14 @@ export function serializeNowPlayingState({ player, client, overrides = {} } = {}
    positionMs: Math.max(0, Math.round(currentMs ?? 0)),
    durationMs: Math.max(0, Math.round(totalMs ?? 0)),
    ...(webAudio ? { webAudio } : {}),
+   ...(webLyrics ? { lyrics: webLyrics } : {}),
   };
  }
+
+ const sleepTimerLabel = cleanText(
+  overrides.sleepTimerLabel ?? player?.userdata?.sleepTimerLabel ?? '',
+  45,
+ ) || null;
 
  const upcomingRaw = Array.isArray(player?.upcomingTracks) ? player.upcomingTracks : [];
  const historyRaw = Array.isArray(player?.queue?.history) ? player.queue.history : [];
@@ -172,6 +208,7 @@ export function serializeNowPlayingState({ player, client, overrides = {} } = {}
    muteReason,
    soundPreset,
    soundLabel,
+   sleepTimerLabel,
   },
   track: trackPayload,
   upcoming: upcomingRaw.slice(0, 10).map((t, i) => serializeMiniTrack(t, i + 1)).filter(Boolean),
@@ -183,6 +220,8 @@ export function serializeNowPlayingState({ player, client, overrides = {} } = {}
 export function createNowPlayingHub({
  getPlayer,
  getResumeSeal = null,
+ getFavoritesSeal = null,
+ onRemoteFavorites = null,
  client,
  htmlPath = new URL('../web/index.html', import.meta.url),
  env = process.env,
@@ -228,6 +267,7 @@ export function createNowPlayingHub({
   if (!rawPushUrl || outboundPushPaused) return false;
   const snapshot = getSnapshot();
   const seal = typeof getResumeSeal === 'function' ? getResumeSeal() : undefined;
+  const favSeal = typeof getFavoritesSeal === 'function' ? getFavoritesSeal() : undefined;
   if (seal) {
    remoteBackupCheckFailed = false;
    explicitSealClear = false;
@@ -235,9 +275,11 @@ export function createNowPlayingHub({
    // Nếu lúc khởi động mạng lạnh chưa đọc được backup từ Cloudflare và cũng chưa có phiên mới hay lệnh /leave, không ghi đè mất backup cũ.
    return false;
   }
-  const outboundBody = typeof getResumeSeal === 'function'
-   ? { ...snapshot, resumeSeal: seal ?? null }
-   : snapshot;
+  const outboundBody = {
+   ...snapshot,
+   ...(typeof getResumeSeal === 'function' ? { resumeSeal: seal ?? null } : {}),
+   ...(typeof getFavoritesSeal === 'function' ? { favoritesSeal: favSeal ?? null } : {}),
+  };
   const headers = { 'Content-Type': 'application/json' };
   if (pushSecret) headers.Authorization = `Bearer ${pushSecret}`;
   if (ownerProof) headers['X-Bot-Proof'] = ownerProof;
@@ -414,6 +456,12 @@ export function createNowPlayingHub({
     if (!res?.ok) continue;
     const data = await res.json();
     remoteBackupCheckFailed = false;
+    if (data?.favoritesSeal && typeof onRemoteFavorites === 'function') {
+     try {
+      const openedFavs = openFavoritesPayload(data.favoritesSeal, botToken);
+      if (openedFavs) onRemoteFavorites(openedFavs);
+     } catch {}
+    }
     if (!data?.resumeSeal) return null;
     return openSessionPayload(data.resumeSeal, botToken);
    } catch {}

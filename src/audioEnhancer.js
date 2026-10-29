@@ -58,6 +58,22 @@ export const SOUND_PRESETS = {
    { type: 'highshelf', freq: 7500, q: 0.707, gainDb: -1.5 },
   ],
  },
+ '8d': {
+  label: '8D Xoay Vòng 360°',
+  description: 'Âm thanh vòm xoay quanh đầu 360° cực chill khi đeo tai nghe',
+  filter: 'aresample=48000:resampler=soxr:precision=24',
+  preGainDb: -3.0,
+  makeupGainDb: 2.1,
+  stereoWidth: 1.16,
+  orbitHz: 0.11,
+  stages: [
+   { type: 'highpass', freq: 30, q: 0.707, gainDb: 0 },
+   { type: 'lowshelf', freq: 92, q: 0.75, gainDb: 4.6 },
+   { type: 'peaking', freq: 290, q: 1.15, gainDb: -2.6 },
+   { type: 'peaking', freq: 3500, q: 1.0, gainDb: 2.8 },
+   { type: 'highshelf', freq: 9000, q: 0.707, gainDb: 4.2 },
+  ],
+ },
  flat: {
   label: 'Nguyên bản',
   description: 'Giữ nguyên EQ gốc tự nhiên 100%, chỉ lấy mẫu SoX 24-bit & chống rè tiếng',
@@ -69,7 +85,7 @@ export const SOUND_PRESETS = {
  },
 };
 
-export const SOUND_PRESET_ORDER = ['hd', 'vocal', 'bass', 'flat'];
+export const SOUND_PRESET_ORDER = ['hd', 'vocal', 'bass', '8d', 'flat'];
 
 // Tính toán hệ số lọc số Biquad chuẩn RBJ Audio EQ Cookbook ở tần số lấy mẫu 48 kHz.
 function designBiquad({ type, freq, q = 0.707, gainDb = 0 }, sampleRate = DSP_SAMPLE_RATE) {
@@ -129,6 +145,7 @@ const COMPILED_PRESETS = Object.fromEntries(
    preGain: Math.pow(10, (cfg.preGainDb ?? 0) / 20),
    makeupGain: Math.pow(10, (cfg.makeupGainDb ?? 0) / 20),
    stereoWidth: Number.isFinite(cfg.stereoWidth) ? cfg.stereoWidth : 1.0,
+   orbitStep: cfg.orbitHz > 0 ? (2 * Math.PI * cfg.orbitHz) / DSP_SAMPLE_RATE : 0,
    coeffs: (cfg.stages ?? []).map(stage => designBiquad(stage, DSP_SAMPLE_RATE)),
   },
  ]),
@@ -446,6 +463,10 @@ export function installAudioEnhancer(ffmpegPath) {
    this._dspPresetKey = null;
    this._dspStates = null;
    this._dspRampSamples = 0;
+   this._dspOrbitPhase = 0;
+   this._dspHaasL = new Float32Array(32);
+   this._dspHaasR = new Float32Array(32);
+   this._dspHaasIdx = 0;
    this._dspCurrentGain = computePerceptualGain(this.volume);
    if (this._readableState) this._readableState.highWaterMark = LOW_LATENCY_PCM_HWM;
    if (this._writableState) this._writableState.highWaterMark = LOW_LATENCY_PCM_HWM;
@@ -480,9 +501,14 @@ export function installAudioEnhancer(ffmpegPath) {
   const preGain = preset.preGain;
   const makeupGain = preset.makeupGain;
   const width = preset.stereoWidth;
+  const orbitStep = preset.orbitStep;
   const targetGain = computePerceptualGain(this.volume);
   let currentGain = this._dspCurrentGain;
   let ramp = this._dspRampSamples;
+  let orbitPhase = this._dspOrbitPhase;
+  const haasL = this._dspHaasL;
+  const haasR = this._dspHaasR;
+  let haasIdx = this._dspHaasIdx;
 
   const out = Buffer.allocUnsafe(complete);
   for (let i = 0; i < complete; i += STEREO_BYTES) {
@@ -495,7 +521,7 @@ export function installAudioEnhancer(ffmpegPath) {
    let l = dryL;
    let r = dryR;
 
-   if (numStages > 0 || width !== 1) {
+   if (numStages > 0 || width !== 1 || orbitStep > 0) {
     l *= preGain;
     r *= preGain;
 
@@ -522,6 +548,31 @@ export function installAudioEnhancer(ffmpegPath) {
      r = mid - side;
     }
 
+    // Hiệu ứng âm thanh vòm 8D xoay quanh đầu 360° (cân bằng công suất + độ trễ Haas 2 tai siêu thực)
+    if (orbitStep > 0) {
+     orbitPhase += orbitStep;
+     if (orbitPhase >= 6.283185307179586) orbitPhase -= 6.283185307179586;
+
+     haasL[haasIdx] = l;
+     haasR[haasIdx] = r;
+
+     const pan = Math.sin(orbitPhase);
+     const depth = 0.9 + 0.1 * Math.cos(orbitPhase);
+     const theta = (pan + 1) * 0.7853981633974483; // [0 .. PI/2]
+     const gainL = (0.18 + 0.88 * Math.cos(theta)) * depth;
+     const gainR = (0.18 + 0.88 * Math.sin(theta)) * depth;
+
+     const delayL = pan > 0 ? Math.round(pan * 22) : 0;
+     const delayR = pan < 0 ? Math.round(-pan * 22) : 0;
+     const delayedL = haasL[(haasIdx - delayL + 32) & 31];
+     const delayedR = haasR[(haasIdx - delayR + 32) & 31];
+     const monoCenter = (delayedL + delayedR) * 0.5;
+
+     l = (delayedL * 0.62 + monoCenter * 0.38) * gainL;
+     r = (delayedR * 0.62 + monoCenter * 0.38) * gainR;
+     haasIdx = (haasIdx + 1) & 31;
+    }
+
     l *= makeupGain;
     r *= makeupGain;
 
@@ -542,6 +593,8 @@ export function installAudioEnhancer(ffmpegPath) {
 
   this._dspCurrentGain = Math.abs(targetGain - currentGain) < 1e-6 ? targetGain : currentGain;
   this._dspRampSamples = ramp;
+  this._dspOrbitPhase = orbitPhase;
+  this._dspHaasIdx = haasIdx;
 
   for (let off = 0; off < complete; off += OPUS_FRAME_BYTES) {
    this.push(out.subarray(off, Math.min(complete, off + OPUS_FRAME_BYTES)));

@@ -21,6 +21,7 @@ import { createNowPlayingHub } from './src/nowPlayingHub.js';
 import { deleteDiscordMessage, extractMessageRef, sweepChannelStaleNotices } from './src/messageCleaner.js';
 import { captureGatewayFallbackSessions, createRuntimeSessionStore, sealSessionPayload } from './src/sessionStore.js';
 import { createVoiceRoomStatusSync } from './src/voiceStatus.js';
+import { createGuildTtsController, synthesizeGoogleTtsBuffer } from './src/tts.js';
 import { resolveTrackWebAudio, WEB_AUDIO_REFRESH_MS } from './src/webAudio.js';
 import { buildVoiceGuardEmbed, evaluateBotVoiceTransition } from './src/voiceGuard.js';
 import { buildHelpEmbed, commands } from './src/commands.js';
@@ -265,7 +266,8 @@ const channelLastSweepAt = new Map();
 const KICK_SNAPSHOT_TTL_MS = 30 * 60 * 1000; // Giữ trạng thái bài đang phát & hàng đợi trong 30 phút sau khi bị kick để khôi phục khi /join.
 const PROGRESS_TICK_MS = 5000; // Chu kỳ cập nhật thanh tiến trình (5 giây/lần: chuẩn mượt, không bao giờ chạm giới hạn rate-limit Discord).
 const CHANNEL_SWEEP_COOLDOWN_MS = 180000; // Quét dọn tin nhắn mồ côi tối đa 3 phút/lần mỗi kênh.
-const KNOWN_ERROR_RE = /^(Hãy|Bạn|Bot|Chờ|Chỉ|Hàng|Không|Chưa|Tên|URL|Lệnh|Bản|Link|Thời|Số|Định|Vị|Mức|Âm)/;
+const KNOWN_ERROR_RE = /^(Hãy|Bạn|Bot|Chờ|Chỉ|Hàng|Không|Chưa|Tên|URL|Lệnh|Bản|Link|Thời|Số|Định|Vị|Mức|Âm|Nội)/;
+const ttsController = createGuildTtsController();
 
 function clearPanelTimer(player) {
  if (player?.userdata?.panelTimer) {
@@ -818,6 +820,7 @@ function updateBotPresence(track = null) {
 
 // Đóng toàn bộ phiên phát, xóa mọi bộ hẹn giờ/tham chiếu và cho bot rời khỏi kênh thoại.
 async function destroyPlayerSession(guildId, reason) {
+ ttsController.cancelGuild(guildId);
  clearPersistedSession(guildId);
  const p = manager.get(guildId);
  if (!p) {
@@ -1065,6 +1068,7 @@ async function enqueueAndPlay({ guild, voiceChannel, textChannel, rawQuery, user
   if (!hadCurrent && p.userdata) {
    p.userdata.ownerId = userId;
    p.userdata.idleOpen = false;
+   p.userdata.ttsOnlyIdle = false;
   }
   if (hadCurrent && playNext) {
    p.queue.insert(track, 0);
@@ -1647,7 +1651,10 @@ async function handlePlayerComponent(i) {
    switch (i.customId) {
     case 'player_pause': {
      const nextPaused = !p.isPaused;
-     if (p.userdata) p.userdata.autoPausedByMute = false;
+     if (p.userdata) {
+      p.userdata.autoPausedByMute = false;
+      p.userdata.autoPausedByTts = false;
+     }
      if (nextPaused) {
       p.pause();
       stopProgressTicker(p);
@@ -1879,6 +1886,7 @@ client.on(Events.InteractionCreate, async i => {
   if (i.commandName === 'join') {
    const alreadyConnected = Boolean(p?.connection);
    const { player: joinedPlayer } = await ensureVoiceSession({ guild: i.guild, voiceChannel: channel, textChannel: i.channel, userId: i.user.id });
+   if (joinedPlayer.userdata) joinedPlayer.userdata.ttsOnlyIdle = false;
    if (!alreadyConnected && !joinedPlayer.queue?.currentTrack) {
     const restored = await restoreKickSnapshotIfAny(joinedPlayer, channel, i.user.id);
     if (restored) {
@@ -1927,6 +1935,50 @@ client.on(Events.InteractionCreate, async i => {
    if (!p) throw new Error('Bot hiện không ở trong kênh thoại nào.');
    await destroyPlayerSession(i.guildId, 'Đã dừng phát nhạc và rời kênh thoại theo lệnh `/leave`.');
    return await reply('👋 Đã tắt chế độ 24/7, xóa hàng đợi và rời khỏi kênh thoại.');
+  }
+
+  if (i.commandName === 'tts') {
+   const rawText = i.options.getString('text', true);
+   const lang = i.options.getString('lang') || 'vi';
+   const slow = Boolean(i.options.getBoolean('slow'));
+
+   const { buffer, cleanText: spokenText, langLabel } = await synthesizeGoogleTtsBuffer(rawText, {
+    lang,
+    slow,
+    sanitizeOptions: {
+     resolveUserName: id => i.guild.members.cache.get(id)?.displayName ?? null,
+     resolveChannelName: id => i.guild.channels.cache.get(id)?.name ?? null,
+     resolveRoleName: id => i.guild.roles.cache.get(id)?.name ?? null,
+    },
+   });
+
+   const { player: ttsVoicePlayer, created } = await ensureVoiceSession({
+    guild: i.guild,
+    voiceChannel: channel,
+    textChannel: i.channel,
+    userId: i.user.id,
+   });
+   if (created && ttsVoicePlayer.userdata && !ttsVoicePlayer.queue?.currentTrack) {
+    ttsVoicePlayer.userdata.ttsOnlyIdle = true;
+   }
+
+   const hadMusic = Boolean(
+    ttsVoicePlayer.queue?.currentTrack && !ttsVoicePlayer.isPaused && !ttsVoicePlayer.userdata?.voiceMuted,
+   );
+   const { queued } = await ttsController.enqueueSpeech({
+    guildId: i.guildId,
+    player: ttsVoicePlayer,
+    getPlayer: () => manager.get(i.guildId),
+    mp3Buffer: buffer,
+   });
+
+   const preview = cleanText(spokenText, 110);
+   const musicNote = hadMusic ? ' *(tự tạm dừng nhạc & phát tiếp ngay khi đọc xong)*' : '';
+   return await reply(
+    queued
+     ? `🗣️ Đã xếp vào hàng chờ đọc (${langLabel}): "${preview}"`
+     : `🗣️ Đang đọc trong <#${channel.id}> (${langLabel}): "${preview}"${musicNote}`,
+   );
   }
 
   if (i.commandName === 'play') {
@@ -2028,12 +2080,18 @@ client.on(Events.InteractionCreate, async i => {
     return await reply('⏮️ Đã quay lại bài hát trước đó.');
    }
    case 'pause':
-    if (p.userdata) p.userdata.autoPausedByMute = false;
+    if (p.userdata) {
+     p.userdata.autoPausedByMute = false;
+     p.userdata.autoPausedByTts = false;
+    }
     p.pause();
     schedulePanelUpdate(p, { paused: true });
     return await reply('Đã tạm dừng phát nhạc.');
    case 'resume':
-    if (p.userdata) p.userdata.autoPausedByMute = false;
+    if (p.userdata) {
+     p.userdata.autoPausedByMute = false;
+     p.userdata.autoPausedByTts = false;
+    }
     p.resume();
     schedulePanelUpdate(p, { paused: false });
     return await reply('Đã tiếp tục phát nhạc.');

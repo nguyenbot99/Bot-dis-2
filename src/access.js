@@ -29,12 +29,11 @@ export function resolveHumanRequester(id) {
 // Ngoài ra khi chế độ 24/7 đang bật và bot đang nghỉ hoàn toàn (hết nhạc, idleOpen = true),
 // người trong kênh thoại được phép gọi /play để mở lượt phát nhạc mới; còn /leave và /247 vẫn khóa theo chủ phiên (hoặc chủ bot).
 export function assertMusicAccess(command, userId, player, env = process.env) {
- if (!player || readOnlyCommands.has(command) || isBotOwner(userId, env)) return;
+ if (!player || readOnlyCommands.has(command) || command === 'tts' || isBotOwner(userId, env)) return;
  if (
   command === 'play'
-  && player.userdata?.stay247
-  && player.userdata?.idleOpen
   && !player.queue?.currentTrack
+  && ((player.userdata?.stay247 && player.userdata?.idleOpen) || player.userdata?.ttsOnlyIdle)
  ) {
   return;
  }

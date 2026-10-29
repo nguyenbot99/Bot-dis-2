@@ -8,6 +8,7 @@ const definitions = [
  ['join', 'Gọi bot tham gia vào kênh thoại hiện tại của bạn'],
  ['leave', 'Cho bot dừng nhạc, tắt chế độ 24/7 và rời khỏi kênh thoại'],
  ['247', 'Bật hoặc tắt chế độ treo kênh thoại 24/7 (không tự rời khi hết nhạc)'],
+ ['tts', 'Đọc văn bản bằng giọng chị Google trong kênh thoại (tự dừng & phát tiếp nhạc)'],
  ['play', 'Phát nhạc từ tên bài hoặc link lẻ YouTube / SoundCloud / Spotify'],
  ['pause', 'Tạm dừng bài hát đang phát'],
  ['resume', 'Tiếp tục phát bài hát đang tạm dừng'],
@@ -49,11 +50,12 @@ export function buildHelpEmbed(botUser) {
   ].filter(Boolean).join('\n'))
   .addFields(
    {
-    name: '🎙️ Kết nối kênh thoại & 24/7',
+    name: '🎙️ Kết nối, Đọc TTS & 24/7',
     value: [
      '`/join` — Gọi bot vào kênh thoại hiện tại của bạn',
      '`/leave` — Dừng nhạc, tắt 24/7 và cho bot rời khỏi kênh thoại',
      '`/247` `[mode]` — Bật / tắt chế độ treo kênh thoại 24/7 không tự thoát',
+     '`/tts` `text` `[lang]` `[slow]` — Đọc giọng chị Google trong phòng thoại (ai cùng phòng cũng dùng được)',
      '`/autoplay` `[mode]` — Tự động phát tiếp nhạc cùng gu khi hết hàng đợi',
     ].join('\n'),
    },
@@ -202,6 +204,30 @@ export const commands = definitions.map(([name, description]) => {
    .setDescription('Tên bài hát muốn tìm lời (để trống để lấy lời bài đang phát)')
    .setRequired(false)
    .setMaxLength(150));
+ }
+ if (name === 'tts') {
+  c.addStringOption(o => o
+   .setName('text')
+   .setDescription('Nội dung văn bản muốn chị Google đọc trong kênh thoại (tối đa 500 ký tự)')
+   .setRequired(true)
+   .setMaxLength(500));
+  c.addStringOption(o => o
+   .setName('lang')
+   .setDescription('Ngôn ngữ giọng đọc (mặc định: Tiếng Việt)')
+   .setRequired(false)
+   .addChoices(
+    { name: '🇻🇳 Tiếng Việt (Chị Google)', value: 'vi' },
+    { name: '🇺🇸 Tiếng Anh (English)', value: 'en' },
+    { name: '🇯🇵 Tiếng Nhật (日本語)', value: 'ja' },
+    { name: '🇰🇷 Tiếng Hàn (한국어)', value: 'ko' },
+    { name: '🇨🇳 Tiếng Trung (中文)', value: 'zh-CN' },
+    { name: '🇫🇷 Tiếng Pháp (Français)', value: 'fr' },
+    { name: '🇹🇭 Tiếng Thái (ไทย)', value: 'th' },
+   ));
+  c.addBooleanOption(o => o
+   .setName('slow')
+   .setDescription('Đọc chậm rãi từng chữ kiểu tấu hài (mặc định: tắt)')
+   .setRequired(false));
  }
  return c.toJSON();
 });

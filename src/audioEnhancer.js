@@ -460,7 +460,10 @@ export function installAudioEnhancer(ffmpegPath) {
   const complete = Math.floor(input.length / STEREO_BYTES) * STEREO_BYTES;
   this._dspCarry = input.length > complete ? Buffer.from(input.subarray(complete)) : Buffer.alloc(0);
 
-  const presetKey = COMPILED_PRESETS[activePreset] ? activePreset : 'hd';
+  const forcedKey = this._forcePresetKey;
+  const presetKey = forcedKey && COMPILED_PRESETS[forcedKey]
+   ? forcedKey
+   : (COMPILED_PRESETS[activePreset] ? activePreset : 'hd');
   const preset = COMPILED_PRESETS[presetKey];
   const coeffsList = preset.coeffs;
   const numStages = coeffsList.length;

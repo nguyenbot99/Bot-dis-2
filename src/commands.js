@@ -8,15 +8,21 @@ const definitions = [
  ['join', 'Gọi bot tham gia vào kênh thoại hiện tại của bạn'],
  ['leave', 'Cho bot dừng nhạc, tắt chế độ 24/7 và rời khỏi kênh thoại'],
  ['247', 'Bật hoặc tắt chế độ treo kênh thoại 24/7 (không tự rời khi hết nhạc)'],
- ['tts', 'Đọc văn bản bằng giọng chị Google trong kênh thoại (tự dừng & phát tiếp nhạc)'],
+ ['tts', 'Đọc văn bản bằng giọng chị Google hoặc giọng biến hình tấu hài trong kênh thoại'],
  ['sfx', 'Phát tiếng động Meme tấu hài trong kênh thoại (tự dừng & phát tiếp nhạc)'],
  ['fav', 'Quản lý & phát Tủ nhạc Yêu thích cá nhân của riêng bạn'],
+ ['mixtape', 'Quản lý & phát Tủ nhạc Chung theo chủ đề của cả máy chủ'],
  ['sleeptimer', 'Hẹn giờ tự động giảm nhỏ âm lượng rồi tắt nhạc êm ái khi đi ngủ'],
  ['radio', 'Mở Đài Radio Không Ngủ theo tâm trạng (tự lên danh sách & phát xuyên đêm)'],
  ['vibe', 'Biến đổi Vibe bài hát trực tiếp: Chuẩn Gốc / Nightcore / Slowed + Echo / Lo-Fi'],
+ ['ambient', 'Trộn âm thanh thiên nhiên nền (Mưa đêm, Lửa trại, Sóng biển, Gió đêm) vào nhạc'],
  ['play', 'Phát nhạc từ tên bài, link lẻ hoặc nguyên Playlist / Album Spotify & SoundCloud'],
+ ['search', 'Tìm bài hát và tự tay chọn đúng phiên bản ưng ý nhất trong Top 5 kết quả'],
+ ['dedicate', 'Gửi tặng bài hát kèm lời nhắn vinh danh lên khung nhạc Discord & Website'],
+ ['similar', 'Bơm ngay 5 bài hát cùng Vibe & cùng gu với bài đang phát vào hàng đợi'],
  ['replay', 'Tua nhanh bài hát đang phát về lại từ đầu (0:00)'],
  ['grab', 'Bỏ túi thông tin, ảnh bìa & link bài đang nghe về Tin nhắn riêng (DM) của bạn'],
+ ['avatar', 'Soi ảnh đại diện gốc / Server / Banner 4K chống tự xóa & tự đăng lại nếu bị xóa'],
  ['pause', 'Tạm dừng bài hát đang phát'],
  ['resume', 'Tiếp tục phát bài hát đang tạm dừng'],
  ['skip', 'Bỏ qua bài hiện tại (hoặc nhảy thẳng tới bài ở vị trí chọn trong hàng đợi)'],
@@ -60,40 +66,40 @@ export function buildHelpEmbed(botUser) {
    {
     name: '🎙️ Kết nối, Đài Radio & Giải trí',
     value: [
-     '`/join` • `/leave` — Gọi bot vào hoặc rời khỏi kênh thoại hiện tại',
-     '`/247` `[mode]` — Bật / tắt chế độ treo kênh thoại 24/7 không tự thoát',
-     '`/radio` `station` — Mở Đài Radio Không Ngủ theo tâm trạng (Lofi, V-Pop, EDM...)',
-     '`/tts` `text` • `/sfx` `effect` — Đọc giọng chị Google / thả Meme trong phòng thoại',
-     '`/autoplay` `[mode]` — Tự động phát tiếp nhạc cùng gu khi hết hàng đợi',
+     '`/join` • `/leave` • `/247` — Vào/rời kênh thoại hoặc giữ kết nối 24/7',
+     '`/radio` `station` — Mở Đài Radio Không Ngủ (Lofi, V-Pop, EDM, Piano...)',
+     '`/tts` `text` `[voice]` — Chị Google / Loa Phường / Minion / Boss / Hang Động',
+     '`/sfx` `effect` — Thả tiếng động Meme tấu hài trong phòng thoại',
+     '`/autoplay` `[mode]` • `/similar` — Tự phát nhạc liên quan hoặc bơm ngay 5 bài cùng gu',
     ].join('\n'),
    },
    {
-    name: '▶️ Phát, Playlist, Tủ nhạc & Hẹn giờ',
+    name: '▶️ Phát, Chọn bản, Tặng nhạc & Tủ chung',
     value: [
-     '`/play` `query` `[next]` — Phát tên bài, link lẻ hoặc **Playlist/Album Spotify & SoundCloud**',
-     '`/fav` `action` — Lưu, xem & phát Tủ nhạc Yêu thích cá nhân của bạn',
-     '`/sleeptimer` `[minutes]` `[after_track]` — Hẹn giờ giảm dần âm lượng tắt nhạc đi ngủ',
+     '`/play` `query` • `/search` `query` — Phát ngay (hỗ trợ Playlist) hoặc chọn từ Top 5',
+     '`/dedicate` `query` `to` `message` — Tặng bài hát kèm lời nhắn lên Discord & Web',
+     '`/fav` `action` • `/mixtape` `action` — Tủ nhạc cá nhân & Tủ nhạc chung cả hội',
+     '`/sleeptimer` — Hẹn giờ giảm dần âm lượng tắt nhạc êm ái khi đi ngủ',
      '`/pause` • `/resume` • `/stop` — Tạm dừng, tiếp tục hoặc dừng hẳn nhạc',
-     '`/skip` `[to]` • `/previous` • `/replay` — Qua bài, bài trước hoặc phát lại từ `0:00`',
-     '`/seek` `time` — Tua nhanh tới mốc thời gian (ví dụ `1:30` hoặc `90`)',
+     '`/skip` • `/previous` • `/replay` • `/seek` — Qua bài, bài trước, từ `0:00` hoặc tua giây',
     ].join('\n'),
    },
    {
-    name: '🎛️ Hàng đợi, Vibe & Âm thanh',
+    name: '🎛️ Hàng đợi, Vibe, Tiếng Mưa & Âm thanh',
     value: [
-     '`/vibe` `mode` — Đổi Vibe trực tiếp: `normal` • `nightcore` • `slowed` • `lofi`',
+     '`/vibe` `mode` — Biến đổi trực tiếp: `normal` • `nightcore` • `slowed` • `lofi`',
+     '`/ambient` `mode` `[level]` — Trộn nền **Mưa đêm / Lửa trại / Sóng biển / Gió**',
      '`/volume` `percent` — Tùy chỉnh mức âm lượng phát bất kỳ (`0%` – `200%`)',
-     '`/loop` `mode` — Lặp nhạc: `off` (Tắt) • `track` (Một bài) • `queue` (Hàng đợi)',
-     '`/shuffle` • `/clear` — Trộn ngẫu nhiên hoặc xóa sạch danh sách bài chờ',
+     '`/loop` `mode` • `/shuffle` • `/clear` — Lặp nhạc, trộn hoặc xóa sạch danh sách chờ',
      '`/move` `from` `to` • `/remove` `position` — Đổi chỗ / xóa bài trong `/queue`',
     ].join('\n'),
    },
    {
-    name: '📋 Tra cứu, Bỏ túi & Bảng Vàng (Ai cũng dùng được)',
+    name: '📋 Tiện ích, Soi Avatar 4K & Bảng Vàng (Ai cũng dùng được)',
     value: [
+     '`/avatar` `[user]` `[type]` — Soi Avatar/Banner 4K (đóng băng ảnh & chống xóa tự động)',
      '`/nowplaying` • `/grab` — Xem chi tiết bài hát hoặc bỏ túi về Tin nhắn riêng (DM)',
-     '`/lyrics` `[query]` — Xem lời bài hát đang phát (hoặc tìm theo tên bài)',
-     '`/stats` `[scope]` — Xem **Bảng Vàng Top Nhạc & Top DJ** của máy chủ / cá nhân',
+     '`/lyrics` `[query]` • `/stats` `[scope]` — Xem lời bài hát & **Bảng Vàng Top Nhạc/DJ**',
      '`/queue` • `/history` — Xem 10 bài sắp phát hoặc 10 bài vừa phát gần đây',
      '`/ping` • `/help` — Kiểm tra độ trễ/RAM hoặc mở bảng hướng dẫn này',
     ].join('\n'),
@@ -235,6 +241,17 @@ export const commands = definitions.map(([name, description]) => {
    .setName('slow')
    .setDescription('Đọc chậm rãi từng chữ kiểu tấu hài (mặc định: tắt)')
    .setRequired(false));
+  c.addStringOption(o => o
+   .setName('voice')
+   .setDescription('Biến hình giọng đọc tấu hài theo thời gian thực (mặc định: Chị Google Chuẩn)')
+   .setRequired(false)
+   .addChoices(
+    { name: '👩 Chị Google Chuẩn', value: 'normal' },
+    { name: '📻 Loa Phường Đầu Ngõ', value: 'loaphuong' },
+    { name: '🐿️ Minion Nhí Nhố (Tua cao)', value: 'minion' },
+    { name: '👹 Boss Cuối Trầm Ngầu', value: 'boss' },
+    { name: '🕳️ Vang Vọng Hang Động', value: 'cave' },
+   ));
  }
  if (name === 'sfx') {
   c.addStringOption(o => o
@@ -327,6 +344,99 @@ export const commands = definitions.map(([name, description]) => {
    .addChoices(
     { name: '🏆 Toàn máy chủ (Top Bài Hát & Top DJ)', value: 'server' },
     { name: '🎧 Cá nhân (Hạng DJ & số giờ nhạc của bạn)', value: 'me' },
+   ));
+ }
+ if (name === 'ambient') {
+  c.addStringOption(o => o
+   .setName('mode')
+   .setDescription('Chọn tiếng thiên nhiên nền trộn êm bên dưới nhạc đang phát')
+   .setRequired(true)
+   .addChoices(
+    { name: '🔇 Tắt âm thanh nền', value: 'off' },
+    { name: '🌧️ Mưa Đêm Ngoài Hiên', value: 'rain' },
+    { name: '🔥 Lửa Trại Tí Tách', value: 'fire' },
+    { name: '🌊 Sóng Biển Rì Rào', value: 'ocean' },
+    { name: '🍃 Gió Đêm Cao Nguyên', value: 'wind' },
+   ));
+  c.addIntegerOption(o => o
+   .setName('level')
+   .setDescription('Độ lớn tiếng nền thiên nhiên từ 10% đến 85% (mặc định: 35%)')
+   .setRequired(false)
+   .setMinValue(10)
+   .setMaxValue(85));
+ }
+ if (name === 'search') {
+  c.addStringOption(o => o
+   .setName('query')
+   .setDescription('Tên bài hát muốn tìm để tự chọn đúng phiên bản trong Top 5 kết quả')
+   .setRequired(true)
+   .setMaxLength(400));
+  c.addBooleanOption(o => o
+   .setName('next')
+   .setDescription('Đặt True để chèn bài bạn chọn lên đầu hàng đợi (phát ngay kế tiếp)')
+   .setRequired(false));
+ }
+ if (name === 'dedicate') {
+  c.addStringOption(o => o
+   .setName('query')
+   .setDescription('Tên bài hát hoặc link lẻ muốn gửi tặng')
+   .setRequired(true)
+   .setMaxLength(400));
+  c.addUserOption(o => o
+   .setName('to')
+   .setDescription('Thành viên nhận món quà âm nhạc này')
+   .setRequired(true));
+  c.addStringOption(o => o
+   .setName('message')
+   .setDescription('Lời nhắn gửi tặng hiển thị trên khung nhạc Discord & Website (tối đa 160 ký tự)')
+   .setRequired(true)
+   .setMaxLength(160));
+ }
+ if (name === 'mixtape') {
+  c.addStringOption(o => o
+   .setName('action')
+   .setDescription('Thao tác với Tủ nhạc chung của cả hội')
+   .setRequired(true)
+   .addChoices(
+    { name: '📂 Xem danh sách các Tủ nhạc chung của server', value: 'list' },
+    { name: '📋 Xem chi tiết các bài trong 1 Tủ nhạc chung', value: 'view' },
+    { name: '➕ Góp bài đang phát (hoặc theo tên/link) vào Tủ chung', value: 'add' },
+    { name: '▶️ Phát toàn bộ 1 Tủ nhạc chung', value: 'play' },
+    { name: '🔀 Trộn ngẫu nhiên & phát 1 Tủ nhạc chung', value: 'shuffle' },
+    { name: '➖ Xóa 1 bài khỏi Tủ chung theo số thứ tự', value: 'remove' },
+    { name: '🗑️ Xóa hẳn 1 Tủ nhạc chung', value: 'delete' },
+   ));
+  c.addStringOption(o => o
+   .setName('name')
+   .setDescription('Tên Tủ nhạc chung (ví dụ: Nhạc Chiến Rank, Nhạc Suy Đêm Khuya)')
+   .setRequired(false)
+   .setMaxLength(45));
+  c.addStringOption(o => o
+   .setName('query')
+   .setDescription('Tên bài hoặc link muốn góp vào tủ (để trống khi muốn góp bài đang phát)')
+   .setRequired(false)
+   .setMaxLength(400));
+  c.addIntegerOption(o => o
+   .setName('position')
+   .setDescription('Số thứ tự bài cần xóa trong Tủ nhạc chung (1–20)')
+   .setRequired(false)
+   .setMinValue(1)
+   .setMaxValue(20));
+ }
+ if (name === 'avatar') {
+  c.addUserOption(o => o
+   .setName('user')
+   .setDescription('Chọn thành viên muốn soi ảnh đại diện (để trống để xem của chính bạn)')
+   .setRequired(false));
+  c.addStringOption(o => o
+   .setName('type')
+   .setDescription('Loại ảnh muốn lấy ở độ phân giải 4K gốc')
+   .setRequired(false)
+   .addChoices(
+    { name: '✨ Tự động (Ưu tiên Avatar riêng Server + kèm link đủ bộ)', value: 'auto' },
+    { name: '🖼️ Ảnh đại diện chính toàn Discord (Global Avatar 4K)', value: 'global' },
+    { name: '🏠 Ảnh đại diện riêng trong Server này (Server Avatar 4K)', value: 'server' },
+    { name: '🎨 Ảnh bìa hồ sơ cá nhân (Profile Banner 4K)', value: 'banner' },
    ));
  }
  return c.toJSON();

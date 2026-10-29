@@ -22,6 +22,50 @@ export const TTS_LANGUAGES = Object.freeze({
  th: { code: 'th', label: '🇹🇭 Tiếng Thái (ไทย)' },
 });
 
+// Các chế độ biến hình giọng đọc /tts thời gian thực bằng DSP (0 MB RAM phát sinh).
+export const TTS_VOICES = Object.freeze({
+ normal: {
+  id: 'normal',
+  label: '👩 Chị Google Chuẩn',
+  presetKey: 'vocal',
+  rate: 1.0,
+  echo: false,
+  volume: 1.35,
+ },
+ loaphuong: {
+  id: 'loaphuong',
+  label: '📻 Loa Phường Đầu Ngõ',
+  presetKey: 'loaphuong',
+  rate: 1.03,
+  echo: false,
+  volume: 1.48,
+ },
+ minion: {
+  id: 'minion',
+  label: '🐿️ Minion Nhí Nhố',
+  presetKey: 'vocal',
+  rate: 1.34,
+  echo: false,
+  volume: 1.38,
+ },
+ boss: {
+  id: 'boss',
+  label: '👹 Boss Cuối Trầm Ngầu',
+  presetKey: 'bass',
+  rate: 0.78,
+  echo: true,
+  volume: 1.48,
+ },
+ cave: {
+  id: 'cave',
+  label: '🕳️ Vang Vọng Hang Động',
+  presetKey: 'vocal',
+  rate: 0.96,
+  echo: true,
+  volume: 1.4,
+ },
+});
+
 const GOOGLE_TTS_UA =
  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 
@@ -207,6 +251,8 @@ export function createGuildTtsController({
   const mp3Buffer = Buffer.isBuffer(item) ? item : item?.buffer;
   const presetKey = (!Buffer.isBuffer(item) && item?.presetKey) || 'vocal';
   const volLevel = (!Buffer.isBuffer(item) && typeof item?.volume === 'number') ? item.volume : 1.35;
+  const rate = (!Buffer.isBuffer(item) && Number(item?.rate) > 0) ? Number(item.rate) : 1.0;
+  const echo = Boolean(!Buffer.isBuffer(item) && item?.echo);
   return new Promise(resolve => {
    if (state.cancelled) return resolve();
    let settled = false;
@@ -247,6 +293,8 @@ export function createGuildTtsController({
     });
     if (resource?.volume) {
      resource.volume._forcePresetKey = presetKey;
+     resource.volume._forceRate = rate;
+     resource.volume._forceEcho = echo;
      if (typeof resource.volume.setVolume === 'function') {
       resource.volume.setVolume(volLevel);
      }
@@ -339,7 +387,23 @@ export function createGuildTtsController({
   }
  }
 
- async function enqueueSpeech({ guildId, player, getPlayer, mp3Buffer, presetKey = 'vocal', volume = 1.35 }) {
+ async function enqueueSpeech({
+  guildId,
+  player,
+  getPlayer,
+  mp3Buffer,
+  voiceStyle = null,
+  presetKey = null,
+  volume = null,
+  rate = null,
+  echo = null,
+ }) {
+  const voiceDef = voiceStyle && TTS_VOICES[voiceStyle] ? TTS_VOICES[voiceStyle] : null;
+  const resolvedPreset = presetKey ?? voiceDef?.presetKey ?? 'vocal';
+  const resolvedVolume = volume ?? voiceDef?.volume ?? 1.35;
+  const resolvedRate = rate ?? voiceDef?.rate ?? 1.0;
+  const resolvedEcho = echo ?? voiceDef?.echo ?? false;
+
   const state = getOrCreateState(guildId);
   if (state.queue.length >= MAX_TTS_QUEUE_PER_GUILD) {
    throw new Error('Hàng chờ âm thanh thoại đang đầy (tối đa 5 lượt liên tiếp), vui lòng chờ vài giây.');
@@ -350,7 +414,13 @@ export function createGuildTtsController({
   }
 
   const wasAlreadySpeaking = state.speaking;
-  state.queue.push({ buffer: mp3Buffer, presetKey, volume });
+  state.queue.push({
+   buffer: mp3Buffer,
+   presetKey: resolvedPreset,
+   volume: resolvedVolume,
+   rate: resolvedRate,
+   echo: resolvedEcho,
+  });
   if (!wasAlreadySpeaking) {
    void drainQueue(state, resolvePlayer).catch(() => {});
   }

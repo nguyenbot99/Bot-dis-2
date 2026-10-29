@@ -15,6 +15,18 @@ export const RESTART_247_TTL_MS = 7 * 24 * 60 * 60 * 1000;     // Phiên 24/7: t
 // Sao lưu gọn nhẹ thông tin bài hát để ghi ra đĩa hoặc mã hóa dự phòng (< 500 byte/bài).
 export function cloneSerializableTrack(t) {
  if (!t || typeof t !== 'object' || !t.url) return null;
+ const meta = {};
+ if (t.metadata?.author) meta.author = String(t.metadata.author);
+ if (t.metadata?.dedication && typeof t.metadata.dedication === 'object') {
+  const d = t.metadata.dedication;
+  meta.dedication = {
+   fromId: d.fromId ? String(d.fromId).slice(0, 24) : null,
+   fromName: d.fromName ? String(d.fromName).slice(0, 40) : 'Một người bạn',
+   toId: d.toId ? String(d.toId).slice(0, 24) : null,
+   toName: d.toName ? String(d.toName).slice(0, 40) : 'Bạn',
+   message: d.message ? String(d.message).slice(0, 160) : '',
+  };
+ }
  return {
   id: t.id ? String(t.id) : undefined,
   title: String(t.title ?? 'Không rõ'),
@@ -23,7 +35,7 @@ export function cloneSerializableTrack(t) {
   thumbnail: typeof t.thumbnail === 'string' ? t.thumbnail : undefined,
   requestedBy: t.requestedBy ? String(t.requestedBy) : undefined,
   source: t.source ? String(t.source) : 'soundcloud',
-  metadata: t.metadata?.author ? { author: String(t.metadata.author) } : {},
+  metadata: meta,
  };
 }
 

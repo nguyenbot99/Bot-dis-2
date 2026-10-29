@@ -119,6 +119,37 @@ export const VIBE_MODES = {
 
 export const VIBE_MODE_ORDER = ['normal', 'nightcore', 'slowed', 'lofi'];
 
+// Âm thanh thiên nhiên nền (Ambient Soundscape) tự tổng hợp theo thời gian thực trộn êm dưới nền nhạc (< 1 KB RAM, không cần file MP3 ngoài).
+export const AMBIENT_MODES = {
+ off: {
+  label: 'Tắt nền',
+  emoji: '🔇',
+  description: 'Không trộn âm thanh thiên nhiên nền',
+ },
+ rain: {
+  label: 'Mưa Đêm Ngoài Hiên',
+  emoji: '🌧️',
+  description: 'Tiếng mưa rào dịu nhẹ kèm giọt mưa rơi thư giãn đầu óc',
+ },
+ fire: {
+  label: 'Lửa Trại Tí Tách',
+  emoji: '🔥',
+  description: 'Tiếng củi khô cháy tí tách ấm cúng giữa đêm lạnh',
+ },
+ ocean: {
+  label: 'Sóng Biển Rì Rào',
+  emoji: '🌊',
+  description: 'Nhịp sóng vỗ bờ xa gần êm ả hai bên tai',
+ },
+ wind: {
+  label: 'Gió Đêm Cao Nguyên',
+  emoji: '🍃',
+  description: 'Làn gió đêm thoang thoảng qua rừng thông yên bình',
+ },
+};
+
+export const AMBIENT_MODE_ORDER = ['off', 'rain', 'fire', 'ocean', 'wind'];
+
 // Tính toán hệ số lọc số Biquad chuẩn RBJ Audio EQ Cookbook ở tần số lấy mẫu 48 kHz.
 function designBiquad({ type, freq, q = 0.707, gainDb = 0 }, sampleRate = DSP_SAMPLE_RATE) {
  const w0 = (2 * Math.PI * freq) / sampleRate;
@@ -177,8 +208,22 @@ function designBiquad({ type, freq, q = 0.707, gainDb = 0 }, sampleRate = DSP_SA
  return new Float64Array([b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0]);
 }
 
+const INTERNAL_SPEECH_PRESETS = {
+ loaphuong: {
+  preGainDb: -1.5,
+  makeupGainDb: 3.4,
+  stereoWidth: 0.65,
+  stages: [
+   { type: 'highpass', freq: 470, q: 0.85, gainDb: 0 },
+   { type: 'peaking', freq: 1650, q: 1.35, gainDb: 7.5 },
+   { type: 'peaking', freq: 2450, q: 1.2, gainDb: 4.5 },
+   { type: 'lowpass', freq: 3150, q: 0.85, gainDb: 0 },
+  ],
+ },
+};
+
 const COMPILED_PRESETS = Object.fromEntries(
- Object.entries(SOUND_PRESETS).map(([key, cfg]) => [
+ Object.entries({ ...SOUND_PRESETS, ...INTERNAL_SPEECH_PRESETS }).map(([key, cfg]) => [
   key,
   {
    key,
@@ -256,6 +301,8 @@ const LOFI_WARMTH_COEFFS = [
 
 let activePreset = 'hd';
 let activeVibe = 'normal';
+let activeAmbient = 'off';
+let activeAmbientLevel = 0.35; // 10% – 85%
 let targetBitrate = 128000;
 let installed = false;
 let currentEncoder = null;
@@ -279,18 +326,44 @@ function applyOpusMusicTuning(opusStream, bitrate) {
 }
 
 // Cập nhật cấu hình chất âm (áp dụng ngay lập tức lên bài đang phát!) và mức bitrate mục tiêu của kênh thoại.
-export function setAudioEnhancement({ preset, vibe, channelBitrate } = {}) {
+export function setAudioEnhancement({ preset, vibe, ambient, ambientLevel, channelBitrate } = {}) {
  if (preset && SOUND_PRESETS[preset]) {
   activePreset = preset;
  }
  if (vibe && VIBE_MODES[vibe]) {
   activeVibe = vibe;
  }
+ if (ambient && AMBIENT_MODES[ambient]) {
+  activeAmbient = ambient;
+ }
+ if (ambientLevel !== undefined && Number.isFinite(Number(ambientLevel))) {
+  activeAmbientLevel = Math.min(0.85, Math.max(0.05, Number(ambientLevel)));
+ }
  if (channelBitrate) {
   targetBitrate = Math.min(256000, Math.max(128000, Number(channelBitrate) || 128000));
   if (currentEncoder?.encoder) applyOpusMusicTuning(currentEncoder, targetBitrate);
  }
- return { preset: activePreset, vibe: activeVibe, bitrate: targetBitrate };
+ return {
+  preset: activePreset,
+  vibe: activeVibe,
+  ambient: activeAmbient,
+  ambientLevel: activeAmbientLevel,
+  bitrate: targetBitrate,
+ };
+}
+
+export function getActiveAmbientState() {
+ return {
+  mode: activeAmbient,
+  level: activeAmbientLevel,
+  levelPercent: Math.round(activeAmbientLevel * 100),
+  info: AMBIENT_MODES[activeAmbient] ?? AMBIENT_MODES.off,
+ };
+}
+
+export function getNextAmbientMode(current = activeAmbient) {
+ const idx = AMBIENT_MODE_ORDER.indexOf(current);
+ return AMBIENT_MODE_ORDER[(idx + 1) % AMBIENT_MODE_ORDER.length];
 }
 
 export function getActiveSoundPreset() {
@@ -540,6 +613,14 @@ export function installAudioEnhancer(ffmpegPath) {
    this._lofiSeed = 0x5a17c3d9;
    this._lofiCrackleL = 0;
    this._lofiCrackleR = 0;
+   this._ambSeed = 0x9e3779b9;
+   this._ambLpL = 0;
+   this._ambLpR = 0;
+   this._ambBpL = 0;
+   this._ambBpR = 0;
+   this._ambSparkL = 0;
+   this._ambSparkR = 0;
+   this._ambPhase = 0;
    this._dspCurrentGain = computePerceptualGain(this.volume);
    if (this._readableState) this._readableState.highWaterMark = LOW_LATENCY_PCM_HWM;
    if (this._writableState) this._writableState.highWaterMark = LOW_LATENCY_PCM_HWM;
@@ -555,12 +636,16 @@ export function installAudioEnhancer(ffmpegPath) {
   this._dspCarry = input.length > complete ? Buffer.from(input.subarray(complete)) : Buffer.alloc(0);
 
   const forcedKey = this._forcePresetKey;
+  const forcedRate = Number(this._forceRate) > 0 ? Number(this._forceRate) : 1.0;
+  const forcedEcho = Boolean(this._forceEcho);
   const vibeKey = forcedKey ? 'normal' : (VIBE_MODES[activeVibe] ? activeVibe : 'normal');
   const vibeCfg = VIBE_MODES[vibeKey];
-  if (this._vibeKey !== vibeKey) {
-   this._vibeKey = vibeKey;
-   if (vibeKey === 'slowed') {
-    const echoLen = vibeCfg.echoDelaySamples || 4080;
+  const wantEcho = vibeKey === 'slowed' || forcedEcho;
+  const echoStateTag = wantEcho ? (forcedEcho ? 'cave' : 'slowed') : 'none';
+  if (this._vibeKey !== `${vibeKey}:${echoStateTag}`) {
+   this._vibeKey = `${vibeKey}:${echoStateTag}`;
+   if (wantEcho) {
+    const echoLen = forcedEcho ? 5400 : (vibeCfg.echoDelaySamples || 4080);
     this._echoBufL = new Float32Array(echoLen);
     this._echoBufR = new Float32Array(echoLen);
     this._echoIdx = 0;
@@ -577,6 +662,7 @@ export function installAudioEnhancer(ffmpegPath) {
    }
   }
 
+  const effectiveRate = forcedKey ? forcedRate : vibeCfg.rate;
   let workBuf = input;
   let workBytes = complete;
   const inFrames = complete >> 2;
@@ -589,8 +675,8 @@ export function installAudioEnhancer(ffmpegPath) {
     this._vibePrevR = this._readInt(input, 2);
     this._vibeHasPrev = true;
    }
-   if (vibeCfg.rate !== 1.0) {
-    const rate = vibeCfg.rate;
+   if (effectiveRate !== 1.0) {
+    const rate = effectiveRate;
     let pos = this._vibePos;
     const estFrames = Math.max(0, Math.ceil((inFrames - pos) / rate));
     if (estFrames === 0) {
@@ -666,6 +752,19 @@ export function installAudioEnhancer(ffmpegPath) {
   let crackleL = this._lofiCrackleL;
   let crackleR = this._lofiCrackleR;
 
+  const ambMode = forcedKey ? 'off' : activeAmbient;
+  const ambGain = ambMode !== 'off' ? activeAmbientLevel * 0.14 : 0;
+  let ambSeed = this._ambSeed;
+  let ambLpL = this._ambLpL;
+  let ambLpR = this._ambLpR;
+  let ambBpL = this._ambBpL;
+  let ambBpR = this._ambBpR;
+  let ambSparkL = this._ambSparkL;
+  let ambSparkR = this._ambSparkR;
+  let ambPhase = this._ambPhase;
+  const echoFeedback = forcedEcho ? 0.42 : 0.3;
+  const echoWet = forcedEcho ? 0.38 : 0.25;
+
   const out = Buffer.allocUnsafe(workBytes);
   for (let i = 0; i < workBytes; i += STEREO_BYTES) {
    // Làm mượt thay đổi âm lượng (exponential slewing ~10ms) chống tiếng nổ lụp bụp khi kéo gấp.
@@ -677,14 +776,14 @@ export function installAudioEnhancer(ffmpegPath) {
    let l = dryL;
    let r = dryR;
 
-   // Vang không gian Slowed + Echo đêm muộn (ping-pong ấm áp, lọc bớt chói dải cao của đuôi vang)
+   // Vang không gian Slowed + Echo đêm muộn / Vang Hang Động TTS
    if (echoLen > 0) {
     echoLpL = echoLpL * 0.68 + echoBufR[echoIdx] * 0.32;
     echoLpR = echoLpR * 0.68 + echoBufL[echoIdx] * 0.32;
-    echoBufL[echoIdx] = l + echoLpL * 0.3;
-    echoBufR[echoIdx] = r + echoLpR * 0.3;
-    l = l * 0.88 + echoLpL * 0.25;
-    r = r * 0.88 + echoLpR * 0.25;
+    echoBufL[echoIdx] = l + echoLpL * echoFeedback;
+    echoBufR[echoIdx] = r + echoLpR * echoFeedback;
+    l = l * 0.86 + echoLpL * echoWet;
+    r = r * 0.86 + echoLpR * echoWet;
     echoIdx++;
     if (echoIdx >= echoLen) echoIdx = 0;
    }
@@ -780,6 +879,66 @@ export function installAudioEnhancer(ffmpegPath) {
     }
    }
 
+   // Lớp âm thanh thiên nhiên nền (/ambient: Mưa rơi / Lửa trại / Sóng biển / Gió đêm)
+   if (ambGain > 0) {
+    ambSeed = (ambSeed * 1664525 + 1013904223) >>> 0;
+    const nL = (((ambSeed & 0xffff) / 32768) - 1);
+    ambSeed = (ambSeed * 1664525 + 1013904223) >>> 0;
+    const nR = (((ambSeed & 0xffff) / 32768) - 1);
+
+    let bedL = 0;
+    let bedR = 0;
+    if (ambMode === 'rain') {
+     ambLpL = ambLpL * 0.82 + nL * 0.18;
+     ambLpR = ambLpR * 0.82 + nR * 0.18;
+     ambBpL = ambBpL * 0.96 + ambLpL * 0.04;
+     ambBpR = ambBpR * 0.96 + ambLpR * 0.04;
+     if ((ambSeed & 0x1fff) === 0x0777) {
+      const drop = (((ambSeed >>> 16) & 0xff) / 255) * 0.55;
+      if (ambSeed & 0x10000) ambSparkL += drop;
+      else ambSparkR += drop;
+     }
+     ambSparkL *= 0.965;
+     ambSparkR *= 0.965;
+     bedL = (ambLpL - ambBpL * 0.55) * 0.85 + ambSparkL * 0.35;
+     bedR = (ambLpR - ambBpR * 0.55) * 0.85 + ambSparkR * 0.35;
+    } else if (ambMode === 'fire') {
+     ambLpL = ambLpL * 0.985 + nL * 0.015;
+     ambLpR = ambLpR * 0.985 + nR * 0.015;
+     if ((ambSeed & 0x17ff) === 0x0521) {
+      const snap = (0.35 + (((ambSeed >>> 16) & 0xff) / 255) * 0.75);
+      if (ambSeed & 0x20000) ambSparkL += snap;
+      else ambSparkR += snap;
+     }
+     ambSparkL *= 0.92;
+     ambSparkR *= 0.92;
+     bedL = ambLpL * 1.45 + ambSparkL * nL * 0.9;
+     bedR = ambLpR * 1.45 + ambSparkR * nR * 0.9;
+    } else if (ambMode === 'ocean') {
+     ambPhase += 0.0000145; // Chu kỳ sóng vỗ ~9 giây
+     if (ambPhase >= 6.283185307179586) ambPhase -= 6.283185307179586;
+     const waveL = 0.28 + 0.72 * Math.pow((Math.sin(ambPhase) + 1) * 0.5, 1.7);
+     const waveR = 0.28 + 0.72 * Math.pow((Math.sin(ambPhase - 0.85) + 1) * 0.5, 1.7);
+     const coef = 0.94 - waveL * 0.14;
+     ambLpL = ambLpL * coef + nL * (1 - coef);
+     ambLpR = ambLpR * coef + nR * (1 - coef);
+     bedL = ambLpL * waveL * 1.1;
+     bedR = ambLpR * waveR * 1.1;
+    } else if (ambMode === 'wind') {
+     ambPhase += 0.0000115;
+     if (ambPhase >= 6.283185307179586) ambPhase -= 6.283185307179586;
+     const gust = 0.35 + 0.65 * ((Math.sin(ambPhase) * 0.6 + Math.cos(ambPhase * 2.3) * 0.4 + 1) * 0.5);
+     ambLpL = ambLpL * 0.965 + nL * 0.035;
+     ambLpR = ambLpR * 0.965 + nR * 0.035;
+     ambBpL = ambBpL * 0.992 + ambLpL * 0.008;
+     ambBpR = ambBpR * 0.992 + ambLpR * 0.008;
+     bedL = (ambLpL - ambBpL) * gust * 2.1;
+     bedR = (ambLpR - ambBpR) * gust * 2.1;
+    }
+    l += bedL * ambGain;
+    r += bedR * ambGain;
+   }
+
    const outL = softLimitSample(l * currentGain);
    const outR = softLimitSample(r * currentGain);
 
@@ -797,6 +956,14 @@ export function installAudioEnhancer(ffmpegPath) {
   this._lofiSeed = lofiSeed;
   this._lofiCrackleL = crackleL;
   this._lofiCrackleR = crackleR;
+  this._ambSeed = ambSeed;
+  this._ambLpL = ambLpL;
+  this._ambLpR = ambLpR;
+  this._ambBpL = ambBpL;
+  this._ambBpR = ambBpR;
+  this._ambSparkL = ambSparkL;
+  this._ambSparkR = ambSparkR;
+  this._ambPhase = ambPhase;
 
   for (let off = 0; off < workBytes; off += OPUS_FRAME_BYTES) {
    this.push(out.subarray(off, Math.min(workBytes, off + OPUS_FRAME_BYTES)));

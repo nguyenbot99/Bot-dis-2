@@ -287,7 +287,7 @@ test('Feature #6 (/grab, /replay) & Discord StringSelectMenu <= 25 options hard 
  assert.ok(menuRow, 'player_menu row must exist');
  const optionCount = menuRow.components[0].options.length;
  assert.ok(optionCount <= 25, `Discord StringSelectMenu allows max 25 options, got ${optionCount}`);
- assert.equal(optionCount, 24);
+ assert.equal(optionCount, 25);
 });
 
 test('Feature #7 (Website Fullscreen Karaoke Stage Mode & Vibe Sync): web/index.html markup and inline JS compile cleanly', () => {

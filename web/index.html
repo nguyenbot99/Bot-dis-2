@@ -243,10 +243,239 @@
       overflow: hidden;
       background: linear-gradient(145deg, #17192b, #0e101c);
       border: 1px solid rgba(255, 255, 255, 0.12);
-      box-shadow: 0 20px 48px rgba(0, 0, 0, 0.52);
+      box-shadow: 0 20px 48px rgba(0, 0, 0, 0.52), 0 0 54px var(--dynamic-glow, rgba(139, 92, 246, 0.2));
       display: grid;
       place-items: center;
       flex-shrink: 0;
+      transition: box-shadow 0.55s ease, border-radius 0.35s ease, background 0.35s ease;
+    }
+
+    /* Chế độ Mâm Đĩa Than Cổ Điển (Vinyl Turntable Mode) */
+    .vinyl-mode .artwork-box {
+      background: radial-gradient(circle at 30% 25%, #23273b 0%, #0d0f18 72%, #07080e 100%);
+      border-color: rgba(255, 255, 255, 0.18);
+    }
+
+    .vinyl-platter {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      display: grid;
+      place-items: center;
+    }
+
+    .vinyl-mode .vinyl-platter {
+      width: 86%;
+      height: 86%;
+      border-radius: 50%;
+      background:
+        repeating-radial-gradient(circle at center, #11131d 0px, #11131d 3px, #1b1e2e 4px, #0d0f18 6px);
+      box-shadow:
+        inset 0 0 0 2px rgba(255, 255, 255, 0.12),
+        0 10px 28px rgba(0, 0, 0, 0.72);
+      animation: spinSlow var(--vinyl-spin-dur, 6.8s) linear infinite;
+      animation-play-state: paused;
+    }
+
+    .vinyl-mode .vinyl-platter::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      border-radius: 50%;
+      background: conic-gradient(
+        from 25deg,
+        transparent 0deg,
+        rgba(255, 255, 255, 0.11) 36deg,
+        transparent 74deg,
+        transparent 180deg,
+        rgba(255, 255, 255, 0.09) 216deg,
+        transparent 254deg
+      );
+      pointer-events: none;
+    }
+
+    .vinyl-mode .vinyl-platter::after {
+      content: "";
+      position: absolute;
+      width: 13px;
+      height: 13px;
+      border-radius: 50%;
+      background: #07080e;
+      border: 2px solid rgba(255, 255, 255, 0.55);
+      box-shadow: 0 0 6px rgba(0, 0, 0, 0.85);
+      z-index: 3;
+      pointer-events: none;
+    }
+
+    .vinyl-mode.is-playing .vinyl-platter {
+      animation-play-state: running;
+    }
+
+    .vinyl-mode .artwork-img {
+      width: 50%;
+      height: 50%;
+      border-radius: 50%;
+      border: 3px solid rgba(255, 255, 255, 0.24);
+      box-shadow: 0 0 0 5px rgba(139, 92, 246, 0.22);
+      z-index: 2;
+    }
+
+    .vinyl-tonearm {
+      position: absolute;
+      top: 8px;
+      right: 6px;
+      width: 82px;
+      height: 132px;
+      z-index: 5;
+      pointer-events: none;
+      opacity: 0;
+      transform-origin: 60px 20px;
+      transform: rotate(-14deg) scale(0.92);
+      transition: transform 0.65s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.28s ease;
+      filter: drop-shadow(0 6px 10px rgba(0, 0, 0, 0.65));
+    }
+
+    .vinyl-mode .vinyl-tonearm {
+      opacity: 1;
+      transform: rotate(-6deg);
+    }
+
+    .vinyl-mode.is-playing .vinyl-tonearm {
+      transform: rotate(19deg);
+    }
+
+    .ambient-badge {
+      display: none;
+      align-items: center;
+      gap: 5px;
+      padding: 5px 11px;
+      border-radius: 999px;
+      font-size: 0.76rem;
+      font-weight: 700;
+      background: rgba(56, 189, 248, 0.16);
+      color: #bae6fd;
+      border: 1px solid rgba(56, 189, 248, 0.38);
+    }
+
+    .ambient-badge.visible {
+      display: inline-flex;
+    }
+
+    .dedication-ribbon {
+      display: none;
+      align-items: flex-start;
+      gap: 9px;
+      padding: 10px 14px;
+      border-radius: 14px;
+      background: linear-gradient(135deg, rgba(236, 72, 153, 0.18), rgba(139, 92, 246, 0.14));
+      border: 1px solid rgba(244, 114, 182, 0.42);
+      color: #fce7f3;
+      font-size: 0.85rem;
+      line-height: 1.45;
+      box-shadow: 0 8px 24px rgba(236, 72, 153, 0.16);
+    }
+
+    .dedication-ribbon.visible {
+      display: flex;
+    }
+
+    .tool-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 9px 13px;
+      border-radius: 12px;
+      font-size: 0.83rem;
+      font-weight: 700;
+      color: var(--text-main);
+      background: var(--surface-soft);
+      border: 1px solid rgba(255, 255, 255, 0.13);
+      cursor: pointer;
+      transition: transform 0.16s ease, background 0.16s ease, border-color 0.2s ease;
+    }
+
+    .tool-btn:hover {
+      transform: translateY(-1px);
+      background: var(--surface-hover);
+      border-color: rgba(255, 255, 255, 0.26);
+    }
+
+    .tool-btn.active {
+      background: linear-gradient(135deg, rgba(245, 158, 11, 0.24), rgba(236, 72, 153, 0.22));
+      border-color: rgba(251, 191, 36, 0.55);
+      color: #fef3c7;
+    }
+
+    /* Hộp thoại xem trước & tải Card Nhạc HD (Poster Card Generator) */
+    .poster-modal {
+      position: fixed;
+      inset: 0;
+      z-index: 120;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      background: rgba(5, 6, 12, 0.82);
+      backdrop-filter: blur(18px);
+    }
+
+    .poster-modal.open {
+      display: flex;
+    }
+
+    .poster-dialog {
+      width: min(440px, 94vw);
+      max-height: 92vh;
+      overflow-y: auto;
+      padding: 20px;
+      border-radius: 24px;
+      background: rgba(18, 21, 35, 0.94);
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      box-shadow: 0 28px 80px rgba(0, 0, 0, 0.72);
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .poster-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .poster-title {
+      font-size: 0.96rem;
+      font-weight: 800;
+      color: #ffffff;
+    }
+
+    .poster-preview-img {
+      width: 100%;
+      border-radius: 16px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      box-shadow: 0 14px 36px rgba(0, 0, 0, 0.5);
+      display: block;
+    }
+
+    .poster-actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .poster-actions button {
+      flex: 1;
+      min-width: 145px;
+      justify-content: center;
+    }
+
+    .poster-toast {
+      font-size: 0.8rem;
+      color: #86efac;
+      text-align: center;
+      min-height: 1.1em;
+      font-weight: 600;
     }
 
     @media (max-width: 640px) {
@@ -1234,21 +1463,37 @@
       <section id="heroCard" class="glass-card hero-card">
         <div class="hero-top">
           <div class="artwork-box">
-            <img id="artworkImg" class="artwork-img" alt="Ảnh bìa bài hát" />
-            <svg id="vinylSvg" class="vinyl-fallback" viewBox="0 0 200 200" fill="none">
-              <circle cx="100" cy="100" r="92" fill="url(#vinylGrad)" stroke="rgba(255,255,255,0.12)" stroke-width="2"/>
-              <circle cx="100" cy="100" r="72" stroke="rgba(255,255,255,0.06)" stroke-width="1.5"/>
-              <circle cx="100" cy="100" r="54" stroke="rgba(255,255,255,0.06)" stroke-width="1.5"/>
-              <circle cx="100" cy="100" r="30" fill="url(#centerGrad)"/>
-              <circle cx="100" cy="100" r="8" fill="#08090f"/>
+            <div class="vinyl-platter">
+              <img id="artworkImg" class="artwork-img" alt="Ảnh bìa bài hát" />
+              <svg id="vinylSvg" class="vinyl-fallback" viewBox="0 0 200 200" fill="none">
+                <circle cx="100" cy="100" r="92" fill="url(#vinylGrad)" stroke="rgba(255,255,255,0.12)" stroke-width="2"/>
+                <circle cx="100" cy="100" r="72" stroke="rgba(255,255,255,0.06)" stroke-width="1.5"/>
+                <circle cx="100" cy="100" r="54" stroke="rgba(255,255,255,0.06)" stroke-width="1.5"/>
+                <circle cx="100" cy="100" r="30" fill="url(#centerGrad)"/>
+                <circle cx="100" cy="100" r="8" fill="#08090f"/>
+                <defs>
+                  <radialGradient id="vinylGrad" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(100 100) rotate(90) scale(92)">
+                    <stop stop-color="#23263d"/>
+                    <stop offset="1" stop-color="#0d0f1a"/>
+                  </radialGradient>
+                  <linearGradient id="centerGrad" x1="70" y1="70" x2="130" y2="130" gradientUnits="userSpaceOnUse">
+                    <stop stop-color="#8b5cf6"/>
+                    <stop offset="1" stop-color="#ec4899"/>
+                  </linearGradient>
+                </defs>
+              </svg>
+            </div>
+            <!-- Cần gạt kim đĩa than tự hạ xuống khi phát nhạc -->
+            <svg class="vinyl-tonearm" viewBox="0 0 90 145" fill="none" aria-hidden="true">
+              <circle cx="60" cy="20" r="14" fill="#1e2235" stroke="rgba(255,255,255,0.32)" stroke-width="2"/>
+              <circle cx="60" cy="20" r="6" fill="#e2e8f0"/>
+              <path d="M60 20 L55 88 L30 120" stroke="url(#armMetal)" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+              <rect x="22" y="115" width="14" height="9" rx="2.5" transform="rotate(-38 22 115)" fill="#f472b6" stroke="#ffffff" stroke-width="1"/>
               <defs>
-                <radialGradient id="vinylGrad" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(100 100) rotate(90) scale(92)">
-                  <stop stop-color="#23263d"/>
-                  <stop offset="1" stop-color="#0d0f1a"/>
-                </radialGradient>
-                <linearGradient id="centerGrad" x1="70" y1="70" x2="130" y2="130" gradientUnits="userSpaceOnUse">
-                  <stop stop-color="#8b5cf6"/>
-                  <stop offset="1" stop-color="#ec4899"/>
+                <linearGradient id="armMetal" x1="60" y1="20" x2="28" y2="122" gradientUnits="userSpaceOnUse">
+                  <stop stop-color="#f8fafc"/>
+                  <stop offset="0.55" stop-color="#94a3b8"/>
+                  <stop offset="1" stop-color="#e2e8f0"/>
                 </linearGradient>
               </defs>
             </svg>
@@ -1265,10 +1510,13 @@
               <span id="statusBadge" class="status-badge">💤 Chưa phát nhạc</span>
               <span id="sourceBadge" class="source-badge">Nguồn: —</span>
               <span id="vibeBadge" class="vibe-badge">⚡ Vibe</span>
+              <span id="ambientBadge" class="ambient-badge">🌧️ Nền</span>
             </div>
 
             <h1 id="trackTitle" class="track-title">Chưa có bài hát nào đang phát</h1>
             <p id="trackAuthor" class="track-author">Gõ lệnh /play trong kênh thoại Discord để bắt đầu</p>
+
+            <div id="dedicationBanner" class="dedication-ribbon"></div>
 
             <div class="actions-row">
               <button id="listenToggleBtn" class="listen-btn" type="button">
@@ -1277,6 +1525,12 @@
               </button>
               <button id="openStageBtn" class="stage-open-btn" type="button" title="Mở Sân khấu Karaoke toàn màn hình (phím tắt K)">
                 <span>🎤 Sân khấu Karaoke</span>
+              </button>
+              <button id="vinylModeBtn" class="tool-btn" type="button" title="Bật/tắt Mâm đĩa than cổ điển (phím tắt V)">
+                <span>💿 Mâm Đĩa Than</span>
+              </button>
+              <button id="posterCardBtn" class="tool-btn" type="button" title="Chụp & tải Card Nhạc HD kèm lời bài hát (phím tắt P)">
+                <span>📸 Chụp Card Nhạc</span>
               </button>
               <a id="openTrackLink" class="open-link-btn" href="#" target="_blank" rel="noopener noreferrer">
                 <span>Mở bài gốc</span>
@@ -1389,6 +1643,7 @@
         <div>
           <div id="stageTitle" class="stage-track-title">Chưa có bài hát đang phát</div>
           <div id="stageAuthor" class="stage-track-author">Mở nhạc trong Discord bằng /play hoặc /radio</div>
+          <div id="stageDedicationBanner" class="dedication-ribbon" style="margin-top:10px"></div>
         </div>
         <div class="stage-progress-box">
           <div class="progress-track">
@@ -1404,6 +1659,22 @@
       <div id="stageLyricsBox" class="stage-lyrics-viewport">
         <div class="stage-empty">Đang chờ bài hát và lời Karaoke từ Discord...</div>
       </div>
+    </div>
+  </div>
+
+  <!-- Hộp thoại xem trước & xuất Card Nhạc HD 1080x1350 -->
+  <div id="posterModal" class="poster-modal" role="dialog" aria-modal="true" aria-label="Chụp Card Nhạc HD">
+    <div class="poster-dialog">
+      <div class="poster-head">
+        <div class="poster-title">📸 Card Nhạc HD • Khoe Story & Discord</div>
+        <button id="posterCloseBtn" class="stage-ctrl-btn" type="button">✕ Đóng</button>
+      </div>
+      <img id="posterPreviewImg" class="poster-preview-img" alt="Bản xem trước Card Nhạc HD" />
+      <div class="poster-actions">
+        <button id="posterDownloadBtn" class="listen-btn" type="button">⬇️ Tải ảnh PNG (HD)</button>
+        <button id="posterCopyBtn" class="tool-btn" type="button">📋 Copy dán Discord</button>
+      </div>
+      <div id="posterToast" class="poster-toast"></div>
     </div>
   </div>
 
@@ -1449,11 +1720,15 @@
         statusBadge: document.getElementById("statusBadge"),
         sourceBadge: document.getElementById("sourceBadge"),
         vibeBadge: document.getElementById("vibeBadge"),
+        ambientBadge: document.getElementById("ambientBadge"),
         trackTitle: document.getElementById("trackTitle"),
         trackAuthor: document.getElementById("trackAuthor"),
+        dedicationBanner: document.getElementById("dedicationBanner"),
         listenToggleBtn: document.getElementById("listenToggleBtn"),
         listenBtnLabel: document.getElementById("listenBtnLabel"),
         openStageBtn: document.getElementById("openStageBtn"),
+        vinylModeBtn: document.getElementById("vinylModeBtn"),
+        posterCardBtn: document.getElementById("posterCardBtn"),
         openTrackLink: document.getElementById("openTrackLink"),
         liveAudioHint: document.getElementById("liveAudioHint"),
         webEqTag: document.getElementById("webEqTag"),
@@ -1484,10 +1759,17 @@
         stageVinylSvg: document.getElementById("stageVinylSvg"),
         stageTitle: document.getElementById("stageTitle"),
         stageAuthor: document.getElementById("stageAuthor"),
+        stageDedicationBanner: document.getElementById("stageDedicationBanner"),
         stageProgressFill: document.getElementById("stageProgressFill"),
         stageCurTime: document.getElementById("stageCurTime"),
         stageTotTime: document.getElementById("stageTotTime"),
         stageLyricsBox: document.getElementById("stageLyricsBox"),
+        posterModal: document.getElementById("posterModal"),
+        posterPreviewImg: document.getElementById("posterPreviewImg"),
+        posterDownloadBtn: document.getElementById("posterDownloadBtn"),
+        posterCopyBtn: document.getElementById("posterCopyBtn"),
+        posterCloseBtn: document.getElementById("posterCloseBtn"),
+        posterToast: document.getElementById("posterToast"),
         audio: document.getElementById("liveAudioEl"),
       };
 
@@ -2247,8 +2529,71 @@
         els.connLabel.textContent = text;
       }
 
+      let currentArtworkCleanUrl = null;
+      let corsArtworkImage = null;
+      let dynamicPalette = { r: 139, g: 92, b: 246 };
+
+      function applyDynamicGlowRgb(r, g, b) {
+        dynamicPalette = { r: r, g: g, b: b };
+        document.documentElement.style.setProperty("--dynamic-glow", "rgba(" + r + ", " + g + ", " + b + ", 0.42)");
+      }
+
+      function probeCorsArtworkAndColor(cleanUrl) {
+        corsArtworkImage = null;
+        if (!cleanUrl) {
+          applyDynamicGlowRgb(139, 92, 246);
+          return;
+        }
+        const probe = new Image();
+        probe.crossOrigin = "anonymous";
+        probe.onload = function () {
+          if (currentArtworkCleanUrl !== cleanUrl) return;
+          corsArtworkImage = probe;
+          try {
+            const c = document.createElement("canvas");
+            c.width = 24;
+            c.height = 24;
+            const ctx = c.getContext("2d");
+            ctx.drawImage(probe, 0, 0, 24, 24);
+            const data = ctx.getImageData(0, 0, 24, 24).data;
+            let rSum = 0, gSum = 0, bSum = 0, weightSum = 0;
+            for (let idx = 0; idx < data.length; idx += 4) {
+              const r = data[idx], g = data[idx + 1], b = data[idx + 2], a = data[idx + 3];
+              if (a < 180) continue;
+              const maxC = Math.max(r, g, b), minC = Math.min(r, g, b);
+              const sat = maxC === 0 ? 0 : (maxC - minC) / maxC;
+              const lum = (r + g + b) / 3;
+              if (lum < 24 || lum > 242) continue;
+              const w = 0.35 + sat * 1.65;
+              rSum += r * w;
+              gSum += g * w;
+              bSum += b * w;
+              weightSum += w;
+            }
+            if (weightSum > 0) {
+              applyDynamicGlowRgb(
+                Math.round(rSum / weightSum),
+                Math.round(gSum / weightSum),
+                Math.round(bSum / weightSum)
+              );
+            }
+          } catch {
+            corsArtworkImage = null;
+          }
+        };
+        probe.onerror = function () {
+          corsArtworkImage = null;
+        };
+        probe.src = cleanUrl;
+      }
+
       function updateArtwork(url) {
         const clean = safeHttpUrl(url);
+        if (clean === currentArtworkCleanUrl && (clean ? els.artworkImg.classList.contains("visible") : !els.artworkImg.classList.contains("visible"))) {
+          return;
+        }
+        currentArtworkCleanUrl = clean;
+        probeCorsArtworkAndColor(clean);
         if (clean) {
           els.artworkImg.src = clean;
           els.artworkImg.classList.add("visible");
@@ -2417,6 +2762,328 @@
         renderStageLyrics();
       }
 
+      // Chế độ Mâm Đĩa Than (Vinyl Turntable Mode) & Trình tạo Card Nhạc HD 1080x1350 (Poster Card Generator)
+      let vinylMode = false;
+      try { vinylMode = localStorage.getItem("bd_vinyl_mode") === "1"; } catch {}
+
+      function applyVinylMode(enabled) {
+        vinylMode = Boolean(enabled);
+        els.heroCard.classList.toggle("vinyl-mode", vinylMode);
+        els.vinylModeBtn.classList.toggle("active", vinylMode);
+        try { localStorage.setItem("bd_vinyl_mode", vinylMode ? "1" : "0"); } catch {}
+      }
+      applyVinylMode(vinylMode);
+
+      els.vinylModeBtn.addEventListener("click", function () {
+        applyVinylMode(!vinylMode);
+      });
+
+      let posterModalOpen = false;
+      let latestPosterBlob = null;
+      let latestPosterObjUrl = null;
+
+      function wrapCanvasText(ctx, text, maxWidth, maxLines) {
+        const words = String(text || "").trim().split(/\s+/).filter(Boolean);
+        if (!words.length) return [];
+        const lines = [];
+        let line = words[0];
+        for (let i = 1; i < words.length; i++) {
+          const test = line + " " + words[i];
+          if (ctx.measureText(test).width <= maxWidth) {
+            line = test;
+          } else {
+            lines.push(line);
+            line = words[i];
+            if (lines.length >= maxLines - 1) {
+              for (let j = i + 1; j < words.length; j++) line += " " + words[j];
+              while (line.length > 4 && ctx.measureText(line + "…").width > maxWidth) {
+                line = line.slice(0, -1).trimEnd();
+              }
+              if (jExceeded(i + 1, words.length)) line += "…";
+              break;
+            }
+          }
+        }
+        function jExceeded(nextIdx, total) { return nextIdx < total; }
+        if (lines.length < maxLines) {
+          if (ctx.measureText(line).width > maxWidth) {
+            while (line.length > 4 && ctx.measureText(line + "…").width > maxWidth) {
+              line = line.slice(0, -1).trimEnd();
+            }
+            line += "…";
+          }
+          lines.push(line);
+        }
+        return lines;
+      }
+
+      function drawRoundedRect(ctx, x, y, w, h, r) {
+        ctx.beginPath();
+        ctx.moveTo(x + r, y);
+        ctx.arcTo(x + w, y, x + w, y + h, r);
+        ctx.arcTo(x + w, y + h, x, y + h, r);
+        ctx.arcTo(x, y + h, x, y, r);
+        ctx.arcTo(x, y, x + w, y, r);
+        ctx.closePath();
+      }
+
+      function getActiveKaraokeLineText(track) {
+        const synced = track?.lyrics?.synced;
+        if (Array.isArray(synced) && synced.length > 0) {
+          const posMs = getEffectiveKaraokePositionMs() + 180;
+          let chosen = synced[0].text;
+          for (let i = 0; i < synced.length; i++) {
+            if (synced[i].t <= posMs) chosen = synced[i].text;
+            else break;
+          }
+          return chosen;
+        }
+        if (track?.lyrics?.plain) {
+          const firstLines = String(track.lyrics.plain).split("\n").map(function (s) { return s.trim(); }).filter(Boolean);
+          return firstLines.slice(0, 2).join(" • ");
+        }
+        return "";
+      }
+
+      async function buildPosterCardBlob() {
+        const W = 1080, H = 1350;
+        const canvas = document.createElement("canvas");
+        canvas.width = W;
+        canvas.height = H;
+        const ctx = canvas.getContext("2d");
+        const pal = dynamicPalette || { r: 139, g: 92, b: 246 };
+        const track = latestState?.track || null;
+        const st = latestState?.settings || {};
+
+        // 1. Nền dải ngân hà đồng điệu màu ảnh bìa
+        const bgGrad = ctx.createLinearGradient(0, 0, W, H);
+        bgGrad.addColorStop(0, "rgb(" + Math.max(10, Math.round(pal.r * 0.28)) + "," + Math.max(10, Math.round(pal.g * 0.24)) + "," + Math.max(18, Math.round(pal.b * 0.34)) + ")");
+        bgGrad.addColorStop(0.52, "#0b0d18");
+        bgGrad.addColorStop(1, "#070811");
+        ctx.fillStyle = bgGrad;
+        ctx.fillRect(0, 0, W, H);
+
+        const glowA = ctx.createRadialGradient(W * 0.25, H * 0.22, 30, W * 0.25, H * 0.22, 620);
+        glowA.addColorStop(0, "rgba(" + pal.r + "," + pal.g + "," + pal.b + ",0.42)");
+        glowA.addColorStop(1, "rgba(0,0,0,0)");
+        ctx.fillStyle = glowA;
+        ctx.fillRect(0, 0, W, H);
+
+        const glowB = ctx.createRadialGradient(W * 0.82, H * 0.78, 30, W * 0.82, H * 0.78, 560);
+        glowB.addColorStop(0, "rgba(236,72,153,0.28)");
+        glowB.addColorStop(1, "rgba(0,0,0,0)");
+        ctx.fillStyle = glowB;
+        ctx.fillRect(0, 0, W, H);
+
+        // 2. Thẻ kính mờ chính giữa
+        drawRoundedRect(ctx, 64, 64, W - 128, H - 128, 48);
+        ctx.fillStyle = "rgba(17, 20, 34, 0.78)";
+        ctx.fill();
+        ctx.lineWidth = 2.5;
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.14)";
+        ctx.stroke();
+
+        // 3. Nhãn thương hiệu phía trên
+        ctx.fillStyle = "rgba(255,255,255,0.62)";
+        ctx.font = "700 26px Inter, system-ui, sans-serif";
+        const botBrand = (latestState?.bot?.name || "Discord Music") + " • NOW PLAYING CARD";
+        ctx.fillText("🎵 " + botBrand.toUpperCase(), 118, 138);
+
+        // 4. Đĩa than + Ảnh bìa trung tâm
+        const cx = W / 2, cy = 435, outerR = 235;
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(cx, cy, outerR + 14, 0, Math.PI * 2);
+        ctx.fillStyle = "rgba(" + pal.r + "," + pal.g + "," + pal.b + ",0.22)";
+        ctx.fill();
+
+        ctx.beginPath();
+        ctx.arc(cx, cy, outerR, 0, Math.PI * 2);
+        ctx.fillStyle = "#101320";
+        ctx.fill();
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = "rgba(255,255,255,0.18)";
+        ctx.stroke();
+
+        for (let gr = outerR - 18; gr > 128; gr -= 14) {
+          ctx.beginPath();
+          ctx.arc(cx, cy, gr, 0, Math.PI * 2);
+          ctx.lineWidth = 1.2;
+          ctx.strokeStyle = "rgba(255,255,255,0.06)";
+          ctx.stroke();
+        }
+
+        const artR = corsArtworkImage ? 158 : 110;
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(cx, cy, artR, 0, Math.PI * 2);
+        ctx.closePath();
+        ctx.clip();
+        if (corsArtworkImage) {
+          ctx.drawImage(corsArtworkImage, cx - artR, cy - artR, artR * 2, artR * 2);
+        } else {
+          const fallbackGrad = ctx.createLinearGradient(cx - artR, cy - artR, cx + artR, cy + artR);
+          fallbackGrad.addColorStop(0, "#8b5cf6");
+          fallbackGrad.addColorStop(1, "#ec4899");
+          ctx.fillStyle = fallbackGrad;
+          ctx.fillRect(cx - artR, cy - artR, artR * 2, artR * 2);
+        }
+        ctx.restore();
+
+        ctx.beginPath();
+        ctx.arc(cx, cy, 16, 0, Math.PI * 2);
+        ctx.fillStyle = "#090b13";
+        ctx.fill();
+        ctx.lineWidth = 4;
+        ctx.strokeStyle = "rgba(255,255,255,0.65)";
+        ctx.stroke();
+        ctx.restore();
+
+        // 5. Tiêu đề bài hát & Nghệ sĩ
+        const titleStr = track?.title || "Đang phát trên Discord";
+        const authorStr = track?.author || (latestState?.voiceChannelName ? "Phòng thoại: " + latestState.voiceChannelName : "Bắt_Don Music Studio");
+
+        ctx.textAlign = "center";
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "800 44px Inter, system-ui, sans-serif";
+        const titleLines = wrapCanvasText(ctx, titleStr, W - 240, 2);
+        let curY = 748;
+        titleLines.forEach(function (ln) {
+          ctx.fillText(ln, cx, curY);
+          curY += 54;
+        });
+
+        ctx.fillStyle = "rgba(226, 232, 240, 0.76)";
+        ctx.font = "600 30px Inter, system-ui, sans-serif";
+        const authorLines = wrapCanvasText(ctx, authorStr, W - 260, 1);
+        ctx.fillText(authorLines[0] || authorStr, cx, curY + 8);
+        curY += 56;
+
+        // 6. Hộp câu hát Karaoke đang vang lên (hoặc lời nhắn gửi tặng /dedicate)
+        const ded = track?.dedication;
+        const quoteText = ded
+          ? ("💌 " + ded.fromName + " gửi tặng " + ded.toName + (ded.message ? ': "' + ded.message + '"' : ""))
+          : getActiveKaraokeLineText(track);
+
+        drawRoundedRect(ctx, 114, 888, W - 228, 178, 28);
+        ctx.fillStyle = ded ? "rgba(236, 72, 153, 0.16)" : "rgba(255, 255, 255, 0.05)";
+        ctx.fill();
+        ctx.lineWidth = 1.8;
+        ctx.strokeStyle = ded ? "rgba(244, 114, 182, 0.42)" : "rgba(255, 255, 255, 0.1)";
+        ctx.stroke();
+
+        ctx.fillStyle = ded ? "#fbcfe8" : "#f8fafc";
+        ctx.font = "700 31px Inter, system-ui, sans-serif";
+        const fallbackQuote = "🎧 Chất âm " + (st.soundLabel || "Rõ nét HD")
+          + (st.vibeMode && st.vibeMode !== "normal" ? " • " + st.vibeLabel : "")
+          + (st.ambientMode && st.ambientMode !== "off" ? " • " + st.ambientLabel : "");
+        const qLines = wrapCanvasText(ctx, quoteText ? ('“' + quoteText + '”') : fallbackQuote, W - 290, 3);
+        let qY = qLines.length === 1 ? 988 : (qLines.length === 2 ? 966 : 946);
+        qLines.forEach(function (ln) {
+          ctx.fillText(ln, cx, qY);
+          qY += 42;
+        });
+
+        // 7. Thanh tiến trình bài hát thực tế
+        const totalMs = Math.max(0, Number(track?.durationMs) || 0);
+        const posMs = track ? getExpectedBotPositionMs() : 0;
+        const ratio = totalMs > 0 ? Math.min(1, Math.max(0, posMs / totalMs)) : 0;
+        const barX = 118, barY = 1122, barW = W - 236, barH = 14;
+
+        drawRoundedRect(ctx, barX, barY, barW, barH, 7);
+        ctx.fillStyle = "rgba(255,255,255,0.12)";
+        ctx.fill();
+
+        if (ratio > 0) {
+          drawRoundedRect(ctx, barX, barY, Math.max(16, barW * ratio), barH, 7);
+          const pGrad = ctx.createLinearGradient(barX, 0, barX + barW, 0);
+          pGrad.addColorStop(0, "#8b5cf6");
+          pGrad.addColorStop(1, "#ec4899");
+          ctx.fillStyle = pGrad;
+          ctx.fill();
+        }
+
+        ctx.font = "600 24px Inter, system-ui, sans-serif";
+        ctx.fillStyle = "rgba(255,255,255,0.65)";
+        ctx.textAlign = "left";
+        ctx.fillText(formatTime(posMs), barX, barY + 44);
+        ctx.textAlign = "right";
+        ctx.fillText(formatTime(totalMs), barX + barW, barY + 44);
+
+        // 8. Chân trang thông số phòng nghe
+        ctx.textAlign = "center";
+        ctx.font = "600 23px Inter, system-ui, sans-serif";
+        ctx.fillStyle = "rgba(196, 181, 253, 0.86)";
+        const footerChips = [
+          st.soundLabel || "Rõ nét HD",
+          st.vibeMode && st.vibeMode !== "normal" ? st.vibeLabel : null,
+          st.ambientMode && st.ambientMode !== "off" ? st.ambientLabel : null,
+          latestState?.voiceChannelName ? ("🎙️ " + latestState.voiceChannelName) : null,
+        ].filter(Boolean).join("  •  ");
+        ctx.fillText(footerChips, cx, 1232);
+
+        return await new Promise(function (resolve) {
+          canvas.toBlob(function (blob) { resolve(blob); }, "image/png");
+        });
+      }
+
+      async function openPosterModal() {
+        els.posterToast.textContent = "✨ Đang kết xuất Card Nhạc HD 1080×1350...";
+        els.posterModal.classList.add("open");
+        posterModalOpen = true;
+        const blob = await buildPosterCardBlob();
+        if (!blob) {
+          els.posterToast.textContent = "Không thể xuất ảnh trên trình duyệt này.";
+          return;
+        }
+        latestPosterBlob = blob;
+        if (latestPosterObjUrl) URL.revokeObjectURL(latestPosterObjUrl);
+        latestPosterObjUrl = URL.createObjectURL(blob);
+        els.posterPreviewImg.src = latestPosterObjUrl;
+        els.posterToast.textContent = "✅ Sẵn sàng tải về máy hoặc Copy dán thẳng vào Discord!";
+      }
+
+      function closePosterModal() {
+        posterModalOpen = false;
+        els.posterModal.classList.remove("open");
+      }
+
+      els.posterCardBtn.addEventListener("click", function () { void openPosterModal(); });
+      els.posterCloseBtn.addEventListener("click", closePosterModal);
+      els.posterModal.addEventListener("click", function (ev) {
+        if (ev.target === els.posterModal) closePosterModal();
+      });
+
+      els.posterDownloadBtn.addEventListener("click", function () {
+        if (!latestPosterObjUrl) return;
+        const safeSlug = String(latestState?.track?.title || "now-playing")
+          .toLowerCase()
+          .replace(/[^a-z0-9\u00C0-\u1EF9]+/gi, "-")
+          .replace(/^-+|-+$/g, "")
+          .slice(0, 45) || "card-nhac";
+        const a = document.createElement("a");
+        a.href = latestPosterObjUrl;
+        a.download = safeSlug + "-card-hd.png";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        els.posterToast.textContent = "⬇️ Đã tải file ảnh PNG HD về thiết bị!";
+      });
+
+      els.posterCopyBtn.addEventListener("click", async function () {
+        if (!latestPosterBlob) return;
+        try {
+          if (navigator.clipboard?.write && typeof window.ClipboardItem === "function") {
+            await navigator.clipboard.write([new window.ClipboardItem({ "image/png": latestPosterBlob })]);
+            els.posterToast.textContent = "📋 Đã Copy ảnh vào bộ nhớ tạm — qua Discord bấm Ctrl+V là gửi ngay!";
+          } else {
+            els.posterToast.textContent = "Trình duyệt chưa hỗ trợ Copy ảnh trực tiếp — hãy bấm Tải ảnh PNG nhé!";
+          }
+        } catch {
+          els.posterToast.textContent = "Trình duyệt chặn Copy tự động — bạn hãy bấm Tải ảnh PNG hoặc chuột phải vào ảnh nhé!";
+        }
+      });
+
       function closeStageMode() {
         stageOpen = false;
         els.stageOverlay.classList.remove("open");
@@ -2436,11 +3103,20 @@
         }
       });
       document.addEventListener("keydown", function (ev) {
-        if (ev.key === "Escape" && stageOpen) {
-          closeStageMode();
-        } else if ((ev.key === "k" || ev.key === "K") && !ev.ctrlKey && !ev.metaKey && !ev.altKey && document.activeElement?.tagName !== "INPUT") {
+        if (ev.key === "Escape") {
+          if (posterModalOpen) closePosterModal();
+          else if (stageOpen) closeStageMode();
+          return;
+        }
+        if (ev.ctrlKey || ev.metaKey || ev.altKey || document.activeElement?.tagName === "INPUT") return;
+        if (ev.key === "k" || ev.key === "K") {
           if (stageOpen) closeStageMode();
           else openStageMode();
+        } else if (ev.key === "v" || ev.key === "V") {
+          applyVinylMode(!vinylMode);
+        } else if (ev.key === "p" || ev.key === "P") {
+          if (posterModalOpen) closePosterModal();
+          else void openPosterModal();
         }
       });
 
@@ -2686,6 +3362,19 @@
             els.openTrackLink.removeAttribute("href");
             els.openTrackLink.classList.remove("visible");
           }
+          const ded = track.dedication;
+          if (ded && (ded.fromName || ded.toName)) {
+            const dedText = "💌 Quà âm nhạc từ " + (ded.fromName || "Một người bạn") + " gửi tặng " + (ded.toName || "bạn") + (ded.message ? ' — “' + ded.message + '”' : "!");
+            els.dedicationBanner.textContent = dedText;
+            els.dedicationBanner.classList.add("visible");
+            els.stageDedicationBanner.textContent = dedText;
+            els.stageDedicationBanner.classList.add("visible");
+          } else {
+            els.dedicationBanner.textContent = "";
+            els.dedicationBanner.classList.remove("visible");
+            els.stageDedicationBanner.textContent = "";
+            els.stageDedicationBanner.classList.remove("visible");
+          }
           document.title = (isPlaying ? "▶ " : "⏸ ") + (track.title || "Now Playing") + " • Discord Music";
         } else {
           els.trackTitle.textContent = state.status === "idle_247"
@@ -2700,20 +3389,37 @@
           updateArtwork(null);
           els.openTrackLink.removeAttribute("href");
           els.openTrackLink.classList.remove("visible");
+          els.dedicationBanner.textContent = "";
+          els.dedicationBanner.classList.remove("visible");
+          els.stageDedicationBanner.textContent = "";
+          els.stageDedicationBanner.classList.remove("visible");
           document.title = "Đang Phát Trong Discord • Now Playing";
         }
 
         const st = state.settings || {};
         const activeVibeMode = st.vibeMode || "normal";
         const activeVibeLabel = st.vibeLabel || "Chuẩn Gốc";
+        const vibeRateNum = Number(st.vibeRate) > 0 ? Number(st.vibeRate) : 1;
+        document.documentElement.style.setProperty("--vinyl-spin-dur", (6.8 / vibeRateNum).toFixed(2) + "s");
         if (activeVibeMode !== "normal") {
           els.vibeBadge.textContent = "✨ Vibe: " + activeVibeLabel;
           els.vibeBadge.classList.add("visible");
         } else {
           els.vibeBadge.classList.remove("visible");
         }
+        const activeAmbMode = st.ambientMode || "off";
+        const activeAmbLabel = st.ambientLabel || "Tắt nền";
+        const ambIcons = { rain: "🌧️", fire: "🔥", ocean: "🌊", wind: "🍃" };
+        if (activeAmbMode !== "off") {
+          els.ambientBadge.textContent = (ambIcons[activeAmbMode] || "🌿") + " " + activeAmbLabel;
+          els.ambientBadge.classList.add("visible");
+        } else {
+          els.ambientBadge.classList.remove("visible");
+        }
         els.chipSound.textContent = (st.soundLabel || "Rõ nét HD") + (activeVibeMode !== "normal" ? " • " + activeVibeLabel : "");
-        els.stageSoundBadge.textContent = "• " + (st.soundLabel || "Rõ nét HD") + (activeVibeMode !== "normal" ? " • " + activeVibeLabel : "");
+        els.stageSoundBadge.textContent = "• " + (st.soundLabel || "Rõ nét HD")
+          + (activeVibeMode !== "normal" ? " • " + activeVibeLabel : "")
+          + (activeAmbMode !== "off" ? " • " + (ambIcons[activeAmbMode] || "🌿") + " " + activeAmbLabel : "");
         els.chipVolume.textContent = (st.volume ?? 100) + "%";
         els.chipLoop.textContent = st.loopLabel || "Tắt lặp";
         els.chipModes.textContent = "Auto: " + (st.autoPlay ? "Bật" : "Tắt") + " • 24/7: " + (st.stay247 ? "Bật" : "Tắt") + (st.sleepTimerLabel ? " • 💤 " + st.sleepTimerLabel : "");

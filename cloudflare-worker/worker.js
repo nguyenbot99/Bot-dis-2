@@ -60,6 +60,8 @@ function withLivePosition(state) {
         autoPlay: false,
         stay247: false,
         soundLabel: 'R\u00F5 n\u00E9t HD',
+        ambientMode: 'off',
+        ambientLabel: 'T\u1EAFt n\u1EC1n',
       },
       track: null,
       upcoming: [],
@@ -105,7 +107,18 @@ export class NowPlayingRoom extends BaseDO {
     this.ownerProof = null;
     if (ctx?.blockConcurrencyWhile && ctx?.storage?.get) {
       ctx.blockConcurrencyWhile(async () => {
-        this.state = (await ctx.storage.get('latest').catch(() => null)) || null;
+        const latest = (await ctx.storage.get('latest').catch(() => null)) || null;
+        if (latest && typeof latest === 'object') {
+          if (!latest.mixtapesSeal) {
+            const m = await ctx.storage.get('mixtapes_seal').catch(() => null);
+            if (typeof m === 'string') latest.mixtapesSeal = m;
+          }
+          if (!latest.statsSeal) {
+            const s = await ctx.storage.get('stats_seal').catch(() => null);
+            if (typeof s === 'string') latest.statsSeal = s;
+          }
+        }
+        this.state = latest;
         this.pairedSecret =
           (await ctx.storage.get('paired_secret').catch(() => null)) || null;
         this.ownerProof =
@@ -161,9 +174,27 @@ export class NowPlayingRoom extends BaseDO {
       if (!isValidSnapshotBody(body)) {
         return Response.json({ error: 'Invalid JSON' }, { status: 400, headers: CORS });
       }
+      if (typeof body.mixtapesSeal === 'string' && body.mixtapesSeal.length > 65536) {
+        delete body.mixtapesSeal;
+      }
       this.state = body;
       if (this.ctx?.storage?.put) {
-        await this.ctx.storage.put('latest', body).catch(() => {});
+        // Tách riêng các két sao lưu lớn nếu tổng bản chụp vượt 90 KB để không bao giờ chạm trần 128 KiB/key của SQLite DO.
+        const approxSize = JSON.stringify(body).length;
+        if (approxSize > 92160) {
+          const slim = { ...body };
+          if (slim.mixtapesSeal) {
+            await this.ctx.storage.put('mixtapes_seal', slim.mixtapesSeal).catch(() => {});
+            delete slim.mixtapesSeal;
+          }
+          if (slim.statsSeal) {
+            await this.ctx.storage.put('stats_seal', slim.statsSeal).catch(() => {});
+            delete slim.statsSeal;
+          }
+          await this.ctx.storage.put('latest', slim).catch(() => {});
+        } else {
+          await this.ctx.storage.put('latest', body).catch(() => {});
+        }
       }
       return Response.json({ ok: true }, { status: 200, headers: CORS });
     }

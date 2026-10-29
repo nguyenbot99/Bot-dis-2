@@ -16,7 +16,7 @@ import {
  TextInputBuilder,
  TextInputStyle,
 } from 'discord.js';
-import { SOUND_PRESETS, VIBE_MODES } from './audioEnhancer.js';
+import { AMBIENT_MODES, SOUND_PRESETS, VIBE_MODES } from './audioEnhancer.js';
 import { resolveHumanRequester } from './access.js';
 
 export const LOOP_LABELS = {
@@ -193,6 +193,10 @@ export function buildPlayerPayload(player, overrides = {}) {
  const vibeMode = overrides.vibeMode ?? player?.userdata?.vibeMode ?? 'normal';
  const vibeInfo = VIBE_MODES[vibeMode] ?? VIBE_MODES.normal;
  const vibeBadge = vibeMode !== 'normal' ? ` • ${vibeInfo.emoji} **${vibeInfo.label}**` : '';
+ const ambientMode = overrides.ambientMode ?? player?.userdata?.ambientMode ?? 'off';
+ const ambientInfo = AMBIENT_MODES[ambientMode] ?? AMBIENT_MODES.off;
+ const ambientBadge = ambientMode !== 'off' ? ` • ${ambientInfo.emoji} **${ambientInfo.label}**` : '';
+ const dedication = track?.metadata?.dedication ?? null;
  const ownerId = resolveOwnerId(player, track);
  const voiceChannelId = player?.userdata?.voiceChannelId ?? null;
  const trackUrl = safeHttpUrl(track?.url);
@@ -201,13 +205,13 @@ export function buildPlayerPayload(player, overrides = {}) {
  const author = cleanText(track?.metadata?.author ?? 'Nghệ sĩ', 45);
  const sourceName = resolveSourceLabel(track?.source);
 
- const accentColor = voiceMuted ? 0xed4245 : (isPaused ? 0xfee75c : 0x7c4dff);
+ const accentColor = voiceMuted ? 0xed4245 : (isPaused ? 0xfee75c : (dedication ? 0xec4899 : 0x7c4dff));
  const container = new ContainerBuilder().setAccentColor(accentColor);
 
  // Phần đầu khung: Tiêu đề bài hát, nghệ sĩ, thông số phát và nút mở bài gốc.
  const sleepLabel = player?.userdata?.sleepTimerLabel ? ` • 💤 **${player.userdata.sleepTimerLabel}**` : '';
  const titleLine = trackUrl ? `### 🎵 [**${title}**](${trackUrl})` : `### 🎵 **${title}**`;
- const metaLine = `👤 Nghệ sĩ: **${author}** • 📡 Nguồn: **${sourceName}** • 🎧 Chất âm: **${soundLabel}**${vibeBadge}`;
+ const metaLine = `👤 Nghệ sĩ: **${author}** • 📡 Nguồn: **${sourceName}** • 🎧 Chất âm: **${soundLabel}**${vibeBadge}${ambientBadge}`;
  const stateLine = `🔊 **${volume}%** • 🔁 **${LOOP_LABELS[loopMode] ?? LOOP_LABELS.off}** • ✨ Tự phát: **${autoPlay ? 'Bật' : 'Tắt'}** • 🌙 24/7: **${stay247 ? 'Bật' : 'Tắt'}** • 📌 Chờ: **${upcoming.length}**${sleepLabel}`;
  const roomLine = [
   voiceChannelId ? `🎙️ Kênh: <#${voiceChannelId}>` : '🎙️ Kênh thoại đang kết nối',
@@ -230,6 +234,14 @@ export function buildPlayerPayload(player, overrides = {}) {
   );
  }
  container.addSectionComponents(headerSection);
+ if (dedication && typeof dedication === 'object') {
+  const fromMention = dedication.fromId ? `<@${dedication.fromId}>` : `**${cleanText(dedication.fromName ?? 'Một người bạn', 30)}**`;
+  const toMention = dedication.toId ? `<@${dedication.toId}>` : `**${cleanText(dedication.toName ?? 'Bạn', 30)}**`;
+  const msgNote = dedication.message ? ` — *"${cleanText(dedication.message, 150)}"*` : '';
+  container.addTextDisplayComponents(
+   new TextDisplayBuilder().setContent(`> 💌 **Gửi tặng âm nhạc:** ${fromMention} ➔ ${toMention}${msgNote}`),
+  );
+ }
  container.addSeparatorComponents(new SeparatorBuilder().setDivider(true).setSpacing(1));
 
  // Thanh tiến trình thời gian thực (tự đồng bộ theo từng khung âm thanh Opus của @discordjs/voice) + đồng hồ đếm ngược trực tiếp của Discord.
@@ -297,6 +309,11 @@ export function buildPlayerPayload(player, overrides = {}) {
      .setDescription('Chuyển vòng trực tiếp: Chuẩn Gốc → Nightcore → Slowed + Echo → Lo-Fi Đĩa Than')
      .setValue('cycle_vibe')
      .setEmoji('⚡'),
+    new StringSelectMenuOptionBuilder()
+     .setLabel(`Tiếng nền Chill (hiện tại: ${ambientInfo.label})`)
+     .setDescription('Trộn êm tiếng Mưa đêm / Lửa trại / Sóng biển / Gió đêm vào bài hát')
+     .setValue('cycle_ambient')
+     .setEmoji('🌧️'),
     new StringSelectMenuOptionBuilder()
      .setLabel('Tùy chỉnh âm lượng (0% – 200%)')
      .setDescription(`Nhập số phần trăm bất kỳ từ 0 đến 200 (hiện tại: ${volume}%)`)
@@ -710,5 +727,50 @@ export function buildGrabDmEmbed(track, player, guild, botUser) {
  if (trackUrl) embed.setURL(trackUrl);
  if (artworkUrl) embed.setThumbnail(artworkUrl);
  return embed;
+}
+
+// Khung chọn bài hát từ Top 5 kết quả tìm kiếm (/search) để người dùng tự chọn đúng bản Official / Live / Remix ưng ý nhất.
+export function buildSearchPickerPayload(token, tracks, rawQuery, playNext = false, botUser = null) {
+ const avatarUrl = botUser?.displayAvatarURL?.({ size: 128 }) ?? undefined;
+ const top5 = tracks.slice(0, 5);
+ const lines = top5.map((t, idx) => {
+  const author = cleanText(t.metadata?.author ?? 'Nghệ sĩ', 35);
+  return `\`#${idx + 1}\` **${cleanText(t.title, 68)}** — *${author}* (\`${formatDuration(t.duration)}\`)`;
+ });
+
+ const embed = new EmbedBuilder()
+  .setColor(0x6366f1)
+  .setAuthor({
+   name: `${cleanText(botUser?.username ?? 'Music Bot', 35)} • Chọn Phiên Bản Bài Hát`,
+   ...(avatarUrl ? { iconURL: avatarUrl } : {}),
+  })
+  .setTitle(`🔍 Kết quả cho: "${cleanText(rawQuery, 70)}"`)
+  .setDescription([
+   ...lines,
+   '',
+   playNext
+    ? '⏭️ *Bài bạn chọn sẽ được ưu tiên chèn lên đầu hàng đợi (phát ngay kế tiếp).* '
+    : '💡 *Chọn đúng phiên bản bạn muốn nghe ở menu bên dưới (hiệu lực trong 60 giây).*',
+  ].join('\n'))
+  .setTimestamp();
+
+ const select = new StringSelectMenuBuilder()
+  .setCustomId(`search_pick:${token}`)
+  .setPlaceholder('🎵 Bấm vào đây để chọn 1 trong 5 phiên bản...')
+  .addOptions(
+   top5.map((t, idx) =>
+    new StringSelectMenuOptionBuilder()
+     .setLabel(`${idx + 1}. ${cleanText(t.title, 85)}`)
+     .setDescription(`${cleanText(t.metadata?.author ?? 'Nghệ sĩ', 50)} • Thời lượng: ${formatDuration(t.duration)}`)
+     .setValue(String(idx))
+     .setEmoji(['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣'][idx] ?? '🎵'),
+   ),
+  );
+
+ return {
+  embeds: [embed],
+  components: [new ActionRowBuilder().addComponents(select)],
+  allowedMentions: { parse: [] },
+ };
 }
 

@@ -1,7 +1,8 @@
 import { createHmac } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { SOUND_PRESETS, VIBE_MODES } from './audioEnhancer.js';
+import { AMBIENT_MODES, SOUND_PRESETS, VIBE_MODES } from './audioEnhancer.js';
 import { openFavoritesPayload } from './favoritesStore.js';
+import { openMixtapesPayload } from './mixtapeStore.js';
 import { cleanText, LOOP_LABELS, renderSyncedProgress, safeHttpUrl } from './playerGui.js';
 import { openSessionPayload } from './sessionStore.js';
 import { openStatsPayload } from './statsStore.js';
@@ -131,6 +132,8 @@ export function serializeNowPlayingState({ player, client, overrides = {} } = {}
  const soundLabel = SOUND_PRESETS[soundPreset]?.label ?? SOUND_PRESETS.hd.label;
  const vibeMode = overrides.vibeMode ?? player?.userdata?.vibeMode ?? 'normal';
  const vibeInfo = VIBE_MODES[vibeMode] ?? VIBE_MODES.normal;
+ const ambientMode = overrides.ambientMode ?? player?.userdata?.ambientMode ?? 'off';
+ const ambientInfo = AMBIENT_MODES[ambientMode] ?? AMBIENT_MODES.off;
 
  let voiceChannelName = null;
  const vcId = player?.userdata?.voiceChannelId;
@@ -168,6 +171,14 @@ export function serializeNowPlayingState({ player, client, overrides = {} } = {}
   const webLyrics = sanitizeWebLyricsDescriptor(
    overrides.webLyrics ?? rawTrack.metadata?.webLyrics ?? rawTrack.webLyrics ?? null,
   );
+  const rawDed = rawTrack.metadata?.dedication;
+  const dedication = rawDed && typeof rawDed === 'object'
+   ? {
+      fromName: cleanText(rawDed.fromName ?? 'Một người bạn', 35),
+      toName: cleanText(rawDed.toName ?? 'Bạn', 35),
+      message: cleanText(rawDed.message ?? '', 160),
+     }
+   : null;
   trackPayload = {
    title: cleanText(rawTrack.title ?? 'Không rõ tiêu đề', 120),
    author: cleanText(rawTrack.metadata?.author ?? 'Nghệ sĩ', 65),
@@ -177,6 +188,7 @@ export function serializeNowPlayingState({ player, client, overrides = {} } = {}
    sourceLabel: formatSourceLabel(rawTrack.source),
    positionMs: Math.max(0, Math.round(currentMs ?? 0)),
    durationMs: Math.max(0, Math.round(totalMs ?? 0)),
+   ...(dedication ? { dedication } : {}),
    ...(webAudio ? { webAudio } : {}),
    ...(webLyrics ? { lyrics: webLyrics } : {}),
   };
@@ -214,6 +226,8 @@ export function serializeNowPlayingState({ player, client, overrides = {} } = {}
    vibeMode,
    vibeLabel: vibeInfo.label,
    vibeRate: vibeInfo.rate ?? 1.0,
+   ambientMode,
+   ambientLabel: ambientInfo.label,
    sleepTimerLabel,
   },
   track: trackPayload,
@@ -230,6 +244,8 @@ export function createNowPlayingHub({
  onRemoteFavorites = null,
  getStatsSeal = null,
  onRemoteStats = null,
+ getMixtapesSeal = null,
+ onRemoteMixtapes = null,
  client,
  htmlPath = new URL('../web/index.html', import.meta.url),
  env = process.env,
@@ -277,6 +293,7 @@ export function createNowPlayingHub({
   const seal = typeof getResumeSeal === 'function' ? getResumeSeal() : undefined;
   const favSeal = typeof getFavoritesSeal === 'function' ? getFavoritesSeal() : undefined;
   const statsSeal = typeof getStatsSeal === 'function' ? getStatsSeal() : undefined;
+  const mixtapesSeal = typeof getMixtapesSeal === 'function' ? getMixtapesSeal() : undefined;
   if (seal) {
    remoteBackupCheckFailed = false;
    explicitSealClear = false;
@@ -289,6 +306,7 @@ export function createNowPlayingHub({
    ...(typeof getResumeSeal === 'function' ? { resumeSeal: seal ?? null } : {}),
    ...(typeof getFavoritesSeal === 'function' ? { favoritesSeal: favSeal ?? null } : {}),
    ...(typeof getStatsSeal === 'function' ? { statsSeal: statsSeal ?? null } : {}),
+   ...(typeof getMixtapesSeal === 'function' ? { mixtapesSeal: mixtapesSeal ?? null } : {}),
   };
   const headers = { 'Content-Type': 'application/json' };
   if (pushSecret) headers.Authorization = `Bearer ${pushSecret}`;
@@ -476,6 +494,12 @@ export function createNowPlayingHub({
      try {
       const openedStats = openStatsPayload(data.statsSeal, botToken);
       if (openedStats) onRemoteStats(openedStats);
+     } catch {}
+    }
+    if (data?.mixtapesSeal && typeof onRemoteMixtapes === 'function') {
+     try {
+      const openedMixtapes = openMixtapesPayload(data.mixtapesSeal, botToken);
+      if (openedMixtapes) onRemoteMixtapes(openedMixtapes);
      } catch {}
     }
     if (!data?.resumeSeal) return null;

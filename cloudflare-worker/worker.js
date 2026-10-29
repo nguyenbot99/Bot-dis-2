@@ -68,8 +68,9 @@ function withLivePosition(state) {
   }
   if (state.status === 'playing' && state.track && state.serverTimeMs) {
     const elapsed = Math.max(0, Date.now() - Number(state.serverTimeMs));
+    const rate = Number(state.settings?.vibeRate) > 0 ? Number(state.settings.vibeRate) : 1;
     const total = Math.max(0, Number(state.track.durationMs) || 0);
-    let pos = Math.max(0, (Number(state.track.positionMs) || 0) + elapsed);
+    let pos = Math.max(0, Math.round((Number(state.track.positionMs) || 0) + elapsed * rate));
     if (total > 0 && pos > total) pos = total;
     return {
       ...state,

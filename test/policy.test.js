@@ -25,6 +25,18 @@ test('valid search, SoundCloud/Spotify normalization, and mobile share text extr
   'https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT',
  );
  assert.equal(
+  validateQuery('https://open.spotify.com/intl-vi/playlist/37i9dQZF1DXcBWIGoYBM5M?si=abcd'),
+  'https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M',
+ );
+ assert.equal(
+  validateQuery('https://open.spotify.com/album/4aawyAB9vmqN3uQ7FjRGTy?si=xyz'),
+  'https://open.spotify.com/album/4aawyAB9vmqN3uQ7FjRGTy',
+ );
+ assert.equal(
+  validateQuery('https://m.soundcloud.com/a/sets/b/?si=123'),
+  'https://soundcloud.com/a/sets/b',
+ );
+ assert.equal(
   validateQuery('Nghe nhạc trên #SoundCloud https://m.soundcloud.com/lostskydiary/tule-fearless-2/?si=abc'),
   'https://soundcloud.com/lostskydiary/tule-fearless-2',
  );
@@ -111,15 +123,14 @@ test('resolveMusicRequest resolves YouTube links via lightweight oEmbed without 
  assert.equal(resolved.spotifyMeta?.thumbnail, 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg');
 });
 
-test('reject dangerous URLs and playlists', () => {
+test('reject dangerous URLs and unsupported collections', () => {
  for (const q of [
   'http://127.0.0.1',
   'file:///etc/passwd',
   'https://youtube.com.evil.org/x',
   'https://youtube.com/playlist?list=x',
-  'https://soundcloud.com/a/sets/b',
-  'https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M',
-  'https://open.spotify.com/album/123456',
+  'https://open.spotify.com/artist/37i9dQZF1DXcBWIGoYBM5M',
+  'https://open.spotify.com/episode/123456',
   'https://soundcloud.com/only-profile',
   '',
   'x'.repeat(401),
@@ -135,8 +146,8 @@ test('resolveConfig works with DISCORD_TOKEN only and optional GUILD_ID', () => 
  assert.throws(() => resolveConfig({ DISCORD_TOKEN: 'abc', GUILD_ID: 'ten-server' }), /GUILD_ID không hợp lệ/);
 });
 
-test('unique guild-only commands and valid help embed covering all 27 commands', () => {
- assert.equal(new Set(commands.map(c => c.name)).size, 27);
+test('unique guild-only commands and valid help embed covering all 32 commands', () => {
+ assert.equal(new Set(commands.map(c => c.name)).size, 32);
  assert.ok(commands.every(c => c.dm_permission === false));
  const data = buildHelpEmbed({ username: 'Bắt_Don', displayAvatarURL: () => 'https://cdn.discordapp.com/embed/avatars/0.png' }).toJSON();
  assert.equal(data.color, 0x5865f2);

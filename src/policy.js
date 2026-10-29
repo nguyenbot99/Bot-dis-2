@@ -48,6 +48,8 @@ export function extractYouTubeVideoId(rawUrl) {
  return /^[A-Za-z0-9_-]{3,20}$/.test(id) ? id : null;
 }
 
+export const MAX_COLLECTION_TRACKS = 20;
+
 // Chuẩn hóa đường dẫn YouTube / SoundCloud / Spotify về định dạng chuẩn mà bộ giải mã nhạc xử lý ổn định nhất.
 function normalizeMusicUrl(rawUrl) {
  let u;
@@ -55,9 +57,6 @@ function normalizeMusicUrl(rawUrl) {
  const host = u.hostname.toLowerCase();
  if (u.protocol !== 'https:' || !isSupportedHost(host) || u.username || u.password || u.port) {
   throw new Error('Chỉ nhận URL HTTPS từ YouTube, SoundCloud hoặc Spotify.');
- }
- if (u.searchParams.has('list') || /\/playlist|\/sets\//i.test(u.pathname)) {
-  throw new Error('Bản tiết kiệm RAM không nhận danh sách phát (playlist/set) — hãy dán link bài lẻ.');
  }
 
  for (const key of [...u.searchParams.keys()]) {
@@ -72,21 +71,26 @@ function normalizeMusicUrl(rawUrl) {
   u.hostname = 'soundcloud.com';
   u.pathname = u.pathname.replace(/\/+$/, '') || '/';
   const segments = u.pathname.split('/').filter(Boolean);
-  if (segments.length < 2) {
-   throw new Error('Hãy dán link của một bài hát SoundCloud cụ thể (không phải trang chủ hoặc trang cá nhân).');
+  const isSet = segments.length === 3 && segments[1].toLowerCase() === 'sets';
+  const isSingleTrack = segments.length === 2 && segments[1].toLowerCase() !== 'sets';
+  if (!isSet && !isSingleTrack) {
+   throw new Error('Hãy dán link bài hát hoặc playlist (/sets/...) SoundCloud cụ thể (không phải trang chủ/trang cá nhân).');
   }
  } else if (SPOTIFY_HOSTS.has(host)) {
   u.pathname = u.pathname.replace(/^\/intl-[a-z]{2}\//i, '/').replace(/\/+$/, '') || '/';
-  if (/^\/(playlist|album|artist|show|episode)\b/i.test(u.pathname)) {
-   throw new Error('Bản tiết kiệm RAM không nhận danh sách phát/album Spotify — hãy dán link từng bài (/track/...).');
+  if (/^\/(artist|show|episode)\b/i.test(u.pathname)) {
+   throw new Error('Không hỗ trợ trang nghệ sĩ hoặc podcast Spotify — hãy dán link bài hát (/track/), playlist (/playlist/) hoặc album (/album/).');
   }
-  if (!/^\/track\/[A-Za-z0-9]+$/i.test(u.pathname)) {
-   throw new Error('Link Spotify không hợp lệ (hãy dán link bài hát dạng open.spotify.com/track/...).');
+  if (!/^\/(?:track|playlist|album)\/[A-Za-z0-9]+$/i.test(u.pathname)) {
+   throw new Error('Link Spotify không hợp lệ (hãy dán link dạng open.spotify.com/track/..., /playlist/... hoặc /album/...).');
   }
  } else if (SHORT_REDIRECT_HOSTS.has(host)) {
   u.pathname = u.pathname.replace(/\/+$/, '') || '/';
   if (u.pathname === '/') throw new Error('Link rút gọn không hợp lệ.');
  } else if (YOUTUBE_HOSTS.has(host)) {
+  if (u.searchParams.has('list') || /\/playlist/i.test(u.pathname)) {
+   throw new Error('Bản tiết kiệm RAM không nhận danh sách phát YouTube — hãy dán link video lẻ hoặc dùng Playlist Spotify / SoundCloud.');
+  }
   if (host === 'm.youtube.com') u.hostname = 'www.youtube.com';
   else if (host === 'www.youtu.be') u.hostname = 'youtu.be';
   const videoId = extractYouTubeVideoId(u.toString());
@@ -226,9 +230,21 @@ export async function resolveMusicRequest(input, fetchImpl = fetch, spotifyResol
  }
 
  const normalized = validateQuery(current.toString());
- const normHost = new URL(normalized).hostname.toLowerCase();
+ const normUrlObj = new URL(normalized);
+ const normHost = normUrlObj.hostname.toLowerCase();
 
  if (SPOTIFY_HOSTS.has(normHost)) {
+  const colMatch = normUrlObj.pathname.match(/^\/(playlist|album)\/([A-Za-z0-9]+)$/i);
+  if (colMatch) {
+   const kind = colMatch[1].toLowerCase();
+   const colId = colMatch[2];
+   const spotifyCollection = await resolveSpotifyCollection(kind, colId, normalized, fetchImpl);
+   return {
+    query: normalized,
+    spotifyMeta: null,
+    spotifyCollection,
+   };
+  }
   try {
    if (spotifyResolverFn) {
     const meta = await spotifyResolverFn(normalized);
@@ -291,7 +307,90 @@ export async function resolveMusicRequest(input, fetchImpl = fetch, spotifyResol
   };
  }
 
- return { query: normalized, spotifyMeta: null };
+ return {
+  query: normalized,
+  spotifyMeta: null,
+  isSoundCloudSet: normHost === 'soundcloud.com' && /^\/[^/]+\/sets\/[^/]+$/i.test(normUrlObj.pathname),
+ };
+}
+
+// Giải mã siêu nhẹ Playlist / Album Spotify qua trang nhúng Embed JSON (~80 KB, 0 MB JSDOM, tối đa 20 bài/lần).
+export async function resolveSpotifyCollection(kind, id, fullUrl, fetchImpl = fetch) {
+ const embedUrl = `https://open.spotify.com/embed/${kind}/${id}`;
+ let entity = null;
+ try {
+  const res = await fetchImpl(embedUrl, {
+   signal: AbortSignal.timeout(8000),
+   headers: {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0.0.0 Safari/537.36',
+   },
+  });
+  if (res?.ok) {
+   const html = await res.text();
+   const m = html.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/i);
+   if (m) {
+    const parsed = JSON.parse(m[1]);
+    entity = parsed?.props?.pageProps?.state?.data?.entity ?? null;
+   }
+  }
+ } catch {}
+
+ const rawList = Array.isArray(entity?.trackList) ? entity.trackList : [];
+ const items = [];
+ for (const item of rawList) {
+  if (!item || item.isPlayable === false) continue;
+  const title = String(item.title ?? '').replace(/\s+/g, ' ').trim();
+  const artist = String(item.subtitle ?? '').replace(/\s*•\s*/g, ', ').replace(/\s+/g, ' ').trim();
+  if (!title) continue;
+  items.push({
+   title,
+   artist,
+   durationMs: Math.max(0, Number(item.duration ?? 0) || 0),
+   query: [title, artist].filter(Boolean).join(' - ').slice(0, 260),
+  });
+  if (items.length >= MAX_COLLECTION_TRACKS) break;
+ }
+
+ if (!items.length) {
+  try {
+   const details = await defaultSpotifyGetDetails(fullUrl);
+   const fallbackTracks = Array.isArray(details?.tracks) ? details.tracks : [];
+   for (const t of fallbackTracks) {
+    const title = String(t?.name ?? t?.title ?? '').replace(/\s+/g, ' ').trim();
+    const artist = Array.isArray(t?.artists)
+     ? t.artists.map(a => a?.name).filter(Boolean).join(', ')
+     : String(t?.artist ?? '').trim();
+    if (!title) continue;
+    items.push({
+     title,
+     artist,
+     durationMs: Math.max(0, Number(t?.duration ?? 0) || 0),
+     query: [title, artist].filter(Boolean).join(' - ').slice(0, 260),
+    });
+    if (items.length >= MAX_COLLECTION_TRACKS) break;
+   }
+   if (items.length > 0 && !entity) {
+    entity = { name: details?.preview?.title, coverArt: { sources: [{ url: details?.preview?.image }] } };
+   }
+  } catch {}
+ }
+
+ if (!items.length) {
+  throw new Error('Không thể đọc danh sách bài hát từ Playlist/Album Spotify này (danh sách trống hoặc để riêng tư).');
+ }
+
+ const coverUrl = entity?.coverArt?.sources?.[0]?.url ?? entity?.visualIdentity?.image?.[0]?.url ?? null;
+ const rawName = String(entity?.name ?? entity?.title ?? (kind === 'album' ? 'Album Spotify' : 'Playlist Spotify'))
+  .replace(/\s+/g, ' ')
+  .trim();
+
+ return {
+  kind,
+  name: rawName.slice(0, 100),
+  totalCount: rawList.length || items.length,
+  thumbnail: typeof coverUrl === 'string' && coverUrl.startsWith('https://') ? coverUrl : null,
+  items,
+ };
 }
 
 export async function resolveMusicQuery(input, fetchImpl = fetch, spotifyPreviewFn = null) {

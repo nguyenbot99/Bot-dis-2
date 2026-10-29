@@ -87,6 +87,38 @@ export const SOUND_PRESETS = {
 
 export const SOUND_PRESET_ORDER = ['hd', 'vocal', 'bass', '8d', 'flat'];
 
+// Bộ biến đổi Vibe bài hát thời gian thực (Nightcore / Slowed + Echo / Lo-Fi Đĩa Than) ngay trong luồng PCM mà không cần tạo thêm tiến trình FFmpeg.
+export const VIBE_MODES = {
+ normal: {
+  label: 'Chuẩn Gốc',
+  emoji: '🎵',
+  description: 'Tốc độ & tông giọng nguyên bản 1.0x của bản thu',
+  rate: 1.0,
+ },
+ nightcore: {
+  label: 'Nightcore Sôi Động',
+  emoji: '⚡',
+  description: 'Tăng tốc 1.20x & nâng tông ca sĩ cao trẻ trung, cực cuốn',
+  rate: 1.2,
+ },
+ slowed: {
+  label: 'Slowed + Echo Đêm Muộn',
+  emoji: '🌧️',
+  description: 'Hạ tốc 0.86x kèm tiếng vang phòng đêm sâu lắng, tâm trạng',
+  rate: 0.86,
+  echoDelaySamples: 4080, // 85ms vang stereo (~32 KB cấp phát lười khi bật)
+ },
+ lofi: {
+  label: 'Lo-Fi Đĩa Than',
+  emoji: '☕',
+  description: 'Lọc ấm băng từ cổ điển kèm tiếng đĩa than vinyl dịu nhẹ thư giãn',
+  rate: 1.0,
+  lofiVinyl: true,
+ },
+};
+
+export const VIBE_MODE_ORDER = ['normal', 'nightcore', 'slowed', 'lofi'];
+
 // Tính toán hệ số lọc số Biquad chuẩn RBJ Audio EQ Cookbook ở tần số lấy mẫu 48 kHz.
 function designBiquad({ type, freq, q = 0.707, gainDb = 0 }, sampleRate = DSP_SAMPLE_RATE) {
  const w0 = (2 * Math.PI * freq) / sampleRate;
@@ -97,6 +129,14 @@ function designBiquad({ type, freq, q = 0.707, gainDb = 0 }, sampleRate = DSP_SA
 
  let b0 = 1, b1 = 0, b2 = 0, a0 = 1, a1 = 0, a2 = 0;
  switch (type) {
+  case 'lowpass':
+   b0 = (1 - cosW0) / 2;
+   b1 = 1 - cosW0;
+   b2 = (1 - cosW0) / 2;
+   a0 = 1 + alpha;
+   a1 = -2 * cosW0;
+   a2 = 1 - alpha;
+   break;
   case 'highpass':
    b0 = (1 + cosW0) / 2;
    b1 = -(1 + cosW0);
@@ -208,7 +248,14 @@ const OPUS_CTL = {
  SIGNAL_MUSIC: 3002,       // Khóa chế độ mã hóa âm nhạc stereo CELT (không bị nhảy sang chế độ thoại VoIP)
 };
 
+const LOFI_WARMTH_COEFFS = [
+ designBiquad({ type: 'highpass', freq: 105, q: 0.707, gainDb: 0 }, DSP_SAMPLE_RATE),
+ designBiquad({ type: 'peaking', freq: 240, q: 0.9, gainDb: 2.8 }, DSP_SAMPLE_RATE),
+ designBiquad({ type: 'lowpass', freq: 3950, q: 0.78, gainDb: 0 }, DSP_SAMPLE_RATE),
+];
+
 let activePreset = 'hd';
+let activeVibe = 'normal';
 let targetBitrate = 128000;
 let installed = false;
 let currentEncoder = null;
@@ -232,15 +279,18 @@ function applyOpusMusicTuning(opusStream, bitrate) {
 }
 
 // Cập nhật cấu hình chất âm (áp dụng ngay lập tức lên bài đang phát!) và mức bitrate mục tiêu của kênh thoại.
-export function setAudioEnhancement({ preset, channelBitrate } = {}) {
+export function setAudioEnhancement({ preset, vibe, channelBitrate } = {}) {
  if (preset && SOUND_PRESETS[preset]) {
   activePreset = preset;
+ }
+ if (vibe && VIBE_MODES[vibe]) {
+  activeVibe = vibe;
  }
  if (channelBitrate) {
   targetBitrate = Math.min(256000, Math.max(128000, Number(channelBitrate) || 128000));
   if (currentEncoder?.encoder) applyOpusMusicTuning(currentEncoder, targetBitrate);
  }
- return { preset: activePreset, bitrate: targetBitrate };
+ return { preset: activePreset, vibe: activeVibe, bitrate: targetBitrate };
 }
 
 export function getActiveSoundPreset() {
@@ -250,6 +300,15 @@ export function getActiveSoundPreset() {
 export function getNextSoundPreset(current = activePreset) {
  const idx = SOUND_PRESET_ORDER.indexOf(current);
  return SOUND_PRESET_ORDER[(idx + 1) % SOUND_PRESET_ORDER.length];
+}
+
+export function getActiveVibeMode() {
+ return activeVibe;
+}
+
+export function getNextVibeMode(current = activeVibe) {
+ const idx = VIBE_MODE_ORDER.indexOf(current);
+ return VIBE_MODE_ORDER[(idx + 1) % VIBE_MODE_ORDER.length];
 }
 
 // Mở khóa giới hạn âm lượng 0% – 200%, chống tự cắt luồng sau 5 phút & giữ nguyên bài đang tạm dừng không bao giờ nhảy sang bài kế tiếp.
@@ -467,6 +526,20 @@ export function installAudioEnhancer(ffmpegPath) {
    this._dspHaasL = new Float32Array(32);
    this._dspHaasR = new Float32Array(32);
    this._dspHaasIdx = 0;
+   this._vibeKey = 'normal';
+   this._vibePos = 0;
+   this._vibePrevL = 0;
+   this._vibePrevR = 0;
+   this._vibeHasPrev = false;
+   this._echoBufL = null;
+   this._echoBufR = null;
+   this._echoIdx = 0;
+   this._echoLpL = 0;
+   this._echoLpR = 0;
+   this._lofiStates = null;
+   this._lofiSeed = 0x5a17c3d9;
+   this._lofiCrackleL = 0;
+   this._lofiCrackleR = 0;
    this._dspCurrentGain = computePerceptualGain(this.volume);
    if (this._readableState) this._readableState.highWaterMark = LOW_LATENCY_PCM_HWM;
    if (this._writableState) this._writableState.highWaterMark = LOW_LATENCY_PCM_HWM;
@@ -482,6 +555,78 @@ export function installAudioEnhancer(ffmpegPath) {
   this._dspCarry = input.length > complete ? Buffer.from(input.subarray(complete)) : Buffer.alloc(0);
 
   const forcedKey = this._forcePresetKey;
+  const vibeKey = forcedKey ? 'normal' : (VIBE_MODES[activeVibe] ? activeVibe : 'normal');
+  const vibeCfg = VIBE_MODES[vibeKey];
+  if (this._vibeKey !== vibeKey) {
+   this._vibeKey = vibeKey;
+   if (vibeKey === 'slowed') {
+    const echoLen = vibeCfg.echoDelaySamples || 4080;
+    this._echoBufL = new Float32Array(echoLen);
+    this._echoBufR = new Float32Array(echoLen);
+    this._echoIdx = 0;
+    this._echoLpL = 0;
+    this._echoLpR = 0;
+   } else {
+    this._echoBufL = null;
+    this._echoBufR = null;
+   }
+   if (vibeKey === 'lofi') {
+    this._lofiStates = new Float64Array(LOFI_WARMTH_COEFFS.length * 4);
+   } else {
+    this._lofiStates = null;
+   }
+  }
+
+  let workBuf = input;
+  let workBytes = complete;
+  const inFrames = complete >> 2;
+  if (inFrames > 0) {
+   const lastByte = (inFrames - 1) * STEREO_BYTES;
+   const endSampleL = this._readInt(input, lastByte);
+   const endSampleR = this._readInt(input, lastByte + 2);
+   if (!this._vibeHasPrev) {
+    this._vibePrevL = this._readInt(input, 0);
+    this._vibePrevR = this._readInt(input, 2);
+    this._vibeHasPrev = true;
+   }
+   if (vibeCfg.rate !== 1.0) {
+    const rate = vibeCfg.rate;
+    let pos = this._vibePos;
+    const estFrames = Math.max(0, Math.ceil((inFrames - pos) / rate));
+    if (estFrames === 0) {
+     this._vibePos = Math.max(0, pos - inFrames);
+     this._vibePrevL = endSampleL;
+     this._vibePrevR = endSampleR;
+     return done();
+    }
+    const resampled = Buffer.allocUnsafe(estFrames * STEREO_BYTES);
+    let outFrames = 0;
+    const prevL = this._vibePrevL;
+    const prevR = this._vibePrevR;
+    while (pos < inFrames && outFrames < estFrames) {
+     const i1 = Math.floor(pos);
+     const frac = pos - i1;
+     const l0 = i1 === 0 ? prevL : this._readInt(input, (i1 - 1) * STEREO_BYTES);
+     const r0 = i1 === 0 ? prevR : this._readInt(input, (i1 - 1) * STEREO_BYTES + 2);
+     const l1 = this._readInt(input, i1 * STEREO_BYTES);
+     const r1 = this._readInt(input, i1 * STEREO_BYTES + 2);
+     const sL = Math.round(l0 + (l1 - l0) * frac);
+     const sR = Math.round(r0 + (r1 - r0) * frac);
+     this._writeInt(resampled, sL, outFrames * STEREO_BYTES);
+     this._writeInt(resampled, sR, outFrames * STEREO_BYTES + 2);
+     outFrames++;
+     pos += rate;
+    }
+    this._vibePos = Math.max(0, pos - inFrames);
+    workBytes = outFrames * STEREO_BYTES;
+    workBuf = workBytes === resampled.length ? resampled : resampled.subarray(0, workBytes);
+   } else {
+    this._vibePos = 0;
+   }
+   this._vibePrevL = endSampleL;
+   this._vibePrevR = endSampleR;
+  }
+  if (workBytes < STEREO_BYTES) return done();
   const presetKey = forcedKey && COMPILED_PRESETS[forcedKey]
    ? forcedKey
    : (COMPILED_PRESETS[activePreset] ? activePreset : 'hd');
@@ -510,16 +655,67 @@ export function installAudioEnhancer(ffmpegPath) {
   const haasR = this._dspHaasR;
   let haasIdx = this._dspHaasIdx;
 
-  const out = Buffer.allocUnsafe(complete);
-  for (let i = 0; i < complete; i += STEREO_BYTES) {
+  const echoBufL = this._echoBufL;
+  const echoBufR = this._echoBufR;
+  const echoLen = echoBufL ? echoBufL.length : 0;
+  let echoIdx = this._echoIdx;
+  let echoLpL = this._echoLpL;
+  let echoLpR = this._echoLpR;
+  const lofiStates = this._lofiStates;
+  let lofiSeed = this._lofiSeed;
+  let crackleL = this._lofiCrackleL;
+  let crackleR = this._lofiCrackleR;
+
+  const out = Buffer.allocUnsafe(workBytes);
+  for (let i = 0; i < workBytes; i += STEREO_BYTES) {
    // Làm mượt thay đổi âm lượng (exponential slewing ~10ms) chống tiếng nổ lụp bụp khi kéo gấp.
    currentGain += (targetGain - currentGain) * 0.005;
 
-   const dryL = this._readInt(input, i) / 32768;
-   const dryR = this._readInt(input, i + 2) / 32768;
+   const dryL = this._readInt(workBuf, i) / 32768;
+   const dryR = this._readInt(workBuf, i + 2) / 32768;
 
    let l = dryL;
    let r = dryR;
+
+   // Vang không gian Slowed + Echo đêm muộn (ping-pong ấm áp, lọc bớt chói dải cao của đuôi vang)
+   if (echoLen > 0) {
+    echoLpL = echoLpL * 0.68 + echoBufR[echoIdx] * 0.32;
+    echoLpR = echoLpR * 0.68 + echoBufL[echoIdx] * 0.32;
+    echoBufL[echoIdx] = l + echoLpL * 0.3;
+    echoBufR[echoIdx] = r + echoLpR * 0.3;
+    l = l * 0.88 + echoLpL * 0.25;
+    r = r * 0.88 + echoLpR * 0.25;
+    echoIdx++;
+    if (echoIdx >= echoLen) echoIdx = 0;
+   }
+
+   // Chất màu Lo-Fi Đĩa Than ấm áp + hạt bụi đĩa vinyl cực dịu
+   if (lofiStates) {
+    for (let s = 0; s < LOFI_WARMTH_COEFFS.length; s++) {
+     const c = LOFI_WARMTH_COEFFS[s];
+     const stIdx = s * 4;
+     const yL = c[0] * l + lofiStates[stIdx];
+     lofiStates[stIdx] = c[1] * l - c[3] * yL + lofiStates[stIdx + 1];
+     lofiStates[stIdx + 1] = c[2] * l - c[4] * yL;
+     l = yL;
+
+     const yR = c[0] * r + lofiStates[stIdx + 2];
+     lofiStates[stIdx + 2] = c[1] * r - c[3] * yR + lofiStates[stIdx + 3];
+     lofiStates[stIdx + 3] = c[2] * r - c[4] * yR;
+     r = yR;
+    }
+    lofiSeed = (lofiSeed * 1664525 + 1013904223) >>> 0;
+    if ((lofiSeed & 0x3fff) === 0x1357) {
+     const pop = (((lofiSeed >>> 16) & 0xff) / 255) * 0.011;
+     if (lofiSeed & 0x10000) crackleL += pop;
+     else crackleR += pop;
+    }
+    crackleL *= 0.94;
+    crackleR *= 0.94;
+    const hiss = (((lofiSeed & 0xffff) / 32768) - 1) * 0.0008;
+    l = Math.tanh(l * 1.15) * 0.9 + crackleL + hiss;
+    r = Math.tanh(r * 1.15) * 0.9 + crackleR - hiss * 0.6;
+   }
 
    if (numStages > 0 || width !== 1 || orbitStep > 0) {
     l *= preGain;
@@ -595,9 +791,15 @@ export function installAudioEnhancer(ffmpegPath) {
   this._dspRampSamples = ramp;
   this._dspOrbitPhase = orbitPhase;
   this._dspHaasIdx = haasIdx;
+  this._echoIdx = echoIdx;
+  this._echoLpL = echoLpL;
+  this._echoLpR = echoLpR;
+  this._lofiSeed = lofiSeed;
+  this._lofiCrackleL = crackleL;
+  this._lofiCrackleR = crackleR;
 
-  for (let off = 0; off < complete; off += OPUS_FRAME_BYTES) {
-   this.push(out.subarray(off, Math.min(complete, off + OPUS_FRAME_BYTES)));
+  for (let off = 0; off < workBytes; off += OPUS_FRAME_BYTES) {
+   this.push(out.subarray(off, Math.min(workBytes, off + OPUS_FRAME_BYTES)));
   }
   return done();
  };

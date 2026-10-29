@@ -106,10 +106,12 @@ test('sound preset rotation and bitrate clamping work cleanly', () => {
 
  assert.deepEqual(setAudioEnhancement({ preset: 'vocal', channelBitrate: 64000 }), {
   preset: 'vocal',
+  vibe: 'normal',
   bitrate: 128000,
  });
  assert.deepEqual(setAudioEnhancement({ preset: 'hd', channelBitrate: 256000 }), {
   preset: 'hd',
+  vibe: 'normal',
   bitrate: 256000,
  });
  assert.ok(Object.values(SOUND_PRESETS).every(p => p.filter.includes('resampler=soxr')));

@@ -12,7 +12,11 @@ const definitions = [
  ['sfx', 'Phát tiếng động Meme tấu hài trong kênh thoại (tự dừng & phát tiếp nhạc)'],
  ['fav', 'Quản lý & phát Tủ nhạc Yêu thích cá nhân của riêng bạn'],
  ['sleeptimer', 'Hẹn giờ tự động giảm nhỏ âm lượng rồi tắt nhạc êm ái khi đi ngủ'],
- ['play', 'Phát nhạc từ tên bài hoặc link lẻ YouTube / SoundCloud / Spotify'],
+ ['radio', 'Mở Đài Radio Không Ngủ theo tâm trạng (tự lên danh sách & phát xuyên đêm)'],
+ ['vibe', 'Biến đổi Vibe bài hát trực tiếp: Chuẩn Gốc / Nightcore / Slowed + Echo / Lo-Fi'],
+ ['play', 'Phát nhạc từ tên bài, link lẻ hoặc nguyên Playlist / Album Spotify & SoundCloud'],
+ ['replay', 'Tua nhanh bài hát đang phát về lại từ đầu (0:00)'],
+ ['grab', 'Bỏ túi thông tin, ảnh bìa & link bài đang nghe về Tin nhắn riêng (DM) của bạn'],
  ['pause', 'Tạm dừng bài hát đang phát'],
  ['resume', 'Tiếp tục phát bài hát đang tạm dừng'],
  ['skip', 'Bỏ qua bài hiện tại (hoặc nhảy thẳng tới bài ở vị trí chọn trong hàng đợi)'],
@@ -30,6 +34,7 @@ const definitions = [
  ['history', 'Xem danh sách tối đa 10 bài hát vừa phát gần đây'],
  ['nowplaying', 'Xem thông tin chi tiết bài hát đang được phát'],
  ['lyrics', 'Tìm và xem lời bài hát đang phát hoặc theo tên bài nhập vào'],
+ ['stats', 'Xem Bảng Vàng Âm Nhạc Server (Top bài, Top DJ) hoặc hồ sơ gu nhạc của bạn'],
  ['ping', 'Kiểm tra độ trễ kết nối và mức bộ nhớ Node của bot'],
 ];
 
@@ -53,50 +58,49 @@ export function buildHelpEmbed(botUser) {
   ].filter(Boolean).join('\n'))
   .addFields(
    {
-    name: '🎙️ Kết nối, Giải trí & 24/7',
+    name: '🎙️ Kết nối, Đài Radio & Giải trí',
     value: [
      '`/join` • `/leave` — Gọi bot vào hoặc rời khỏi kênh thoại hiện tại',
      '`/247` `[mode]` — Bật / tắt chế độ treo kênh thoại 24/7 không tự thoát',
-     '`/tts` `text` `[lang]` `[slow]` — Đọc giọng chị Google trong phòng thoại',
-     '`/sfx` `effect` — Thả tiếng động Meme tấu hài trong phòng thoại',
+     '`/radio` `station` — Mở Đài Radio Không Ngủ theo tâm trạng (Lofi, V-Pop, EDM...)',
+     '`/tts` `text` • `/sfx` `effect` — Đọc giọng chị Google / thả Meme trong phòng thoại',
      '`/autoplay` `[mode]` — Tự động phát tiếp nhạc cùng gu khi hết hàng đợi',
     ].join('\n'),
    },
    {
-    name: '▶️ Phát, Tủ nhạc & Hẹn giờ ngủ',
+    name: '▶️ Phát, Playlist, Tủ nhạc & Hẹn giờ',
     value: [
-     '`/play` `query` `[next]` — Phát từ tên bài hoặc link lẻ YouTube / SoundCloud / Spotify',
-     '`/fav` `action` `[query]` `[position]` — Lưu, xem & phát Tủ nhạc Yêu thích cá nhân',
+     '`/play` `query` `[next]` — Phát tên bài, link lẻ hoặc **Playlist/Album Spotify & SoundCloud**',
+     '`/fav` `action` — Lưu, xem & phát Tủ nhạc Yêu thích cá nhân của bạn',
      '`/sleeptimer` `[minutes]` `[after_track]` — Hẹn giờ giảm dần âm lượng tắt nhạc đi ngủ',
      '`/pause` • `/resume` • `/stop` — Tạm dừng, tiếp tục hoặc dừng hẳn nhạc',
-     '`/skip` `[to]` • `/previous` — Qua bài (hoặc nhảy vị trí `to`) / quay lại bài trước',
+     '`/skip` `[to]` • `/previous` • `/replay` — Qua bài, bài trước hoặc phát lại từ `0:00`',
      '`/seek` `time` — Tua nhanh tới mốc thời gian (ví dụ `1:30` hoặc `90`)',
     ].join('\n'),
    },
    {
-    name: '🎛️ Hàng đợi & Âm thanh',
+    name: '🎛️ Hàng đợi, Vibe & Âm thanh',
     value: [
-     '`/loop` `mode` — Lặp nhạc: `off` (Tắt) • `track` (Một bài) • `queue` (Hàng đợi)',
-     '`/shuffle` — Trộn ngẫu nhiên các bài đang chờ',
-     '`/move` `from` `to` — Đổi vị trí bài chờ trong `/queue` (`1` – `20`)',
-     '`/remove` `position` — Xóa một bài chờ theo số thứ tự (`1` – `20`)',
-     '`/clear` — Xóa sạch danh sách chờ mà không dừng bài đang phát',
+     '`/vibe` `mode` — Đổi Vibe trực tiếp: `normal` • `nightcore` • `slowed` • `lofi`',
      '`/volume` `percent` — Tùy chỉnh mức âm lượng phát bất kỳ (`0%` – `200%`)',
+     '`/loop` `mode` — Lặp nhạc: `off` (Tắt) • `track` (Một bài) • `queue` (Hàng đợi)',
+     '`/shuffle` • `/clear` — Trộn ngẫu nhiên hoặc xóa sạch danh sách bài chờ',
+     '`/move` `from` `to` • `/remove` `position` — Đổi chỗ / xóa bài trong `/queue`',
     ].join('\n'),
    },
    {
-    name: '📋 Tra cứu & Lời bài hát (Ai cũng dùng được)',
+    name: '📋 Tra cứu, Bỏ túi & Bảng Vàng (Ai cũng dùng được)',
     value: [
-     '`/nowplaying` — Xem chi tiết bài hát đang phát hiện tại',
+     '`/nowplaying` • `/grab` — Xem chi tiết bài hát hoặc bỏ túi về Tin nhắn riêng (DM)',
      '`/lyrics` `[query]` — Xem lời bài hát đang phát (hoặc tìm theo tên bài)',
-     '`/queue` — Xem danh sách tối đa 10 bài tiếp theo',
-     '`/history` — Xem 10 bài hát đã phát gần đây nhất',
+     '`/stats` `[scope]` — Xem **Bảng Vàng Top Nhạc & Top DJ** của máy chủ / cá nhân',
+     '`/queue` • `/history` — Xem 10 bài sắp phát hoặc 10 bài vừa phát gần đây',
      '`/ping` • `/help` — Kiểm tra độ trễ/RAM hoặc mở bảng hướng dẫn này',
     ].join('\n'),
    },
    {
-    name: '🎧 Nguồn & Chất âm',
-    value: 'YouTube, SoundCloud & Spotify\n**HD • Vocal • Bass • 8D 360°**',
+    name: '🎧 Nguồn, Chất âm & Vibe',
+    value: 'YT, SC & Playlist Spotify\n**HD • Vocal • Bass • 8D • Nightcore • Slowed**',
     inline: true,
    },
    {
@@ -288,6 +292,42 @@ export const commands = definitions.map(([name, description]) => {
    .setName('leave_voice')
    .setDescription('Đặt True để tự rời phòng thoại luôn sau khi tắt nhạc (kể cả đang bật 24/7)')
    .setRequired(false));
+ }
+ if (name === 'vibe') {
+  c.addStringOption(o => o
+   .setName('mode')
+   .setDescription('Chọn phong cách Vibe muốn biến đổi ngay trên bài đang phát')
+   .setRequired(true)
+   .addChoices(
+    { name: '🎵 Chuẩn Gốc (1.0x tự nhiên)', value: 'normal' },
+    { name: '⚡ Nightcore Sôi Động (1.20x tăng tốc & nâng tông)', value: 'nightcore' },
+    { name: '🌧️ Slowed + Echo Đêm Muộn (0.86x chậm sâu lắng)', value: 'slowed' },
+    { name: '☕ Lo-Fi Đĩa Than (Lọc ấm băng từ + tiếng đĩa vinyl)', value: 'lofi' },
+   ));
+ }
+ if (name === 'radio') {
+  c.addStringOption(o => o
+   .setName('station')
+   .setDescription('Chọn Đài Radio tâm trạng muốn phát tự động xuyên suốt')
+   .setRequired(true)
+   .addChoices(
+    { name: '☕ Lo-Fi Chill Học Bài & Code Đêm', value: 'lofi' },
+    { name: '🇻🇳 V-Pop Ballad & Indie Tâm Trạng', value: 'vpop' },
+    { name: '🔥 EDM & Remix Khuấy Động Phòng', value: 'edm' },
+    { name: '🎹 Piano & Anime Ghibli Không Lời', value: 'piano' },
+    { name: '🌎 US-UK Pop & Chill Hits', value: 'usuk' },
+    { name: '🌧️ Acoustic & Ambient Dịu Êm Dễ Ngủ', value: 'sleep' },
+   ));
+ }
+ if (name === 'stats') {
+  c.addStringOption(o => o
+   .setName('scope')
+   .setDescription('Xem Bảng Vàng toàn máy chủ hoặc hồ sơ DJ của riêng bạn')
+   .setRequired(false)
+   .addChoices(
+    { name: '🏆 Toàn máy chủ (Top Bài Hát & Top DJ)', value: 'server' },
+    { name: '🎧 Cá nhân (Hạng DJ & số giờ nhạc của bạn)', value: 'me' },
+   ));
  }
  return c.toJSON();
 });

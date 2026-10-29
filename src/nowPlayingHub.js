@@ -1,9 +1,10 @@
 import { createHmac } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { SOUND_PRESETS } from './audioEnhancer.js';
+import { SOUND_PRESETS, VIBE_MODES } from './audioEnhancer.js';
 import { openFavoritesPayload } from './favoritesStore.js';
 import { cleanText, LOOP_LABELS, renderSyncedProgress, safeHttpUrl } from './playerGui.js';
 import { openSessionPayload } from './sessionStore.js';
+import { openStatsPayload } from './statsStore.js';
 import { sanitizeWebAudioDescriptor } from './webAudio.js';
 
 export const DEFAULT_NOW_PLAYING_PUSH_URL =
@@ -128,6 +129,8 @@ export function serializeNowPlayingState({ player, client, overrides = {} } = {}
  const volume = overrides.volume ?? player?.volume ?? 100;
  const soundPreset = overrides.soundPreset ?? player?.userdata?.soundPreset ?? 'hd';
  const soundLabel = SOUND_PRESETS[soundPreset]?.label ?? SOUND_PRESETS.hd.label;
+ const vibeMode = overrides.vibeMode ?? player?.userdata?.vibeMode ?? 'normal';
+ const vibeInfo = VIBE_MODES[vibeMode] ?? VIBE_MODES.normal;
 
  let voiceChannelName = null;
  const vcId = player?.userdata?.voiceChannelId;
@@ -208,6 +211,9 @@ export function serializeNowPlayingState({ player, client, overrides = {} } = {}
    muteReason,
    soundPreset,
    soundLabel,
+   vibeMode,
+   vibeLabel: vibeInfo.label,
+   vibeRate: vibeInfo.rate ?? 1.0,
    sleepTimerLabel,
   },
   track: trackPayload,
@@ -222,6 +228,8 @@ export function createNowPlayingHub({
  getResumeSeal = null,
  getFavoritesSeal = null,
  onRemoteFavorites = null,
+ getStatsSeal = null,
+ onRemoteStats = null,
  client,
  htmlPath = new URL('../web/index.html', import.meta.url),
  env = process.env,
@@ -268,6 +276,7 @@ export function createNowPlayingHub({
   const snapshot = getSnapshot();
   const seal = typeof getResumeSeal === 'function' ? getResumeSeal() : undefined;
   const favSeal = typeof getFavoritesSeal === 'function' ? getFavoritesSeal() : undefined;
+  const statsSeal = typeof getStatsSeal === 'function' ? getStatsSeal() : undefined;
   if (seal) {
    remoteBackupCheckFailed = false;
    explicitSealClear = false;
@@ -279,6 +288,7 @@ export function createNowPlayingHub({
    ...snapshot,
    ...(typeof getResumeSeal === 'function' ? { resumeSeal: seal ?? null } : {}),
    ...(typeof getFavoritesSeal === 'function' ? { favoritesSeal: favSeal ?? null } : {}),
+   ...(typeof getStatsSeal === 'function' ? { statsSeal: statsSeal ?? null } : {}),
   };
   const headers = { 'Content-Type': 'application/json' };
   if (pushSecret) headers.Authorization = `Bearer ${pushSecret}`;
@@ -460,6 +470,12 @@ export function createNowPlayingHub({
      try {
       const openedFavs = openFavoritesPayload(data.favoritesSeal, botToken);
       if (openedFavs) onRemoteFavorites(openedFavs);
+     } catch {}
+    }
+    if (data?.statsSeal && typeof onRemoteStats === 'function') {
+     try {
+      const openedStats = openStatsPayload(data.statsSeal, botToken);
+      if (openedStats) onRemoteStats(openedStats);
      } catch {}
     }
     if (!data?.resumeSeal) return null;

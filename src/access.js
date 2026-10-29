@@ -1,5 +1,5 @@
 // Các lệnh chỉ đọc thông tin, ai trong máy chủ cũng có thể xem được.
-const readOnlyCommands = new Set(['help', 'queue', 'nowplaying', 'history', 'lyrics', 'ping']);
+const readOnlyCommands = new Set(['help', 'queue', 'nowplaying', 'history', 'lyrics', 'ping', 'stats', 'grab']);
 const sharedVoiceFunCommands = new Set(['tts', 'sfx']);
 
 // ID Discord chủ bot có toàn quyền điều khiển mọi phiên nhạc bất kể ai là người bắt bài.

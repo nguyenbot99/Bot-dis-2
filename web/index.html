@@ -874,6 +874,322 @@
       color: #f9a8d4;
     }
 
+    .vibe-badge {
+      display: none;
+      align-items: center;
+      gap: 5px;
+      padding: 5px 11px;
+      border-radius: 999px;
+      font-size: 0.76rem;
+      font-weight: 700;
+      background: linear-gradient(135deg, rgba(236, 72, 153, 0.24), rgba(139, 92, 246, 0.24));
+      color: #fbcfe8;
+      border: 1px solid rgba(236, 72, 153, 0.45);
+    }
+
+    .vibe-badge.visible {
+      display: inline-flex;
+    }
+
+    .stage-open-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 10px 15px;
+      border-radius: 999px;
+      border: 1px solid rgba(236, 72, 153, 0.42);
+      background: linear-gradient(135deg, rgba(139, 92, 246, 0.22), rgba(236, 72, 153, 0.18));
+      color: #fdf2f8;
+      font-size: 0.84rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: transform 0.16s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+    }
+
+    .stage-open-btn:hover {
+      transform: translateY(-1px);
+      border-color: rgba(236, 72, 153, 0.72);
+      box-shadow: 0 10px 26px rgba(236, 72, 153, 0.26);
+    }
+
+    .lyrics-stage-mini-btn {
+      border: 1px solid rgba(236, 72, 153, 0.45);
+      background: rgba(236, 72, 153, 0.18);
+      color: #fdf2f8;
+      font-size: 0.7rem;
+      font-weight: 700;
+      padding: 3px 9px;
+      border-radius: 999px;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background 0.15s ease;
+    }
+
+    .lyrics-stage-mini-btn:hover {
+      background: rgba(236, 72, 153, 0.34);
+    }
+
+    /* Chế độ Sân Khấu Karaoke Toàn Màn Hình (Apple Music Sing Cinema Mode) */
+    .stage-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 9999;
+      display: none;
+      flex-direction: column;
+      background: #06070d;
+      color: #ffffff;
+      overflow: hidden;
+    }
+
+    .stage-overlay.open {
+      display: flex;
+      animation: stageFadeIn 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    @keyframes stageFadeIn {
+      from { opacity: 0; transform: scale(1.02); }
+      to { opacity: 1; transform: scale(1); }
+    }
+
+    .stage-backdrop {
+      position: absolute;
+      inset: -12%;
+      background-position: center;
+      background-size: cover;
+      filter: blur(76px) saturate(190%) brightness(0.45);
+      opacity: 0.85;
+      transform: scale(1.12);
+      transition: background-image 0.7s ease;
+      pointer-events: none;
+    }
+
+    .stage-vignette {
+      position: absolute;
+      inset: 0;
+      background:
+        radial-gradient(circle at 22% 45%, rgba(139, 92, 246, 0.26), transparent 55%),
+        radial-gradient(circle at 78% 55%, rgba(236, 72, 153, 0.22), transparent 55%),
+        linear-gradient(180deg, rgba(6, 7, 13, 0.62) 0%, rgba(6, 7, 13, 0.35) 50%, rgba(6, 7, 13, 0.82) 100%);
+      pointer-events: none;
+    }
+
+    .stage-topbar {
+      position: relative;
+      z-index: 2;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 18px 28px;
+      flex-wrap: wrap;
+    }
+
+    .stage-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 14px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      backdrop-filter: blur(16px);
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.03em;
+      color: #f3e8ff;
+    }
+
+    .stage-controls {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .stage-ctrl-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 8px 15px;
+      border-radius: 999px;
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      background: rgba(255, 255, 255, 0.08);
+      backdrop-filter: blur(16px);
+      color: #ffffff;
+      font-size: 0.82rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: background 0.16s ease, transform 0.16s ease;
+    }
+
+    .stage-ctrl-btn:hover {
+      background: rgba(255, 255, 255, 0.18);
+      transform: translateY(-1px);
+    }
+
+    .stage-ctrl-btn.active {
+      background: linear-gradient(135deg, rgba(34, 197, 94, 0.32), rgba(16, 185, 129, 0.24));
+      border-color: rgba(74, 222, 128, 0.55);
+      color: #dcfce7;
+    }
+
+    .stage-body {
+      position: relative;
+      z-index: 2;
+      flex: 1;
+      min-height: 0;
+      display: grid;
+      grid-template-columns: minmax(260px, 370px) minmax(0, 1fr);
+      gap: clamp(22px, 4vw, 56px);
+      align-items: center;
+      max-width: 1440px;
+      width: 100%;
+      margin: 0 auto;
+      padding: 8px clamp(20px, 4vw, 52px) 28px;
+    }
+
+    .stage-left {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      gap: 16px;
+    }
+
+    .stage-art-frame {
+      width: clamp(190px, 24vw, 310px);
+      aspect-ratio: 1 / 1;
+      border-radius: 26px;
+      overflow: hidden;
+      background: rgba(18, 20, 34, 0.82);
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      box-shadow: 0 28px 65px rgba(0, 0, 0, 0.62);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: transform 0.15s ease, box-shadow 0.15s ease;
+    }
+
+    .stage-art-img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: none;
+    }
+
+    .stage-art-img.visible {
+      display: block;
+    }
+
+    .stage-track-title {
+      font-size: clamp(1.25rem, 2vw, 1.7rem);
+      font-weight: 800;
+      line-height: 1.28;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+
+    .stage-track-author {
+      font-size: 0.98rem;
+      font-weight: 600;
+      color: rgba(247, 248, 255, 0.72);
+    }
+
+    .stage-progress-box {
+      width: 100%;
+      max-width: 320px;
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+    }
+
+    .stage-lyrics-viewport {
+      height: min(74vh, 690px);
+      overflow-y: auto;
+      padding: 24vh 18px;
+      scroll-behavior: smooth;
+      mask-image: linear-gradient(180deg, transparent 0%, #000 16%, #000 84%, transparent 100%);
+      -webkit-mask-image: linear-gradient(180deg, transparent 0%, #000 16%, #000 84%, transparent 100%);
+      scrollbar-width: none;
+    }
+
+    .stage-lyrics-viewport::-webkit-scrollbar {
+      display: none;
+    }
+
+    .stage-lyric-line {
+      padding: 14px 18px;
+      border-radius: 18px;
+      font-size: clamp(1.22rem, 2.25vw, 1.9rem);
+      font-weight: 700;
+      line-height: 1.38;
+      color: rgba(255, 255, 255, 0.28);
+      filter: blur(0.9px);
+      transform-origin: left center;
+      transition: transform 0.36s cubic-bezier(0.22, 1, 0.36, 1), color 0.3s ease, filter 0.3s ease, text-shadow 0.34s ease;
+      cursor: default;
+    }
+
+    .stage-lyric-line.past {
+      color: rgba(255, 255, 255, 0.18);
+      filter: blur(1.3px);
+      transform: scale(0.97);
+    }
+
+    .stage-lyric-line.active {
+      font-size: clamp(1.48rem, 2.85vw, 2.42rem);
+      font-weight: 800;
+      color: #ffffff;
+      filter: blur(0);
+      transform: scale(1.03);
+      text-shadow: 0 0 38px rgba(236, 72, 153, 0.62), 0 6px 22px rgba(0, 0, 0, 0.52);
+    }
+
+    .stage-plain-lyrics {
+      white-space: pre-wrap;
+      font-size: clamp(1.05rem, 1.65vw, 1.35rem);
+      font-weight: 600;
+      line-height: 1.85;
+      color: rgba(255, 255, 255, 0.9);
+      padding: 12px 18px;
+    }
+
+    .stage-empty {
+      font-size: 1.15rem;
+      font-weight: 600;
+      color: rgba(255, 255, 255, 0.55);
+      text-align: center;
+      padding: 60px 20px;
+    }
+
+    @media (max-width: 900px) {
+      .stage-body {
+        grid-template-columns: 1fr;
+        gap: 16px;
+        padding: 4px 18px 20px;
+      }
+      .stage-left {
+        flex-direction: row;
+        text-align: left;
+        justify-content: center;
+        gap: 14px;
+      }
+      .stage-art-frame {
+        width: 78px;
+        border-radius: 16px;
+        flex-shrink: 0;
+      }
+      .stage-progress-box {
+        display: none;
+      }
+      .stage-lyrics-viewport {
+        height: 62vh;
+        padding: 18vh 8px;
+      }
+    }
+
     .footer {
       position: relative;
       z-index: 1;
@@ -948,6 +1264,7 @@
             <div class="badges-row">
               <span id="statusBadge" class="status-badge">💤 Chưa phát nhạc</span>
               <span id="sourceBadge" class="source-badge">Nguồn: —</span>
+              <span id="vibeBadge" class="vibe-badge">⚡ Vibe</span>
             </div>
 
             <h1 id="trackTitle" class="track-title">Chưa có bài hát nào đang phát</h1>
@@ -957,6 +1274,9 @@
               <button id="listenToggleBtn" class="listen-btn" type="button">
                 <span class="live-pulse"></span>
                 <span id="listenBtnLabel">🔊 Nghe cùng Bot</span>
+              </button>
+              <button id="openStageBtn" class="stage-open-btn" type="button" title="Mở Sân khấu Karaoke toàn màn hình (phím tắt K)">
+                <span>🎤 Sân khấu Karaoke</span>
               </button>
               <a id="openTrackLink" class="open-link-btn" href="#" target="_blank" rel="noopener noreferrer">
                 <span>Mở bài gốc</span>
@@ -1036,8 +1356,56 @@
   </div>
 
   <footer class="footer">
-    Đồng bộ tự động với trình phát nhạc Discord • Live Radio & Studio EQ thời gian thực
+    Đồng bộ tự động với trình phát nhạc Discord • Live Radio, Vibe & Sân khấu Karaoke thời gian thực
   </footer>
+
+  <!-- Sân khấu Karaoke toàn màn hình kiểu Apple Music Sing -->
+  <div id="stageOverlay" class="stage-overlay" role="dialog" aria-modal="true" aria-label="Sân khấu Karaoke toàn màn hình">
+    <div id="stageBackdrop" class="stage-backdrop"></div>
+    <div class="stage-vignette"></div>
+
+    <div class="stage-topbar">
+      <div class="stage-pill">
+        <span>🎤 SÂN KHẤU KARAOKE</span>
+        <span id="stageSoundBadge">• Rõ nét HD</span>
+      </div>
+      <div class="stage-controls">
+        <button id="stageListenBtn" class="stage-ctrl-btn" type="button">🔊 Nghe cùng Bot</button>
+        <button id="stageFullscreenBtn" class="stage-ctrl-btn" type="button">⛶ Toàn màn hình</button>
+        <button id="stageCloseBtn" class="stage-ctrl-btn" type="button">✕ Đóng (Esc)</button>
+      </div>
+    </div>
+
+    <div class="stage-body">
+      <div class="stage-left">
+        <div id="stageArtFrame" class="stage-art-frame">
+          <img id="stageArtImg" class="stage-art-img" alt="Ảnh bìa sân khấu" />
+          <svg id="stageVinylSvg" width="120" height="120" viewBox="0 0 200 200" fill="none">
+            <circle cx="100" cy="100" r="88" fill="#171a2c" stroke="rgba(255,255,255,0.16)" stroke-width="3"/>
+            <circle cx="100" cy="100" r="32" fill="#8b5cf6"/>
+            <circle cx="100" cy="100" r="9" fill="#06070d"/>
+          </svg>
+        </div>
+        <div>
+          <div id="stageTitle" class="stage-track-title">Chưa có bài hát đang phát</div>
+          <div id="stageAuthor" class="stage-track-author">Mở nhạc trong Discord bằng /play hoặc /radio</div>
+        </div>
+        <div class="stage-progress-box">
+          <div class="progress-track">
+            <div id="stageProgressFill" class="progress-fill"></div>
+          </div>
+          <div class="progress-times">
+            <span id="stageCurTime">0:00</span>
+            <span id="stageTotTime">0:00</span>
+          </div>
+        </div>
+      </div>
+
+      <div id="stageLyricsBox" class="stage-lyrics-viewport">
+        <div class="stage-empty">Đang chờ bài hát và lời Karaoke từ Discord...</div>
+      </div>
+    </div>
+  </div>
 
   <audio id="liveAudioEl" crossorigin="anonymous" preload="none" playsinline style="display:none"></audio>
 
@@ -1080,10 +1448,12 @@
         eqBars: Array.from(document.querySelectorAll(".eq-bar")),
         statusBadge: document.getElementById("statusBadge"),
         sourceBadge: document.getElementById("sourceBadge"),
+        vibeBadge: document.getElementById("vibeBadge"),
         trackTitle: document.getElementById("trackTitle"),
         trackAuthor: document.getElementById("trackAuthor"),
         listenToggleBtn: document.getElementById("listenToggleBtn"),
         listenBtnLabel: document.getElementById("listenBtnLabel"),
+        openStageBtn: document.getElementById("openStageBtn"),
         openTrackLink: document.getElementById("openTrackLink"),
         liveAudioHint: document.getElementById("liveAudioHint"),
         webEqTag: document.getElementById("webEqTag"),
@@ -1103,6 +1473,21 @@
         tabQueueBtn: document.getElementById("tabQueueBtn"),
         tabHistoryBtn: document.getElementById("tabHistoryBtn"),
         trackList: document.getElementById("trackList"),
+        stageOverlay: document.getElementById("stageOverlay"),
+        stageBackdrop: document.getElementById("stageBackdrop"),
+        stageSoundBadge: document.getElementById("stageSoundBadge"),
+        stageListenBtn: document.getElementById("stageListenBtn"),
+        stageFullscreenBtn: document.getElementById("stageFullscreenBtn"),
+        stageCloseBtn: document.getElementById("stageCloseBtn"),
+        stageArtFrame: document.getElementById("stageArtFrame"),
+        stageArtImg: document.getElementById("stageArtImg"),
+        stageVinylSvg: document.getElementById("stageVinylSvg"),
+        stageTitle: document.getElementById("stageTitle"),
+        stageAuthor: document.getElementById("stageAuthor"),
+        stageProgressFill: document.getElementById("stageProgressFill"),
+        stageCurTime: document.getElementById("stageCurTime"),
+        stageTotTime: document.getElementById("stageTotTime"),
+        stageLyricsBox: document.getElementById("stageLyricsBox"),
         audio: document.getElementById("liveAudioEl"),
       };
 
@@ -1352,13 +1737,27 @@
         syncWebVolumeGain();
       });
 
+      function getBaseVibeRate() {
+        const r = Number(latestState?.settings?.vibeRate);
+        return (Number.isFinite(r) && r >= 0.5 && r <= 2.0) ? r : 1.0;
+      }
+
+      function applyAudioPitchMode(baseRate) {
+        const tapeMode = Math.abs(baseRate - 1.0) > 0.02;
+        try {
+          els.audio.preservesPitch = !tapeMode;
+          els.audio.mozPreservesPitch = !tapeMode;
+          els.audio.webkitPreservesPitch = !tapeMode;
+        } catch {}
+      }
+
       function getExpectedBotPositionMs() {
         const track = latestState?.track;
         if (!track) return 0;
         const total = Math.max(0, Number(track.durationMs) || 0);
         let pos = Math.max(0, Number(track.positionMs) || 0);
         if (latestState.status === "playing" && receivedClientMs > 0) {
-          pos += Math.max(0, Date.now() - receivedClientMs);
+          pos += Math.max(0, Date.now() - receivedClientMs) * getBaseVibeRate();
         }
         if (total > 0 && pos > total) pos = total;
         return pos;
@@ -1460,9 +1859,11 @@
         const abort = new AbortController();
         const ms = new MSCtor();
         const objectUrl = URL.createObjectURL(ms);
+        const baseRate = getBaseVibeRate();
         els.audio.disableRemotePlayback = true;
-        els.audio.preservesPitch = true;
+        applyAudioPitchMode(baseRate);
         els.audio.src = objectUrl;
+        els.audio.playbackRate = baseRate;
 
         let wakeResolver = null;
         const session = {
@@ -1579,10 +1980,15 @@
         if (!cleanUrl) return false;
         destroyCurrentAudioStream();
         loadedTrackKey = trackKey;
-        els.audio.preservesPitch = true;
+        const baseRate = getBaseVibeRate();
+        applyAudioPitchMode(baseRate);
         els.audio.src = cleanUrl;
+        els.audio.playbackRate = baseRate;
         const onMeta = function () {
-          try { els.audio.currentTime = Math.max(0, initialSec); } catch {}
+          try {
+            els.audio.playbackRate = getBaseVibeRate();
+            els.audio.currentTime = Math.max(0, initialSec);
+          } catch {}
           if (isListening && latestState?.status === "playing") {
             els.audio.play().catch(function () {});
           }
@@ -1601,6 +2007,11 @@
         const hasTrack = Boolean(latestState?.track);
         const botPlaying = latestState?.status === "playing";
         els.resyncBtn.classList.toggle("visible", isListening && hasTrack && botPlaying);
+
+        els.stageListenBtn.classList.toggle("active", Boolean(isListening && hasTrack && botPlaying));
+        els.stageListenBtn.textContent = !isListening
+          ? "🔊 Nghe cùng Bot"
+          : (!hasTrack ? "🎧 Chờ Bot phát" : (!botPlaying ? "⏸️ Tạm dừng" : "🔴 Đang nghe trực tiếp"));
 
         if (!isListening) {
           els.listenToggleBtn.className = "listen-btn";
@@ -1679,9 +2090,12 @@
           return;
         }
 
+        const baseRate = getBaseVibeRate();
+        applyAudioPitchMode(baseRate);
+
         if (forceHardSeek) {
           try {
-            els.audio.playbackRate = 1.0;
+            els.audio.playbackRate = baseRate;
             els.audio.currentTime = targetSec;
             if (activeMse?.wake) activeMse.wake();
           } catch {}
@@ -1692,13 +2106,15 @@
         }
       }
 
-      // Bộ giữ nhịp thông minh (kiểu Discord Stage / Spotify Jam): lệch > 2.2s thì nhảy thẳng, lệch nhẹ 0.45s - 2.2s thì bù mượt ±3% không gây vấp tiếng
+      // Bộ giữ nhịp thông minh (kiểu Discord Stage / Spotify Jam): khớp chuẩn cả tốc độ Nightcore (1.2x) & Slowed (0.86x)
       setInterval(function () {
         if (!isListening || !latestState?.track || latestState.status !== "playing" || !loadedTrackKey) return;
         if (els.audio.paused || els.audio.readyState < 2) {
           if (activeMse?.wake) activeMse.wake();
           return;
         }
+        const baseRate = getBaseVibeRate();
+        applyAudioPitchMode(baseRate);
         const expectedSec = getExpectedBotPositionMs() / 1000;
         const actualSec = Number(els.audio.currentTime) || 0;
         const diff = expectedSec - actualSec;
@@ -1706,18 +2122,18 @@
 
         if (absDiff > 2.2) {
           try {
-            els.audio.playbackRate = 1.0;
+            els.audio.playbackRate = baseRate;
             els.audio.currentTime = expectedSec;
             if (activeMse?.wake) activeMse.wake();
           } catch {}
         } else if (absDiff > 0.45) {
-          els.audio.playbackRate = diff > 0 ? 1.03 : 0.97;
-        } else if (els.audio.playbackRate !== 1.0) {
-          els.audio.playbackRate = 1.0;
+          els.audio.playbackRate = Number((baseRate * (diff > 0 ? 1.03 : 0.97)).toFixed(3));
+        } else if (Math.abs(els.audio.playbackRate - baseRate) > 0.005) {
+          els.audio.playbackRate = baseRate;
         }
       }, 1000);
 
-      els.listenToggleBtn.addEventListener("click", function () {
+      function toggleLiveListen() {
         isListening = !isListening;
         if (isListening) {
           if (getMediaSourceCtor('audio/mp4; codecs="mp4a.40.2"')) {
@@ -1732,7 +2148,10 @@
           renderListenUi();
         }
         restartPollingWithAdaptiveRate();
-      });
+      }
+
+      els.listenToggleBtn.addEventListener("click", toggleLiveListen);
+      els.stageListenBtn.addEventListener("click", toggleLiveListen);
 
       els.resyncBtn.addEventListener("click", function () {
         if (!isListening) return;
@@ -1767,11 +2186,18 @@
               const target = (bins[binIdx] || 0) / 255;
               smoothBars[i] = smoothBars[i] * 0.55 + target * 0.45;
             }
-            // Đồng bộ luôn 4 cột sóng nhỏ góc ảnh bìa theo nhịp trống & lời ca thật
+            // Đồng bộ luôn 4 cột sóng nhỏ góc ảnh bìa & hào quang Sân khấu Karaoke theo nhịp trống thật
             const miniBins = [1, 5, 11, 18];
             for (let m = 0; m < els.eqBars.length; m++) {
               const v = (bins[miniBins[m]] || 0) / 255;
               els.eqBars[m].style.height = Math.round(4 + v * 14) + "px";
+            }
+            if (stageOpen && els.stageArtFrame) {
+              const bassEnergy = ((bins[1] || 0) + (bins[3] || 0)) / 510;
+              const scale = (1 + bassEnergy * 0.035).toFixed(3);
+              const glow = Math.round(28 + bassEnergy * 48);
+              els.stageArtFrame.style.transform = "scale(" + scale + ")";
+              els.stageArtFrame.style.boxShadow = "0 28px 65px rgba(0,0,0,0.62), 0 0 " + glow + "px rgba(236, 72, 153, " + (0.22 + bassEnergy * 0.4).toFixed(2) + ")";
             }
           } else {
             const ambientPlaying = latestState?.status === "playing";
@@ -1783,6 +2209,10 @@
             }
             for (let m = 0; m < els.eqBars.length; m++) {
               els.eqBars[m].style.height = "";
+            }
+            if (stageOpen && els.stageArtFrame) {
+              els.stageArtFrame.style.transform = "";
+              els.stageArtFrame.style.boxShadow = "";
             }
           }
 
@@ -1823,25 +2253,42 @@
           els.artworkImg.src = clean;
           els.artworkImg.classList.add("visible");
           els.vinylSvg.style.display = "none";
-          els.ambientArt.style.backgroundImage = 'url("' + clean.replace(/"/g, "%22") + '")';
+          const bgCss = 'url("' + clean.replace(/"/g, "%22") + '")';
+          els.ambientArt.style.backgroundImage = bgCss;
           els.ambientArt.classList.add("has-image");
+          els.stageArtImg.src = clean;
+          els.stageArtImg.classList.add("visible");
+          els.stageVinylSvg.style.display = "none";
+          els.stageBackdrop.style.backgroundImage = bgCss;
         } else {
           els.artworkImg.removeAttribute("src");
           els.artworkImg.classList.remove("visible");
           els.vinylSvg.style.display = "block";
           els.ambientArt.style.backgroundImage = "";
           els.ambientArt.classList.remove("has-image");
+          els.stageArtImg.removeAttribute("src");
+          els.stageArtImg.classList.remove("visible");
+          els.stageVinylSvg.style.display = "block";
+          els.stageBackdrop.style.backgroundImage = "";
         }
       }
 
       els.artworkImg.addEventListener("error", function () {
         updateArtwork(null);
       });
+      els.stageArtImg.addEventListener("error", function () {
+        els.stageArtImg.classList.remove("visible");
+        els.stageVinylSvg.style.display = "block";
+      });
 
       let renderedLyricsKey = "";
       let karaokeLineEls = [];
       let activeKaraokeIdx = -1;
       let userSelectedTabManually = false;
+      let stageOpen = false;
+      let renderedStageLyricsKey = "";
+      let stageLineEls = [];
+      let activeStageIdx = -1;
 
       function getEffectiveKaraokePositionMs() {
         if (isListening && els.audio && !els.audio.paused && Number.isFinite(els.audio.currentTime) && els.audio.currentTime > 0) {
@@ -1850,10 +2297,26 @@
         return getExpectedBotPositionMs();
       }
 
+      function scrollLineIntoCenter(container, lineEl, instant) {
+        if (!container || !lineEl) return;
+        const targetTop = Math.max(
+          0,
+          lineEl.offsetTop - container.offsetTop - (container.clientHeight / 2) + (lineEl.clientHeight / 2)
+        );
+        try {
+          container.scrollTo({ top: targetTop, behavior: instant ? "auto" : "smooth" });
+        } catch {
+          container.scrollTop = targetTop;
+        }
+      }
+
       function syncKaraokeHighlight(forceScroll) {
-        if (activeTab !== "lyrics" || !karaokeLineEls.length) return;
         const synced = latestState?.track?.lyrics?.synced;
         if (!Array.isArray(synced) || !synced.length) return;
+
+        const needSide = activeTab === "lyrics" && karaokeLineEls.length > 0;
+        const needStage = stageOpen && stageLineEls.length > 0;
+        if (!needSide && !needStage) return;
 
         const posMs = getEffectiveKaraokePositionMs() + 180; // Bù nhẹ 180ms để chữ sáng đúng nhịp ca sĩ cất giọng
         let nextIdx = -1;
@@ -1868,29 +2331,118 @@
           }
         }
 
-        if (nextIdx === activeKaraokeIdx && !forceScroll) return;
-        activeKaraokeIdx = nextIdx;
-
-        for (let i = 0; i < karaokeLineEls.length; i++) {
-          const el = karaokeLineEls[i];
-          el.classList.toggle("active", i === nextIdx);
-          el.classList.toggle("past", nextIdx >= 0 && i < nextIdx);
+        if (needSide && (nextIdx !== activeKaraokeIdx || forceScroll)) {
+          activeKaraokeIdx = nextIdx;
+          for (let i = 0; i < karaokeLineEls.length; i++) {
+            const el = karaokeLineEls[i];
+            el.classList.toggle("active", i === nextIdx);
+            el.classList.toggle("past", nextIdx >= 0 && i < nextIdx);
+          }
+          if (nextIdx >= 0 && karaokeLineEls[nextIdx]) {
+            scrollLineIntoCenter(els.trackList, karaokeLineEls[nextIdx], forceScroll);
+          }
         }
 
-        if (nextIdx >= 0 && karaokeLineEls[nextIdx]) {
-          const lineEl = karaokeLineEls[nextIdx];
-          const container = els.trackList;
-          const targetTop = Math.max(
-            0,
-            lineEl.offsetTop - container.offsetTop - (container.clientHeight / 2) + (lineEl.clientHeight / 2)
-          );
-          try {
-            container.scrollTo({ top: targetTop, behavior: forceScroll ? "auto" : "smooth" });
-          } catch {
-            container.scrollTop = targetTop;
+        if (needStage && (nextIdx !== activeStageIdx || forceScroll)) {
+          activeStageIdx = nextIdx;
+          for (let i = 0; i < stageLineEls.length; i++) {
+            const el = stageLineEls[i];
+            el.classList.toggle("active", i === nextIdx);
+            el.classList.toggle("past", nextIdx >= 0 && i < nextIdx);
+          }
+          if (nextIdx >= 0 && stageLineEls[nextIdx]) {
+            scrollLineIntoCenter(els.stageLyricsBox, stageLineEls[nextIdx], forceScroll);
           }
         }
       }
+
+      function renderStageLyrics() {
+        if (!stageOpen) return;
+        const curTrack = latestState?.track;
+        const lyricsObj = curTrack?.lyrics || null;
+        const hasSynced = Array.isArray(lyricsObj?.synced) && lyricsObj.synced.length > 0;
+        const hasPlain = Boolean(lyricsObj?.plain);
+        const nextKey = curTrack
+          ? (curTrack.url || curTrack.title || "") + "|" + (hasSynced ? "S" + lyricsObj.synced.length : hasPlain ? "P" + lyricsObj.plain.length : "none")
+          : "idle";
+
+        if (renderedStageLyricsKey === nextKey) {
+          syncKaraokeHighlight(false);
+          return;
+        }
+        renderedStageLyricsKey = nextKey;
+        stageLineEls = [];
+        activeStageIdx = -1;
+        els.stageLyricsBox.replaceChildren();
+
+        if (!curTrack) {
+          const empty = document.createElement("div");
+          empty.className = "stage-empty";
+          empty.textContent = "🎵 Mở một bài hát trong Discord bằng /play hoặc /radio để bắt đầu Sân khấu Karaoke!";
+          els.stageLyricsBox.appendChild(empty);
+          return;
+        }
+
+        if (hasSynced) {
+          lyricsObj.synced.forEach(function (line) {
+            const row = document.createElement("div");
+            row.className = "stage-lyric-line";
+            row.textContent = line.text;
+            els.stageLyricsBox.appendChild(row);
+            stageLineEls.push(row);
+          });
+          syncKaraokeHighlight(true);
+          return;
+        }
+
+        if (hasPlain) {
+          const box = document.createElement("div");
+          box.className = "stage-plain-lyrics";
+          box.textContent = lyricsObj.plain;
+          els.stageLyricsBox.appendChild(box);
+          return;
+        }
+
+        const empty = document.createElement("div");
+        empty.className = "stage-empty";
+        empty.textContent = "🎶 Nhạc không lời hoặc bài hát này hiện chưa có bản lời trên LRCLIB.";
+        els.stageLyricsBox.appendChild(empty);
+      }
+
+      function openStageMode() {
+        stageOpen = true;
+        els.stageOverlay.classList.add("open");
+        document.body.style.overflow = "hidden";
+        renderedStageLyricsKey = "";
+        renderStageLyrics();
+      }
+
+      function closeStageMode() {
+        stageOpen = false;
+        els.stageOverlay.classList.remove("open");
+        document.body.style.overflow = "";
+        if (document.fullscreenElement) {
+          document.exitFullscreen?.().catch(function () {});
+        }
+      }
+
+      els.openStageBtn.addEventListener("click", openStageMode);
+      els.stageCloseBtn.addEventListener("click", closeStageMode);
+      els.stageFullscreenBtn.addEventListener("click", function () {
+        if (!document.fullscreenElement) {
+          (els.stageOverlay.requestFullscreen || document.documentElement.requestFullscreen)?.call(els.stageOverlay)?.catch?.(function () {});
+        } else {
+          document.exitFullscreen?.().catch(function () {});
+        }
+      });
+      document.addEventListener("keydown", function (ev) {
+        if (ev.key === "Escape" && stageOpen) {
+          closeStageMode();
+        } else if ((ev.key === "k" || ev.key === "K") && !ev.ctrlKey && !ev.metaKey && !ev.altKey && document.activeElement?.tagName !== "INPUT") {
+          if (stageOpen) closeStageMode();
+          else openStageMode();
+        }
+      });
 
       function renderSideList() {
         const upcoming = Array.isArray(latestState?.upcoming) ? latestState.upcoming : [];
@@ -1933,7 +2485,15 @@
           if (hasSynced) {
             const header = document.createElement("div");
             header.className = "lyrics-header-tag";
-            header.textContent = "✨ Lời Karaoke tự cuộn theo nhạc • Nguồn: " + (lyricsObj.source || "LRCLIB");
+            const hdrText = document.createElement("span");
+            hdrText.textContent = "✨ Karaoke tự cuộn • " + (lyricsObj.source || "LRCLIB");
+            const expandBtn = document.createElement("button");
+            expandBtn.type = "button";
+            expandBtn.className = "lyrics-stage-mini-btn";
+            expandBtn.textContent = "⛶ Phóng to Sân khấu";
+            expandBtn.addEventListener("click", openStageMode);
+            header.appendChild(hdrText);
+            header.appendChild(expandBtn);
             els.trackList.appendChild(header);
 
             lyricsObj.synced.forEach(function (line) {
@@ -2058,14 +2618,23 @@
           els.progressFill.style.width = "0%";
           els.currentTime.textContent = "0:00";
           els.totalTime.textContent = "0:00";
+          els.stageProgressFill.style.width = "0%";
+          els.stageCurTime.textContent = "0:00";
+          els.stageTotTime.textContent = "0:00";
           return;
         }
         const total = Math.max(0, Number(track.durationMs) || 0);
         const pos = getExpectedBotPositionMs();
         const pct = total > 0 ? Math.min(100, (pos / total) * 100) : 0;
-        els.progressFill.style.width = pct.toFixed(2) + "%";
-        els.currentTime.textContent = formatTime(pos);
-        els.totalTime.textContent = formatTime(total);
+        const pctStr = pct.toFixed(2) + "%";
+        const curStr = formatTime(pos);
+        const totStr = formatTime(total);
+        els.progressFill.style.width = pctStr;
+        els.currentTime.textContent = curStr;
+        els.totalTime.textContent = totStr;
+        els.stageProgressFill.style.width = pctStr;
+        els.stageCurTime.textContent = curStr;
+        els.stageTotTime.textContent = totStr;
         syncKaraokeHighlight(false);
       }
 
@@ -2104,6 +2673,8 @@
         if (track) {
           els.trackTitle.textContent = track.title || "Không rõ tiêu đề";
           els.trackAuthor.textContent = track.author || "Nghệ sĩ";
+          els.stageTitle.textContent = track.title || "Không rõ tiêu đề";
+          els.stageAuthor.textContent = track.author || "Nghệ sĩ";
           els.sourceBadge.textContent = "Nguồn: " + (track.sourceLabel || "SoundCloud");
           updateArtwork(track.artworkUrl);
 
@@ -2121,6 +2692,10 @@
             ? "Bot đang treo kênh thoại 24/7"
             : "Chưa có bài hát nào đang phát";
           els.trackAuthor.textContent = state.reason || "Gõ lệnh /play trong kênh thoại Discord để bắt đầu phát nhạc";
+          els.stageTitle.textContent = state.status === "idle_247"
+            ? "Bot đang treo kênh thoại 24/7"
+            : "Chưa có bài hát đang phát";
+          els.stageAuthor.textContent = state.reason || "Mở nhạc trong Discord bằng /play hoặc /radio";
           els.sourceBadge.textContent = "Nguồn: —";
           updateArtwork(null);
           els.openTrackLink.removeAttribute("href");
@@ -2129,7 +2704,16 @@
         }
 
         const st = state.settings || {};
-        els.chipSound.textContent = st.soundLabel || "Rõ nét HD";
+        const activeVibeMode = st.vibeMode || "normal";
+        const activeVibeLabel = st.vibeLabel || "Chuẩn Gốc";
+        if (activeVibeMode !== "normal") {
+          els.vibeBadge.textContent = "✨ Vibe: " + activeVibeLabel;
+          els.vibeBadge.classList.add("visible");
+        } else {
+          els.vibeBadge.classList.remove("visible");
+        }
+        els.chipSound.textContent = (st.soundLabel || "Rõ nét HD") + (activeVibeMode !== "normal" ? " • " + activeVibeLabel : "");
+        els.stageSoundBadge.textContent = "• " + (st.soundLabel || "Rõ nét HD") + (activeVibeMode !== "normal" ? " • " + activeVibeLabel : "");
         els.chipVolume.textContent = (st.volume ?? 100) + "%";
         els.chipLoop.textContent = st.loopLabel || "Tắt lặp";
         els.chipModes.textContent = "Auto: " + (st.autoPlay ? "Bật" : "Tắt") + " • 24/7: " + (st.stay247 ? "Bật" : "Tắt") + (st.sleepTimerLabel ? " • 💤 " + st.sleepTimerLabel : "");
@@ -2142,6 +2726,7 @@
         applyWebEqPreset(st.soundPreset || "hd");
         renderProgressTick();
         renderSideList();
+        renderStageLyrics();
         void syncWebAudioPlayback();
       }
 

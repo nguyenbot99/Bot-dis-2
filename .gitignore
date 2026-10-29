@@ -7,3 +7,4 @@ node_modules/
 .ssh/
 .runtime-session.json*
 .runtime-favorites.json*
+.runtime-stats.json*

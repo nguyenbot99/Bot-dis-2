@@ -16,7 +16,7 @@ import {
  TextInputBuilder,
  TextInputStyle,
 } from 'discord.js';
-import { SOUND_PRESETS } from './audioEnhancer.js';
+import { SOUND_PRESETS, VIBE_MODES } from './audioEnhancer.js';
 import { resolveHumanRequester } from './access.js';
 
 export const LOOP_LABELS = {
@@ -80,7 +80,33 @@ export function formatDuration(ms) {
  return hours > 0 ? `${hours}:${String(minutes).padStart(2, '0')}:${seconds}` : `${minutes}:${seconds}`;
 }
 
-// Dựng thanh tiến trình chuẩn xác 100%: chặn hiện tượng số giây hiện tại vượt quá tổng thời lượng bài hát (như 5:40 / 4:21).
+// Neo lại mốc thời gian bài hát khi người dùng chuyển chế độ tốc độ Vibe (Nightcore 1.2x / Slowed 0.86x) hoặc tua nhạc.
+export function syncPlayerVibeAnchor(player, nextVibeMode = null, explicitSongMs = null) {
+ if (!player?.userdata) return;
+ const modeKey = nextVibeMode ?? player.userdata.vibeMode ?? 'normal';
+ const nextRate = VIBE_MODES[modeKey]?.rate ?? 1.0;
+ const rawCur = Math.max(0, Number(typeof player.getTime === 'function' ? player.getTime()?.current : 0) || 0);
+ if (typeof explicitSongMs === 'number' && Number.isFinite(explicitSongMs)) {
+  player.userdata.vibeAnchor = {
+   songMs: Math.max(0, explicitSongMs),
+   rawMs: Math.max(0, explicitSongMs),
+   rate: nextRate,
+  };
+  return;
+ }
+ const prev = player.userdata.vibeAnchor;
+ let currentSongMs = rawCur;
+ if (prev && rawCur >= prev.rawMs - 500) {
+  currentSongMs = Math.max(0, prev.songMs + (rawCur - prev.rawMs) * (prev.rate ?? 1.0));
+ }
+ player.userdata.vibeAnchor = {
+  songMs: currentSongMs,
+  rawMs: rawCur,
+  rate: nextRate,
+ };
+}
+
+// Dựng thanh tiến trình chuẩn xác 100%: chặn hiện tượng số giây hiện tại vượt quá tổng thời lượng bài hát (như 5:40 / 4:21) & khớp chuẩn tốc độ Vibe.
 export function renderSyncedProgress(player, track = player?.queue?.currentTrack ?? player?.currentTrack, isPaused = Boolean(player?.isPaused)) {
  const size = 15;
  const timeInfo = typeof player?.getTime === 'function' ? player.getTime() : null;
@@ -93,7 +119,16 @@ export function renderSyncedProgress(player, track = player?.queue?.currentTrack
  }
 
  let totalMs = Math.max(0, Number(timeInfo?.total ?? fallbackTotal) || fallbackTotal);
- let currentMs = Math.max(0, Number(timeInfo?.current ?? 0) || 0);
+ const rawCurrentMs = Math.max(0, Number(timeInfo?.current ?? 0) || 0);
+ const vibeKey = player?.userdata?.vibeMode ?? 'normal';
+ const activeRate = VIBE_MODES[vibeKey]?.rate ?? 1.0;
+ const anchor = player?.userdata?.vibeAnchor;
+ let currentMs = rawCurrentMs;
+ if (anchor && rawCurrentMs >= anchor.rawMs - 500) {
+  currentMs = Math.max(0, anchor.songMs + (rawCurrentMs - anchor.rawMs) * (anchor.rate ?? activeRate));
+ } else if (activeRate !== 1.0) {
+  currentMs = Math.max(0, rawCurrentMs * activeRate);
+ }
 
  if (totalMs > 0 && currentMs > totalMs) {
   // Nếu lệch vài giây cuối bài do đuôi khoảng lặng của file âm thanh -> kẹp gọn về đúng độ dài bài;
@@ -113,9 +148,10 @@ export function renderSyncedProgress(player, track = player?.queue?.currentTrack
   ? `${formatDuration(currentMs)} ${bar} ${formatDuration(totalMs)}`
   : `${formatDuration(currentMs)} 🔘${'▬'.repeat(size)} 0:00`;
 
- const remainingMs = totalMs - currentMs;
- const endUnix = !isPaused && totalMs > 0 && remainingMs > 1500
-  ? Math.floor((Date.now() + remainingMs) / 1000)
+ const remainingSongMs = totalMs - currentMs;
+ const remainingWallMs = activeRate > 0 ? remainingSongMs / activeRate : remainingSongMs;
+ const endUnix = !isPaused && totalMs > 0 && remainingWallMs > 1500
+  ? Math.floor((Date.now() + remainingWallMs) / 1000)
   : null;
 
  return { barText, endUnix, currentMs, totalMs };
@@ -154,6 +190,9 @@ export function buildPlayerPayload(player, overrides = {}) {
  const muteReason = overrides.muteReason ?? player?.userdata?.muteReason ?? null;
  const soundPreset = overrides.soundPreset ?? player?.userdata?.soundPreset ?? 'hd';
  const soundLabel = SOUND_PRESETS[soundPreset]?.label ?? SOUND_PRESETS.hd.label;
+ const vibeMode = overrides.vibeMode ?? player?.userdata?.vibeMode ?? 'normal';
+ const vibeInfo = VIBE_MODES[vibeMode] ?? VIBE_MODES.normal;
+ const vibeBadge = vibeMode !== 'normal' ? ` • ${vibeInfo.emoji} **${vibeInfo.label}**` : '';
  const ownerId = resolveOwnerId(player, track);
  const voiceChannelId = player?.userdata?.voiceChannelId ?? null;
  const trackUrl = safeHttpUrl(track?.url);
@@ -168,7 +207,7 @@ export function buildPlayerPayload(player, overrides = {}) {
  // Phần đầu khung: Tiêu đề bài hát, nghệ sĩ, thông số phát và nút mở bài gốc.
  const sleepLabel = player?.userdata?.sleepTimerLabel ? ` • 💤 **${player.userdata.sleepTimerLabel}**` : '';
  const titleLine = trackUrl ? `### 🎵 [**${title}**](${trackUrl})` : `### 🎵 **${title}**`;
- const metaLine = `👤 Nghệ sĩ: **${author}** • 📡 Nguồn: **${sourceName}** • 🎧 Chất âm: **${soundLabel}**`;
+ const metaLine = `👤 Nghệ sĩ: **${author}** • 📡 Nguồn: **${sourceName}** • 🎧 Chất âm: **${soundLabel}**${vibeBadge}`;
  const stateLine = `🔊 **${volume}%** • 🔁 **${LOOP_LABELS[loopMode] ?? LOOP_LABELS.off}** • ✨ Tự phát: **${autoPlay ? 'Bật' : 'Tắt'}** • 🌙 24/7: **${stay247 ? 'Bật' : 'Tắt'}** • 📌 Chờ: **${upcoming.length}**${sleepLabel}`;
  const roomLine = [
   voiceChannelId ? `🎙️ Kênh: <#${voiceChannelId}>` : '🎙️ Kênh thoại đang kết nối',
@@ -244,6 +283,21 @@ export function buildPlayerPayload(player, overrides = {}) {
      .setValue('play_fav')
      .setEmoji('💖'),
     new StringSelectMenuOptionBuilder()
+     .setLabel('Bỏ túi bài này về Tin nhắn riêng (DM)')
+     .setDescription('Gửi thẻ ảnh bìa & link bài đang nghe vào hộp thư riêng của bạn (ai cũng bấm được)')
+     .setValue('grab_dm')
+     .setEmoji('📩'),
+    new StringSelectMenuOptionBuilder()
+     .setLabel('Nghe lại bài này từ đầu (0:00)')
+     .setDescription('Tua nhanh bài hát đang phát quay về mốc 0:00')
+     .setValue('replay_track')
+     .setEmoji('⏪'),
+    new StringSelectMenuOptionBuilder()
+     .setLabel(`Đổi Vibe bài hát (hiện tại: ${vibeInfo.label})`)
+     .setDescription('Chuyển vòng trực tiếp: Chuẩn Gốc → Nightcore → Slowed + Echo → Lo-Fi Đĩa Than')
+     .setValue('cycle_vibe')
+     .setEmoji('⚡'),
+    new StringSelectMenuOptionBuilder()
      .setLabel('Tùy chỉnh âm lượng (0% – 200%)')
      .setDescription(`Nhập số phần trăm bất kỳ từ 0 đến 200 (hiện tại: ${volume}%)`)
      .setValue('custom_volume')
@@ -303,6 +357,11 @@ export function buildPlayerPayload(player, overrides = {}) {
      .setDescription('Tìm và hiển thị lời bài hát đang phát (ai cũng xem được)')
      .setValue('view_lyrics')
      .setEmoji('📝'),
+    new StringSelectMenuOptionBuilder()
+     .setLabel('Xem Bảng Vàng Top Nhạc & Top DJ')
+     .setDescription('Xem thống kê bài hát hay nhất & DJ chăm mở nhạc nhất máy chủ')
+     .setValue('view_stats')
+     .setEmoji('📊'),
     new StringSelectMenuOptionBuilder()
      .setLabel(autoPlay ? 'Tắt tự động phát (AutoPlay)' : 'Bật tự động phát (AutoPlay)')
      .setDescription(autoPlay ? 'Dừng tự tìm nhạc liên quan khi hết hàng đợi' : 'Tự động tìm & phát nhạc cùng gu khi hết hàng đợi')
@@ -619,5 +678,37 @@ export function buildLyricsEmbed(lyricsData, botUser) {
   .setDescription(safeLyrics || '*Không có dữ liệu lời bài hát.*')
   .setFooter({ text: `Nguồn lời bài hát: ${lyricsData?.source ?? 'LRCLIB'}` })
   .setTimestamp();
+}
+
+// Thẻ Embed sang trọng gửi về Tin nhắn riêng (DM) khi người dùng bấm /grab hoặc "Bỏ túi bài này".
+export function buildGrabDmEmbed(track, player, guild, botUser) {
+ const avatarUrl = botUser?.displayAvatarURL?.({ size: 128 }) ?? undefined;
+ const trackUrl = safeHttpUrl(track?.url);
+ const artworkUrl = resolveArtworkUrl(track?.thumbnail);
+ const webUrl = resolveNowPlayingWebUrl();
+ const title = cleanText(track?.title ?? 'Bài hát yêu thích', 110);
+ const author = cleanText(track?.metadata?.author ?? 'Nghệ sĩ', 60);
+ const guildName = cleanText(guild?.name ?? 'Máy chủ Discord', 50);
+
+ const embed = new EmbedBuilder()
+  .setColor(0xec4899)
+  .setAuthor({
+   name: `${cleanText(botUser?.username ?? 'Music Bot', 35)} • Đã bỏ túi bài hát`,
+   ...(avatarUrl ? { iconURL: avatarUrl } : {}),
+  })
+  .setTitle(`🎵 ${title}`)
+  .setDescription([
+   `👤 **Nghệ sĩ:** ${author}`,
+   `⏱️ **Thời lượng:** \`${formatDuration(track?.duration)}\``,
+   `🏠 **Nghe tại:** ${guildName}`,
+   trackUrl ? `🔗 **Link bài gốc:** [Mở nghe lại bất cứ lúc nào](${trackUrl})` : null,
+   webUrl ? `🌐 **Live Radio & Karaoke:** [Mở trang trực tuyến](${webUrl})` : null,
+  ].filter(Boolean).join('\n'))
+  .setFooter({ text: 'Mẹo: Bạn cũng có thể gõ /fav action:add trong máy chủ để lưu vào Tủ nhạc cá nhân!' })
+  .setTimestamp();
+
+ if (trackUrl) embed.setURL(trackUrl);
+ if (artworkUrl) embed.setThumbnail(artworkUrl);
+ return embed;
 }
 

@@ -8,21 +8,25 @@ import {
  clampVolumePercent,
  configurePlayerAudio,
  getNextSoundPreset,
+ getNextVibeMode,
  installAudioEnhancer,
  MAX_VOLUME_PERCENT,
  MIN_VOLUME_PERCENT,
  parseCustomVolumeInput,
  setAudioEnhancement,
  SOUND_PRESETS,
+ VIBE_MODES,
 } from './src/audioEnhancer.js';
 import { assertMusicAccess, isBotOwner, resolveHumanRequester } from './src/access.js';
 import { buildFavoritesEmbed, createFavoritesStore } from './src/favoritesStore.js';
 import { fetchTrackLyrics, fetchWebKaraokeLyrics, sanitizeLyricsTitle } from './src/lyrics.js';
 import { createNowPlayingHub } from './src/nowPlayingHub.js';
 import { deleteDiscordMessage, extractMessageRef, sweepChannelStaleNotices } from './src/messageCleaner.js';
+import { resolveRadioStation } from './src/radioStations.js';
 import { captureGatewayFallbackSessions, createRuntimeSessionStore, sealSessionPayload } from './src/sessionStore.js';
 import { synthesizeSfxWav } from './src/sfx.js';
 import { createSleepTimerManager } from './src/sleepTimer.js';
+import { buildStatsEmbed, createStatsStore } from './src/statsStore.js';
 import { createVoiceRoomStatusSync } from './src/voiceStatus.js';
 import { createGuildTtsController, synthesizeGoogleTtsBuffer } from './src/tts.js';
 import { resolveTrackWebAudio, WEB_AUDIO_REFRESH_MS } from './src/webAudio.js';
@@ -31,6 +35,7 @@ import { buildHelpEmbed, commands } from './src/commands.js';
 import {
  buildAddSongModal,
  buildEndedPayload,
+ buildGrabDmEmbed,
  buildHistoryEmbed,
  buildIdle247Payload,
  buildLyricsEmbed,
@@ -44,6 +49,7 @@ import {
  LOOP_LABELS,
  renderSyncedProgress,
  resolveNowPlayingWebUrl,
+ syncPlayerVibeAnchor,
 } from './src/playerGui.js';
 
 // Kiểm tra phiên bản Node tối thiểu do thư viện voice yêu cầu Node >= 22.12.0.
@@ -119,6 +125,30 @@ soundCloudPlugin.search = async function patchedSoundCloudSearch(query, requeste
  await this.client.ensureReady();
  const trimmed = String(query ?? '').trim();
  if (/^https?:\/\//i.test(trimmed)) {
+  if (/^https:\/\/soundcloud\.com\/[^/]+\/sets\/[^/?#]+/i.test(trimmed)) {
+   const playlist = await this.client.getPlaylistDetails(trimmed);
+   let rawItems = Array.isArray(playlist?.tracks) ? playlist.tracks.slice(0, 30) : [];
+   const stubIds = rawItems.filter(t => t?.id && (!t.title || !t.permalink_url)).map(t => t.id);
+   if (stubIds.length > 0 && typeof this.client.fetchTracksByIds === 'function') {
+    const hydrated = await this.client.fetchTracksByIds(stubIds).catch(() => []);
+    const byId = new Map((Array.isArray(hydrated) ? hydrated : []).map(h => [String(h.id), h]));
+    rawItems = rawItems.map(t => byId.get(String(t.id)) ?? t);
+   }
+   const playable = rawItems.filter(t => t?.title && t?.permalink_url && isPlayableSoundCloudRaw(t));
+   const tracks = (playable.length ? playable : rawItems.filter(t => t?.title && t?.permalink_url))
+    .slice(0, 20)
+    .map(item => mapSoundCloudRawTrack(item, requestedBy));
+   return {
+    tracks,
+    playlist: {
+     name: playlist?.title || 'SoundCloud Playlist',
+     url: playlist?.permalink_url || trimmed,
+     thumbnail: typeof playlist?.artwork_url === 'string'
+      ? playlist.artwork_url.replace('-large.', '-t500x500.')
+      : undefined,
+    },
+   };
+  }
   const direct = await rawSoundCloudSearch(trimmed, requestedBy);
   if (Array.isArray(direct?.tracks)) {
    direct.tracks.forEach(t => {
@@ -228,6 +258,9 @@ const sessionStore = createRuntimeSessionStore();
 // Tủ nhạc Yêu thích cá nhân theo từng người dùng (sao lưu cả đĩa cục bộ lẫn mã hóa đám mây Cloudflare).
 const favoritesStore = createFavoritesStore();
 
+// Bảng Vàng thống kê âm nhạc toàn máy chủ & Top DJ (sao lưu đĩa cục bộ + mã hóa đám mây Cloudflare).
+const statsStore = createStatsStore();
+
 // Bộ tự động đặt trạng thái Kênh Thoại (Voice Channel Status) theo tên bài hát đang phát & dọn sạch khi dừng nhạc/rời phòng.
 const voiceRoomStatus = createVoiceRoomStatusSync({ rest: client.rest, client });
 
@@ -240,6 +273,8 @@ const nowPlayingHub = createNowPlayingHub({
  },
  getFavoritesSeal: () => favoritesStore.exportSeal(DISCORD_TOKEN),
  onRemoteFavorites: opened => favoritesStore.importPlainUsers(opened),
+ getStatsSeal: () => statsStore.exportSeal(DISCORD_TOKEN),
+ onRemoteStats: opened => statsStore.importPlainStats(opened),
  client,
  botToken: DISCORD_TOKEN,
  deferInitialPush: true,
@@ -274,7 +309,7 @@ const channelLastSweepAt = new Map();
 const KICK_SNAPSHOT_TTL_MS = 30 * 60 * 1000; // Giữ trạng thái bài đang phát & hàng đợi trong 30 phút sau khi bị kick để khôi phục khi /join.
 const PROGRESS_TICK_MS = 5000; // Chu kỳ cập nhật thanh tiến trình (5 giây/lần: chuẩn mượt, không bao giờ chạm giới hạn rate-limit Discord).
 const CHANNEL_SWEEP_COOLDOWN_MS = 180000; // Quét dọn tin nhắn mồ côi tối đa 3 phút/lần mỗi kênh.
-const KNOWN_ERROR_RE = /^(Hãy|Bạn|Bot|Chờ|Chỉ|Hàng|Không|Chưa|Tên|URL|Lệnh|Bản|Link|Thời|Số|Định|Vị|Mức|Âm|Nội|Tủ|Hẹn|Hiệu)/;
+const KNOWN_ERROR_RE = /^(Hãy|Bạn|Bot|Chờ|Chỉ|Hàng|Không|Chưa|Tên|URL|Lệnh|Bản|Link|Thời|Số|Định|Vị|Mức|Âm|Nội|Tủ|Hẹn|Hiệu|Đài)/;
 const ttsController = createGuildTtsController();
 
 function syncSleepTimerLabel(player) {
@@ -884,6 +919,7 @@ async function destroyPlayerSession(guildId, reason) {
  sleepTimerManager.cancel(guildId);
  ttsController.cancelGuild(guildId);
  clearPersistedSession(guildId);
+ setAudioEnhancement({ vibe: 'normal' });
  const p = manager.get(guildId);
  if (!p) {
   nowPlayingHub.publish({ player: null, track: null, reason }, { immediatePush: true, clearRemoteSession: true });
@@ -916,6 +952,8 @@ async function destroyPlayerSession(guildId, reason) {
 manager.on('trackStart', (player, track) => {
  const humanOwner = resolveHumanRequester(track?.requestedBy);
  if (humanOwner && player?.userdata) player.userdata.ownerId = humanOwner;
+ syncPlayerVibeAnchor(player, player?.userdata?.vibeMode ?? 'normal', 0);
+ statsStore.recordTrackPlay(track);
  if (Array.isArray(player?.queue?.history) && player.queue.history.length > 25) {
   player.queue.history.splice(0, player.queue.history.length - 25);
  }
@@ -1044,6 +1082,8 @@ async function ensureVoiceSession({ guild, voiceChannel, textChannel, userId, in
     voiceChannelId: voiceChannel.id,
     stay247: initial247,
     soundPreset: 'hd',
+    vibeMode: 'normal',
+    vibeAnchor: null,
     idleOpen: Boolean(initial247),
     panelMessage: null,
     panelTimer: null,
@@ -1089,6 +1129,7 @@ async function ensureVoiceSession({ guild, voiceChannel, textChannel, userId, in
   configurePlayerAudio(p);
   setAudioEnhancement({
    preset: p.userdata?.soundPreset ?? 'hd',
+   vibe: p.userdata?.vibeMode ?? 'normal',
    channelBitrate: voiceChannel.bitrate,
   });
   if (!p.connection) await p.connect(voiceChannel);
@@ -1101,11 +1142,54 @@ async function ensureVoiceSession({ guild, voiceChannel, textChannel, userId, in
  }
 }
 
-// Dùng chung logic kiểm tra, tìm kiếm và thêm bài hát cho cả lệnh /play lẫn hộp thoại "Thêm bài hát mới".
+// Nạp một danh sách bài hát đã tìm thấy (từ Playlist/Album hoặc Đài Radio) vào phiên phát hiện tại, tối đa 20 bài chờ.
+async function enqueueTrackBatch(p, tracks, userId, playNext = false) {
+ const validTracks = (Array.isArray(tracks) ? tracks : [])
+  .filter(t => t && !t.isLive && !(Number(t.duration) > 10800000));
+ if (validTracks.length === 0) {
+  throw new Error('Không tìm thấy bài hát hợp lệ nào trong danh sách (hoặc toàn bộ bài vượt quá 180 phút).');
+ }
+ const hadCurrent = Boolean(p.queue.currentTrack);
+ if (!hadCurrent) {
+  const [first, ...rest] = validTracks;
+  if (p.userdata) {
+   p.userdata.ownerId = userId;
+   p.userdata.idleOpen = false;
+   p.userdata.ttsOnlyIdle = false;
+  }
+  if (!(await p.play(first, userId))) {
+   throw new Error('Không thể phát danh sách bài hát này.');
+  }
+  const canQueue = rest.slice(0, Math.max(0, 20 - p.queue.size));
+  if (canQueue.length > 0) {
+   if (typeof p.queue?.addMultiple === 'function') p.queue.addMultiple(canQueue);
+   else for (const t of canQueue) p.queue?.insert?.(t, p.queue.size);
+  }
+  schedulePanelUpdate(p);
+  return { firstTrack: first, addedCount: 1 + canQueue.length, queued: false };
+ }
+
+ const roomLeft = Math.max(0, 20 - p.queue.size);
+ if (roomLeft === 0) throw new Error('Hàng đợi đã đủ 20 bài.');
+ const slice = validTracks.slice(0, roomLeft);
+ if (playNext) {
+  for (let idx = slice.length - 1; idx >= 0; idx--) {
+   p.queue.insert(slice[idx], 0);
+  }
+ } else if (typeof p.queue?.addMultiple === 'function') {
+  p.queue.addMultiple(slice);
+ } else {
+  for (const t of slice) p.queue?.insert?.(t, p.queue.size);
+ }
+ schedulePanelUpdate(p);
+ return { firstTrack: slice[0], addedCount: slice.length, queued: true };
+}
+
+// Dùng chung logic kiểm tra, tìm kiếm và thêm bài hát / Playlist / Album cho cả lệnh /play lẫn hộp thoại "Thêm bài hát mới".
 async function enqueueAndPlay({ guild, voiceChannel, textChannel, rawQuery, userId, playNext = false }) {
  const now = Date.now();
  if (now - (cooldown.get(userId) ?? 0) < 3000) throw new Error('Chờ 3 giây giữa hai lần thêm nhạc.');
- const { query: q, spotifyMeta } = await resolveMusicRequest(rawQuery);
+ const { query: q, spotifyMeta, spotifyCollection, isSoundCloudSet } = await resolveMusicRequest(rawQuery);
  if (cooldown.size >= 100) cooldown.clear();
  cooldown.set(userId, Date.now());
 
@@ -1113,7 +1197,53 @@ async function enqueueAndPlay({ guild, voiceChannel, textChannel, rawQuery, user
  guildKickSnapshots.delete(guild.id);
  try {
   if (p.queue.size >= 20) throw new Error('Hàng đợi đã đủ 20 bài.');
+
+  // Trường hợp 1: Playlist hoặc Album Spotify -> tìm các bài tương ứng trên SoundCloud với độ song song tối đa 3 luồng nhẹ RAM.
+  if (spotifyCollection?.items?.length) {
+   const hadCurrent = Boolean(p.queue.currentTrack);
+   const maxWanted = Math.min(spotifyCollection.items.length, (hadCurrent ? 0 : 1) + Math.max(0, 20 - p.queue.size));
+   const targets = spotifyCollection.items.slice(0, Math.max(1, maxWanted));
+   const resolvedTracks = new Array(targets.length).fill(null);
+   let cursor = 0;
+   const workers = Array.from({ length: Math.min(3, targets.length) }, async () => {
+    while (cursor < targets.length) {
+     const idx = cursor++;
+     const item = targets[idx];
+     const res = await p.search(item.query, userId).catch(() => null);
+     const best = pickBestMatchingTrack(res?.tracks ?? [], item);
+     if (best && !best.isLive && !(Number(best.duration) > 10800000)) {
+      if (item.thumbnail && !best.thumbnail) best.thumbnail = item.thumbnail;
+      resolvedTracks[idx] = best;
+     }
+    }
+   });
+   await Promise.all(workers);
+   const finalList = resolvedTracks.filter(Boolean);
+   const batch = await enqueueTrackBatch(p, finalList, userId, playNext);
+   return {
+    track: batch.firstTrack,
+    queued: batch.queued,
+    insertedNext: Boolean(playNext && batch.queued),
+    collectionName: spotifyCollection.name,
+    addedCount: batch.addedCount,
+   };
+  }
+
   let result = await p.search(q, userId).catch(() => null);
+
+  // Trường hợp 2: SoundCloud Playlist / Set (/sets/...).
+  if (isSoundCloudSet) {
+   const batch = await enqueueTrackBatch(p, result?.tracks ?? [], userId, playNext);
+   return {
+    track: batch.firstTrack,
+    queued: batch.queued,
+    insertedNext: Boolean(playNext && batch.queued),
+    collectionName: result?.playlist?.name || 'SoundCloud Playlist',
+    addedCount: batch.addedCount,
+   };
+  }
+
+  // Trường hợp 3: Bài hát đơn lẻ (từ khóa, YouTube lẻ, SoundCloud lẻ, Spotify track lẻ).
   const isDirectScUrl = q.startsWith('https://soundcloud.com/');
   // Dự phòng cho link SoundCloud nếu API /resolve bị kén định dạng slug của bài hát.
   if (!result?.tracks?.length && isDirectScUrl) {
@@ -1142,15 +1272,97 @@ async function enqueueAndPlay({ guild, voiceChannel, textChannel, rawQuery, user
   if (hadCurrent && playNext) {
    p.queue.insert(track, 0);
    schedulePanelUpdate(p);
-   return { track, queued: true, insertedNext: true };
+   return { track, queued: true, insertedNext: true, collectionName: null, addedCount: 1 };
   }
   if (!(await p.play(track, userId))) throw new Error('Không thể phát bài hát này.');
   if (hadCurrent) schedulePanelUpdate(p);
-  return { track, queued: hadCurrent, insertedNext: false };
+  return { track, queued: hadCurrent, insertedNext: false, collectionName: null, addedCount: 1 };
  } catch (e) {
   cooldown.delete(userId);
   if (created && !p.userdata?.stay247) manager.delete(guild.id);
   throw e;
+ }
+}
+
+// Mở Đài Radio Không Ngủ theo tâm trạng: tự chọn lọc các bài chuẩn gu, xáo trộn ngẫu nhiên và bật AutoPlay xuyên đêm.
+async function startRadioStation({ guild, voiceChannel, textChannel, stationId, userId }) {
+ const station = resolveRadioStation(stationId);
+ const queries = [...station.queries];
+ for (let idx = queries.length - 1; idx > 0; idx--) {
+  const j = Math.floor(Math.random() * (idx + 1));
+  [queries[idx], queries[j]] = [queries[j], queries[idx]];
+ }
+
+ const { player: p, created } = await ensureVoiceSession({ guild, voiceChannel, textChannel, userId });
+ guildKickSnapshots.delete(guild.id);
+ try {
+  const chosenQueries = queries.slice(0, 4);
+  const searchBatches = await Promise.all(
+   chosenQueries.map(q => p.search(`sc:${q}`, userId).catch(() => null)),
+  );
+  const seenUrls = new Set();
+  const pool = [];
+  for (const res of searchBatches) {
+   for (const t of res?.tracks ?? []) {
+    if (!t?.url || seenUrls.has(t.url)) continue;
+    if (t.isLive || Number(t.duration) > 10800000 || Number(t.duration) < 60000) continue;
+    seenUrls.add(t.url);
+    pool.push(t);
+   }
+  }
+  if (pool.length === 0) {
+   throw new Error('Đài Radio hiện tạm thời chưa lấy được danh sách phát, vui lòng thử lại sau giây lát.');
+  }
+  for (let idx = pool.length - 1; idx > 0; idx--) {
+   const j = Math.floor(Math.random() * (idx + 1));
+   [pool[idx], pool[j]] = [pool[j], pool[idx]];
+  }
+  const radioTracks = pool.slice(0, 12);
+  p.clearQueue();
+  p.autoPlay(true);
+  if (p.queue?.currentTrack) {
+   const [first, ...rest] = radioTracks;
+   p.queue.insert(first, 0);
+   const canAdd = rest.slice(0, Math.max(0, 20 - p.queue.size));
+   if (canAdd.length > 0) {
+    if (typeof p.queue?.addMultiple === 'function') p.queue.addMultiple(canAdd);
+    else for (const t of canAdd) p.queue?.insert?.(t, p.queue.size);
+   }
+   await p.skip();
+   schedulePanelUpdate(p, { autoPlay: true });
+   return { station, firstTrack: first, totalTracks: 1 + canAdd.length };
+  }
+  const batch = await enqueueTrackBatch(p, radioTracks, userId, false);
+  p.autoPlay(true);
+  schedulePanelUpdate(p, { autoPlay: true });
+  return { station, firstTrack: batch.firstTrack, totalTracks: batch.addedCount };
+ } catch (e) {
+  if (created && !p.userdata?.stay247) manager.delete(guild.id);
+  throw e;
+ }
+}
+
+// Áp dụng chế độ Vibe trực tiếp lên bài đang phát mà không cần tải lại luồng âm thanh, đồng bộ luôn lên Website.
+function applyPlayerVibe(p, nextVibe) {
+ if (!VIBE_MODES[nextVibe]) throw new Error('Không hỗ trợ chế độ Vibe này.');
+ syncPlayerVibeAnchor(p, nextVibe);
+ if (p.userdata) p.userdata.vibeMode = nextVibe;
+ setAudioEnhancement({ vibe: nextVibe });
+ nowPlayingHub.publish({ player: p, vibeMode: nextVibe }, { immediatePush: true });
+ return VIBE_MODES[nextVibe];
+}
+
+// Bỏ túi thông tin bài đang nghe về Tin nhắn riêng (DM) của bất kỳ thành viên nào.
+async function sendGrabDmToUser(user, track, p, guild) {
+ if (!track) throw new Error('Hiện chưa phát bài hát nào để bỏ túi về Tin nhắn riêng.');
+ const embed = buildGrabDmEmbed(track, p, guild, client.user);
+ try {
+  await user.send({ embeds: [embed], allowedMentions: { parse: [] } });
+ } catch (err) {
+  if (err?.code === 50007) {
+   throw new Error('Không thể gửi tin nhắn riêng (DM) cho bạn — hãy bật **"Cho phép tin nhắn trực tiếp từ thành viên máy chủ"** trong Cài đặt quyền riêng tư Discord rồi thử lại nhé!');
+  }
+  throw new Error('Không thể gửi tin nhắn riêng (DM) lúc này, vui lòng kiểm tra cài đặt hộp thư của bạn.');
  }
 }
 
@@ -1701,6 +1913,32 @@ async function handlePlayerComponent(i) {
   return;
  }
 
+ // Trường hợp bỏ túi thông tin & link bài đang nghe về Tin nhắn riêng (ai trong máy chủ cũng dùng được).
+ if (i.isStringSelectMenu() && i.customId === 'player_menu' && i.values[0] === 'grab_dm') {
+  const cur = p?.queue?.currentTrack;
+  if (!cur) throw new Error('Hiện chưa phát bài hát nào để bỏ túi về Tin nhắn riêng.');
+  await i.deferReply({ flags: MessageFlags.Ephemeral });
+  schedulePanelUpdate(p);
+  await sendGrabDmToUser(i.user, cur, p, i.guild);
+  await i.editReply({
+   content: `📩 Đã gửi thẻ bài hát **${cleanText(cur.title, 85)}** về **Tin nhắn riêng (DM)** của bạn!`,
+   allowedMentions: { parse: [] },
+  });
+  return;
+ }
+
+ // Trường hợp xem Bảng Vàng Top Nhạc & Top DJ trực tiếp từ menu (ai trong máy chủ cũng xem được).
+ if (i.isStringSelectMenu() && i.customId === 'player_menu' && i.values[0] === 'view_stats') {
+  if (p) schedulePanelUpdate(p);
+  const embed = buildStatsEmbed(statsStore.getSummary(i.user.id), {
+   scope: 'server',
+   discordUser: i.user,
+   botUser: client.user,
+  });
+  await i.reply({ embeds: [embed], flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } });
+  return;
+ }
+
  // Trường hợp làm mới thanh tiến trình (chỉ cập nhật hiển thị thời gian, có giới hạn chống bấm liên tục).
  if (i.isButton() && i.customId === 'player_refresh') {
   if (!p || !p.queue.currentTrack) {
@@ -1728,15 +1966,18 @@ async function handlePlayerComponent(i) {
    busy = true; ownsLock = true;
    const channel = await requireSameVoiceChannel(i.guild, i.user.id);
    assertMusicAccess('play', i.user.id, manager.get(i.guildId));
-   const { track, queued } = await enqueueAndPlay({
+   const { track, queued, collectionName, addedCount } = await enqueueAndPlay({
     guild: i.guild,
     voiceChannel: channel,
     textChannel: i.channel,
     rawQuery: i.fields.getTextInputValue('query'),
     userId: i.user.id,
    });
+   const modalNote = collectionName
+    ? `💿 Đã nạp **${addedCount}** bài từ **${cleanText(collectionName, 65)}** (${queued ? 'vào hàng đợi' : `đang phát **${cleanText(track.title, 65)}**`})!`
+    : (queued ? `✅ Đã thêm vào hàng đợi: **${cleanText(track.title, 90)}**` : `▶️ Đang phát: **${cleanText(track.title, 90)}**`);
    await i.editReply({
-    content: queued ? `✅ Đã thêm vào hàng đợi: **${cleanText(track.title, 90)}**` : `▶️ Đang phát: **${cleanText(track.title, 90)}**`,
+    content: modalNote,
     allowedMentions: { parse: [] },
    });
   } finally {
@@ -1921,6 +2162,29 @@ async function handlePlayerComponent(i) {
      });
      return;
     }
+    case 'replay_track': {
+     const cur = p.queue.currentTrack;
+     if (!cur) throw new Error('Hiện chưa phát bài hát nào để nghe lại từ đầu.');
+     if (!(await p.seek(0))) throw new Error('Không thể tua lại bài hát lúc này.');
+     syncPlayerVibeAnchor(p, p.userdata?.vibeMode ?? 'normal', 0);
+     clearPanelTimer(p);
+     markPanelTouched(p);
+     nowPlayingHub.publish({ player: p }, { immediatePush: true });
+     await i.update(buildPlayerPayload(p));
+     return;
+    }
+    case 'cycle_vibe': {
+     const nextVibe = getNextVibeMode(p.userdata?.vibeMode ?? 'normal');
+     const vibeInfo = applyPlayerVibe(p, nextVibe);
+     clearPanelTimer(p);
+     markPanelTouched(p);
+     await i.update(buildPlayerPayload(p, { vibeMode: nextVibe }));
+     await i.followUp({
+      content: `${vibeInfo.emoji} Đã chuyển Vibe bài hát sang **${vibeInfo.label}** (*${vibeInfo.description}*) — biến đổi trực tiếp ngay tại giây đang nghe!`,
+      flags: MessageFlags.Ephemeral,
+     }).catch(() => {});
+     return;
+    }
     case 'cycle_sound':
     case 'preset_hd':
     case 'preset_vocal':
@@ -2043,6 +2307,21 @@ client.on(Events.InteractionCreate, async i => {
      : { title: cur.title, artist: cur.metadata?.author, durationMs: cur.duration },
    );
    return await i.editReply({ embeds: [buildLyricsEmbed(lyricsData, client.user)], allowedMentions: { parse: [] } });
+  }
+  if (i.commandName === 'stats') {
+   const scope = i.options.getString('scope') ?? 'server';
+   const embed = buildStatsEmbed(statsStore.getSummary(i.user.id), {
+    scope,
+    discordUser: i.user,
+    botUser: client.user,
+   });
+   return await i.editReply({ embeds: [embed], allowedMentions: { parse: [] } });
+  }
+  if (i.commandName === 'grab') {
+   const cur = p?.queue?.currentTrack;
+   if (!cur) return await reply('Hiện chưa phát bài hát nào để bỏ túi về Tin nhắn riêng.');
+   await sendGrabDmToUser(i.user, cur, p, i.guild);
+   return await reply(`📩 Đã gửi thẻ thông tin & link bài **${cleanText(cur.title, 85)}** về **Tin nhắn riêng (DM)** của bạn!`);
   }
 
   // Lệnh /fav: Xem / Lưu / Xóa Tủ nhạc Yêu thích cá nhân (ai cũng tự quản lý tủ riêng của mình được; khi phát vào phòng mới kiểm tra quyền phòng thoại).
@@ -2256,8 +2535,22 @@ client.on(Events.InteractionCreate, async i => {
    );
   }
 
+  if (i.commandName === 'radio') {
+   const stationId = i.options.getString('station', true);
+   const { station, firstTrack, totalTracks } = await startRadioStation({
+    guild: i.guild,
+    voiceChannel: channel,
+    textChannel: i.channel,
+    stationId,
+    userId: i.user.id,
+   });
+   return await reply(
+    `${station.emoji} Đã lên sóng **${station.name}** (*${station.description}*) — nạp sẵn **${totalTracks}** bài & tự động bật **AutoPlay xuyên đêm**!\n▶️ Đang phát mở màn: **${cleanText(firstTrack.title, 85)}**`,
+   );
+  }
+
   if (i.commandName === 'play') {
-   const { track, queued, insertedNext } = await enqueueAndPlay({
+   const { track, queued, insertedNext, collectionName, addedCount } = await enqueueAndPlay({
     guild: i.guild,
     voiceChannel: channel,
     textChannel: i.channel,
@@ -2265,6 +2558,13 @@ client.on(Events.InteractionCreate, async i => {
     userId: i.user.id,
     playNext: Boolean(i.options.getBoolean('next')),
    });
+   if (collectionName) {
+    return await reply(
+     queued
+      ? `💿 Đã nạp **${addedCount}** bài từ **${cleanText(collectionName, 65)}** vào ${insertedNext ? 'đầu ' : ''}hàng đợi!`
+      : `💿 Đã mở **${cleanText(collectionName, 65)}** (**${addedCount}** bài) — đang phát ngay: **${cleanText(track.title, 80)}**!`,
+    );
+   }
    return await reply(
     insertedNext
      ? `⏭️ Đã chèn lên đầu hàng đợi (phát ngay kế tiếp): **${cleanText(track.title, 90)}**`
@@ -2383,6 +2683,21 @@ client.on(Events.InteractionCreate, async i => {
     schedulePanelUpdate(p);
     return await reply(`Đã xóa khỏi hàng đợi: ${cleanText(removed.title, 90)}`);
    }
+   case 'vibe': {
+    const mode = i.options.getString('mode', true);
+    const vibeInfo = applyPlayerVibe(p, mode);
+    schedulePanelUpdate(p, { vibeMode: mode });
+    return await reply(`${vibeInfo.emoji} Đã chuyển Vibe sang **${vibeInfo.label}** (*${vibeInfo.description}*) — biến đổi trực tiếp ngay trên bài đang phát & đồng bộ lên Website!`);
+   }
+   case 'replay': {
+    const cur = p.queue.currentTrack;
+    if (!cur) throw new Error('Hiện chưa phát bài hát nào để phát lại từ đầu.');
+    if (!(await p.seek(0))) throw new Error('Không thể tua lại bài hát lúc này.');
+    syncPlayerVibeAnchor(p, p.userdata?.vibeMode ?? 'normal', 0);
+    nowPlayingHub.publish({ player: p }, { immediatePush: true });
+    schedulePanelUpdate(p);
+    return await reply(`⏪ Đã tua bài **${cleanText(cur.title, 85)}** quay lại từ đầu (**0:00**)!`);
+   }
    case 'seek': {
     const cur = p.queue.currentTrack;
     if (!cur) throw new Error('Hiện chưa phát bài hát nào để tua.');
@@ -2392,6 +2707,8 @@ client.on(Events.InteractionCreate, async i => {
      throw new Error(`Thời gian tua vượt quá độ dài bài hát (${formatDuration(durationMs)}).`);
     }
     if (!(await p.seek(targetMs))) throw new Error('Không thể tua bài hát lúc này.');
+    syncPlayerVibeAnchor(p, p.userdata?.vibeMode ?? 'normal', targetMs);
+    nowPlayingHub.publish({ player: p }, { immediatePush: true });
     schedulePanelUpdate(p);
     return await reply(`⏩ Đã tua bài hát tới mốc **${formatDuration(targetMs)}**.`);
    }

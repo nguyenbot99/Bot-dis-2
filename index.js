@@ -40,7 +40,7 @@ import { createVoiceRoomStatusSync } from './src/voiceStatus.js';
 import { createGuildTtsController, synthesizeGoogleTtsBuffer, TTS_VOICES } from './src/tts.js';
 import { resolveTrackWebAudio, WEB_AUDIO_REFRESH_MS } from './src/webAudio.js';
 import { buildVoiceGuardEmbed, evaluateBotVoiceTransition } from './src/voiceGuard.js';
-import { buildHelpEmbed, commands } from './src/commands.js';
+import { buildHelpPayload, commands } from './src/commands.js';
 import {
  buildAddSongModal,
  buildEndedPayload,
@@ -1959,6 +1959,17 @@ async function replyInteractionError(i, e) {
 
 // Xử lý tương tác trên khung Music Player (Nút bấm, Menu thả xuống và Hộp thoại thêm nhạc).
 async function handlePlayerComponent(i) {
+ // Menu chuyển đổi danh mục lệnh trong /help (nhảy trang tức thì, không khóa hàng đợi hay kênh thoại).
+ if (i.isStringSelectMenu() && i.customId === 'help_category') {
+  const picked = i.values[0] || 'overview';
+  await i.update(buildHelpPayload({
+   botUser: client.user,
+   guild: i.guild,
+   category: picked,
+  }));
+  return;
+ }
+
  // Nút lưu bản sao Avatar vĩnh viễn về Tin nhắn riêng (DM) — ai bấm cũng tự lưu về hộp thư của mình được.
  if (i.isButton() && i.customId.startsWith('avatar_dm:')) {
   const parts = i.customId.split(':');
@@ -2510,7 +2521,14 @@ client.on(Events.InteractionCreate, async i => {
   }
 
   await i.deferReply({ flags: MessageFlags.Ephemeral });
-  if (i.commandName === 'help') return await i.editReply({ embeds: [buildHelpEmbed(client.user)], allowedMentions: { parse: [] } });
+  if (i.commandName === 'help') {
+   const initialCat = i.options.getString('category') || 'overview';
+   return await i.editReply(buildHelpPayload({
+    botUser: client.user,
+    guild: i.guild,
+    category: initialCat,
+   }));
+  }
   if (i.commandName === 'ping') return await reply(`Độ trễ: ${client.ws.ping} ms • Bộ nhớ Node: ${Math.round(process.memoryUsage().rss / 1048576)} MiB (chưa tính tiến trình FFmpeg).`);
   if (busy) return await reply('Đang xử lý lệnh khác, vui lòng thử lại.');
   busy = true; ownsLock = true;

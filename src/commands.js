@@ -1,4 +1,10 @@
-import { EmbedBuilder, SlashCommandBuilder } from 'discord.js';
+import {
+ ActionRowBuilder,
+ EmbedBuilder,
+ SlashCommandBuilder,
+ StringSelectMenuBuilder,
+ StringSelectMenuOptionBuilder,
+} from 'discord.js';
 import { resolveNowPlayingWebUrl } from './playerGui.js';
 
 // Giữ nguyên tên lệnh và tên tham số bằng tiếng Anh/số chuẩn Discord (lưu ý Discord không cho dấu "/" trong tên lệnh nên 24/7 viết là /247);
@@ -44,7 +50,193 @@ const definitions = [
  ['ping', 'Kiểm tra độ trễ kết nối và mức bộ nhớ Node của bot'],
 ];
 
-// Tạo khung Embed hiển thị đẹp mắt cho lệnh /help (tên lệnh giữ chuẩn quốc tế, chú thích tiếng Việt).
+// Danh mục phân trang gọn gàng cho lệnh /help (chọn danh mục qua menu thả xuống giống giao diện mẫu trên điện thoại & PC).
+export const HELP_CATEGORIES = Object.freeze([
+ {
+  key: 'music_search',
+  label: 'Phát nhạc & Tìm kiếm',
+  description: 'Xem các lệnh thuộc danh mục Phát nhạc & Tìm kiếm',
+  color: 0xc084fc,
+  items: [
+   ['`/play` `query` `[next]`', 'Phát nhạc ngay từ tên bài, link lẻ hoặc trọn bộ Playlist / Album Spotify & SoundCloud'],
+   ['`/search` `query` `[next]`', 'Tìm Top 5 phiên bản khớp nhất và tự tay chọn đúng bản muốn nghe'],
+   ['`/dedicate` `query` `to` `message`', 'Gửi tặng bài hát kèm lời chúc hiện lên Khung Nhạc Discord & Website Karaoke'],
+   ['`/similar`', 'Dò sóng từ bài đang nghe và bơm tiếp 5 bài hát cùng gu vào hàng đợi'],
+   ['`/radio` `station`', 'Mở Đài Radio Không Ngủ theo tâm trạng (Lo-Fi, V-Pop, EDM, Piano, US-UK, Ngủ ngon)'],
+   ['`/replay`', 'Tua nhanh bài hát đang phát quay lại từ đầu (`0:00`)'],
+  ],
+ },
+ {
+  key: 'playback_ctrl',
+  label: 'Điều khiển nhạc',
+  description: 'Xem các lệnh thuộc danh mục Điều khiển nhạc',
+  color: 0xa855f7,
+  items: [
+   ['`/pause`', 'Tạm dừng bài hát đang phát (giữ nguyên mốc giây kể cả khi dừng lâu)'],
+   ['`/resume`', 'Tiếp tục phát bài hát đang tạm dừng'],
+   ['`/skip` `[to]`', 'Bỏ qua bài hiện tại hoặc nhảy thẳng tới bài thứ `#to` trong hàng đợi'],
+   ['`/previous`', 'Quay lại bài hát vừa phát liền trước đó'],
+   ['`/seek` `time`', 'Tua bài đang phát tới mốc bất kỳ (ví dụ: `1:30` hoặc `90`)'],
+   ['`/stop`', 'Dừng phát nhạc và dọn sạch hàng đợi (vẫn giữ phòng nếu đang bật 24/7)'],
+   ['`/volume` `percent`', 'Chỉnh âm lượng phát nhạc tùy ý từ `0%` đến `200%`'],
+  ],
+ },
+ {
+  key: 'studio_dsp',
+  label: 'Chất âm & Không gian',
+  description: 'Xem các lệnh thuộc danh mục Chất âm & Không gian',
+  color: 0xe879f9,
+  items: [
+   ['`/vibe` `mode`', 'Biến đổi trực tiếp bài đang phát: `Chuẩn Gốc` • `Nightcore` • `Slowed + Echo` • `Lo-Fi Đĩa Than`'],
+   ['`/ambient` `mode` `[level]`', 'Hòa trộn tiếng thiên nhiên nền (`Mưa đêm`, `Lửa trại`, `Sóng biển`, `Gió đêm`) từ `10%–85%`'],
+  ],
+  extraNote: '💡 **Mẹo:** Bạn có thể đổi nhanh 5 chế độ **Studio EQ** (`Rõ nét HD`, `Rõ lời Vocal`, `Siêu Trầm Bass`, `8D Vòm`, `Mộc Flat`) ngay trên menu của Khung Nhạc!',
+ },
+ {
+  key: 'queue_room',
+  label: 'Hàng đợi & Phòng thoại',
+  description: 'Xem các lệnh thuộc danh mục Hàng đợi & Phòng thoại',
+  color: 0x818cf8,
+  items: [
+   ['`/join`', 'Gọi bot vào kênh thoại hiện tại của bạn (tự khôi phục bài dở nếu vừa bị kick)'],
+   ['`/leave`', 'Tắt chế độ 24/7, xóa hàng đợi và cho bot rời khỏi phòng thoại'],
+   ['`/247` `[mode]`', 'Bật hoặc tắt chế độ treo phòng thoại 24/7 xuyên ngày đêm'],
+   ['`/sleeptimer` `[minutes]` `[after_track]`', 'Hẹn giờ tự giảm nhỏ âm lượng rồi tắt nhạc êm ái khi đi ngủ'],
+   ['`/autoplay` `[mode]`', 'Tự động tìm và phát tiếp nhạc liên quan khi hết hàng đợi'],
+   ['`/loop` `mode`', 'Chỉnh chế độ lặp: `off` (Tắt), `track` (Lặp 1 bài), `queue` (Lặp cả danh sách)'],
+   ['`/shuffle`', 'Trộn ngẫu nhiên thứ tự các bài đang chờ trong hàng đợi'],
+   ['`/move` `from` `to`', 'Đổi vị trí một bài hát trong danh sách chờ `/queue`'],
+   ['`/remove` `position`', 'Xóa một bài khỏi hàng đợi theo số thứ tự trong `/queue`'],
+   ['`/clear`', 'Xóa toàn bộ các bài đang chờ mà không làm đứt bài đang hát'],
+  ],
+ },
+ {
+  key: 'cabinet',
+  label: 'Tủ nhạc & Mixtape',
+  description: 'Xem các lệnh thuộc danh mục Tủ nhạc & Mixtape',
+  color: 0xf472b6,
+  items: [
+   ['`/fav` `action` `[query]` `[position]`', 'Quản lý & phát **Tủ nhạc Yêu thích cá nhân** của riêng bạn (tối đa 25 bài/người)'],
+   ['`/mixtape` `action` `[name]` `[query]`', 'Cùng anh em lập & phát **Tủ đĩa Mixtape chung của cả hội** (5 chủ đề × 20 bài)'],
+   ['`/grab`', 'Bỏ túi thẻ bài hát đang nghe kèm link gốc về **Tin nhắn riêng (DM)** của bạn'],
+  ],
+ },
+ {
+  key: 'voice_fun',
+  label: 'Giải trí phòng thoại',
+  description: 'Xem các lệnh thuộc danh mục Giải trí phòng thoại',
+  color: 0x38bdf8,
+  items: [
+   ['`/tts` `text` `[lang]` `[voice]` `[slow]`', 'Đọc văn bản trong kênh thoại với 5 giọng: `Chị Google`, `Loa Phường`, `Minion`, `Boss`, `Hang Động`'],
+   ['`/sfx` `effect`', 'Thả 8 hiệu ứng âm thanh Meme (`Ba-dum-tss`, `Dế kêu`, `Airhorn`, `Bass Drop`, `WinXP`...)'],
+  ],
+  extraNote: '✨ *Ai đang ngồi cùng kênh thoại cũng dùng được `/tts` và `/sfx` — nhạc đang phát sẽ tự tạm dừng rồi nối lại mượt mà!*',
+ },
+ {
+  key: 'utility',
+  label: 'Tra cứu & Tiện ích',
+  description: 'Xem các lệnh thuộc danh mục Tra cứu & Tiện ích',
+  color: 0x34d399,
+  items: [
+   ['`/avatar` `[user]` `[type]`', 'Soi Avatar gốc / Avatar Server / Banner **4K** đóng băng file thật & **chống xóa tự động**'],
+   ['`/nowplaying`', 'Xem thẻ thông tin chi tiết bài hát đang phát hiện tại'],
+   ['`/lyrics` `[query]`', 'Tìm lời bài hát đang phát hoặc tra lời theo tên bài bất kỳ'],
+   ['`/queue`', 'Xem danh sách các bài hát sắp phát tiếp theo'],
+   ['`/history`', 'Xem danh sách 10 bài hát vừa phát gần đây nhất'],
+   ['`/stats` `[scope]`', 'Xem **Bảng Vàng Âm Nhạc** toàn máy chủ (Top Bài & Top DJ) hoặc hồ sơ cá nhân'],
+   ['`/ping`', 'Kiểm tra độ trễ mạng Discord và mức tiêu thụ RAM hiện tại của bot'],
+   ['`/help` `[category]`', 'Mở bảng danh mục lệnh rút gọn này'],
+  ],
+ },
+]);
+
+// Dựng giao diện /help gọn gàng theo danh mục (Trang bìa tổng quan + Menu "Chọn danh mục" giống ảnh mẫu).
+export function buildHelpPayload({ botUser = null, guild = null, category = 'overview' } = {}) {
+ const botName = botUser?.username ?? 'Music Bot';
+ const botAvatarUrl = botUser?.displayAvatarURL?.({ size: 128 }) ?? undefined;
+ const guildName = guild?.name ?? botName;
+ const guildIconUrl = guild?.iconURL?.({ size: 128 }) ?? botAvatarUrl;
+ const webUrl = resolveNowPlayingWebUrl();
+ const totalCategories = HELP_CATEGORIES.length;
+ const totalCommands = definitions.length;
+
+ const selectedCat = HELP_CATEGORIES.find(c => c.key === category) ?? null;
+ let embed;
+
+ if (!selectedCat) {
+  const descLines = [
+   '🌸 **Tiền tố (lệnh) :** `/` *(Slash Commands)*',
+   `💿 **Tổng số lệnh :** **${totalCommands}** lệnh chia làm **${totalCategories}** danh mục`,
+   webUrl ? `🌐 **Phòng nghe Web :** [Mở Live Radio, Đĩa Than & Karaoke](${webUrl})` : null,
+  ].filter(Boolean);
+
+  embed = new EmbedBuilder()
+   .setColor(0xc084fc)
+   .setAuthor({
+    name: guildName,
+    ...(guildIconUrl ? { iconURL: guildIconUrl } : {}),
+   })
+   .setTitle(`Danh sách các lệnh của ${botName}`)
+   .setDescription(descLines.join('\n'))
+   .setFooter({
+    text: `Tổng ${totalCategories} danh mục lệnh`,
+    ...(botAvatarUrl ? { iconURL: botAvatarUrl } : {}),
+   })
+   .setTimestamp();
+ } else {
+  const cmdLines = selectedCat.items.map(
+   ([syntax, desc]) => `• ${syntax}\n  ╰ *${desc}*`,
+  );
+  if (selectedCat.extraNote) {
+   cmdLines.push('', selectedCat.extraNote);
+  }
+
+  embed = new EmbedBuilder()
+   .setColor(selectedCat.color)
+   .setAuthor({
+    name: `${guildName} • Danh mục lệnh`,
+    ...(guildIconUrl ? { iconURL: guildIconUrl } : {}),
+   })
+   .setTitle(`${selectedCat.label} (${selectedCat.items.length} lệnh)`)
+   .setDescription(cmdLines.join('\n'))
+   .setFooter({
+    text: `Danh mục: ${selectedCat.label} • Tổng ${totalCategories} danh mục lệnh`,
+    ...(botAvatarUrl ? { iconURL: botAvatarUrl } : {}),
+   })
+   .setTimestamp();
+ }
+
+ const menuOptions = [];
+ if (selectedCat) {
+  menuOptions.push(
+   new StringSelectMenuOptionBuilder()
+    .setLabel('Tổng quan')
+    .setDescription('Quay về trang chính danh sách các danh mục lệnh')
+    .setValue('overview'),
+  );
+ }
+ for (const cat of HELP_CATEGORIES) {
+  menuOptions.push(
+   new StringSelectMenuOptionBuilder()
+    .setLabel(cat.label)
+    .setDescription(cat.description)
+    .setValue(cat.key),
+  );
+ }
+
+ const select = new StringSelectMenuBuilder()
+  .setCustomId('help_category')
+  .setPlaceholder(selectedCat ? `Đang xem: ${selectedCat.label} • Chọn danh mục` : 'Chọn danh mục')
+  .addOptions(menuOptions);
+
+ return {
+  embeds: [embed],
+  components: [new ActionRowBuilder().addComponents(select)],
+  allowedMentions: { parse: [] },
+ };
+}
+
+// Tạo khung Embed tổng hợp đầy đủ (giữ tương thích cho các bài test kiểm tra toàn bộ lệnh).
 export function buildHelpEmbed(botUser) {
  const botName = botUser?.username ?? 'Music Bot';
  const avatarUrl = botUser?.displayAvatarURL?.({ size: 128 }) ?? undefined;
@@ -124,6 +316,15 @@ export function buildHelpEmbed(botUser) {
 
 export const commands = definitions.map(([name, description]) => {
  const c = new SlashCommandBuilder().setName(name).setDescription(description).setDMPermission(false);
+ if (name === 'help') {
+  c.addStringOption(o => o
+   .setName('category')
+   .setDescription('Mở thẳng một danh mục lệnh cụ thể (để trống để mở menu Chọn danh mục gọn gàng)')
+   .setRequired(false)
+   .addChoices(
+    ...HELP_CATEGORIES.map(cat => ({ name: cat.label, value: cat.key })),
+   ));
+ }
  if (name === 'play') {
   c.addStringOption(o => o
    .setName('query')

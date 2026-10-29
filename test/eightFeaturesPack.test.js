@@ -18,7 +18,7 @@ import {
  createAvatarGuardManager,
  resolveAvatarTargetInfo,
 } from '../src/avatarGuard.js';
-import { buildHelpEmbed, commands } from '../src/commands.js';
+import { buildHelpEmbed, buildHelpPayload, commands, HELP_CATEGORIES } from '../src/commands.js';
 import { isStaleBotNoticeMessage } from '../src/messageCleaner.js';
 import {
  buildMixtapeDetailEmbed,
@@ -404,6 +404,44 @@ test('Feature #7 (Website Vinyl Turntable + Poster Card Generator) & 38 Slash Co
  }
  const helpEmbed = buildHelpEmbed({ username: 'Bắt_Don', displayAvatarURL: () => 'https://example.com/a.png' }).toJSON();
  assert.equal(helpEmbed.fields.length, 6);
+
+ // Kiểm tra giao diện /help phân chia 7 danh mục gọn gàng kèm menu "Chọn danh mục"
+ const overviewPayload = buildHelpPayload({
+  botUser: { username: 'Bắt_Don', displayAvatarURL: () => 'https://example.com/bot.png' },
+  guild: { name: '⚡ Box Sét ⚡⚡', iconURL: () => 'https://example.com/guild.png' },
+  category: 'overview',
+ });
+ const overviewEmbed = overviewPayload.embeds[0].toJSON();
+ const overviewSelect = overviewPayload.components[0].toJSON().components[0];
+ assert.equal(overviewEmbed.author.name, '⚡ Box Sét ⚡⚡');
+ assert.equal(overviewEmbed.title, 'Danh sách các lệnh của Bắt_Don');
+ assert.ok(overviewEmbed.footer.text.includes('Tổng 7 danh mục lệnh'));
+ assert.equal(overviewSelect.custom_id, 'help_category');
+ assert.equal(overviewSelect.placeholder, 'Chọn danh mục');
+ assert.equal(overviewSelect.options.length, 7);
+
+ // Đảm bảo đủ 38/38 lệnh nằm trọn trong 7 danh mục mà không sót hay trùng bất kỳ lệnh nào
+ const categorizedCmds = [];
+ for (const cat of HELP_CATEGORIES) {
+  const catPayload = buildHelpPayload({
+   botUser: { username: 'Bắt_Don' },
+   guild: { name: '⚡ Box Sét ⚡⚡' },
+   category: cat.key,
+  });
+  const catSelect = catPayload.components[0].toJSON().components[0];
+  assert.equal(catSelect.options[0].value, 'overview');
+  assert.equal(catSelect.options.length, 8);
+  for (const [syntax] of cat.items) {
+   const m = syntax.match(/`\/([a-z0-9]+)`/);
+   assert.ok(m, `Invalid syntax entry: ${syntax}`);
+   categorizedCmds.push(m[1]);
+  }
+ }
+ assert.equal(categorizedCmds.length, 38);
+ assert.equal(new Set(categorizedCmds).size, 38);
+ for (const cmd of commands) {
+  assert.ok(categorizedCmds.includes(cmd.name), `Missing /${cmd.name} from HELP_CATEGORIES`);
+ }
 
  const html = readFileSync(new URL('../web/index.html', import.meta.url), 'utf8');
  assert.ok(html.includes('id="vinylModeBtn"'));

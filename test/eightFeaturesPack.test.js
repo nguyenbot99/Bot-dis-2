@@ -396,12 +396,12 @@ test('Feature #5 (/mixtape Shared Server Mixtapes) & Feature #6 (/similar): CRUD
  assert.doesNotThrow(() => assertMusicAccess('similar', '1243061570247069696', activePlayer));
 });
 
-test('Feature #7 (Website Vinyl Turntable + Poster Card Generator) & 40 Slash + 2 Context Commands Registry', () => {
- assert.equal(slashCommands.length, 40);
+test('Feature #7 (Website Vinyl Turntable + Poster Card Generator) & 41 Slash + 2 Context Commands Registry', () => {
+ assert.equal(slashCommands.length, 41);
  assert.equal(contextCommands.length, 2);
- assert.equal(commands.length, 42);
+ assert.equal(commands.length, 43);
  const names = new Set(slashCommands.map(c => c.name));
- for (const expected of ['avatar', 'ambient', 'search', 'dedicate', 'mixtape', 'similar', 'tts', 'savequeue', 'webkey']) {
+ for (const expected of ['avatar', 'spamtag', 'ambient', 'search', 'dedicate', 'mixtape', 'similar', 'tts', 'savequeue', 'webkey']) {
   assert.ok(names.has(expected), `Command /${expected} must be registered`);
  }
  const helpEmbed = buildHelpEmbed({ username: 'Bắt_Don', displayAvatarURL: () => 'https://example.com/a.png' }).toJSON();
@@ -422,7 +422,7 @@ test('Feature #7 (Website Vinyl Turntable + Poster Card Generator) & 40 Slash + 
  assert.equal(overviewSelect.placeholder, 'Chọn danh mục');
  assert.equal(overviewSelect.options.length, 7);
 
- // Đảm bảo đủ 40/40 lệnh slash nằm trọn trong 7 danh mục mà không sót hay trùng bất kỳ lệnh nào
+ // Đảm bảo đủ 41/41 lệnh slash nằm trọn trong 7 danh mục mà không sót hay trùng bất kỳ lệnh nào
  const categorizedCmds = [];
  for (const cat of HELP_CATEGORIES) {
   const catPayload = buildHelpPayload({
@@ -439,8 +439,8 @@ test('Feature #7 (Website Vinyl Turntable + Poster Card Generator) & 40 Slash + 
    categorizedCmds.push(m[1]);
   }
  }
- assert.equal(categorizedCmds.length, 40);
- assert.equal(new Set(categorizedCmds).size, 40);
+ assert.equal(categorizedCmds.length, 41);
+ assert.equal(new Set(categorizedCmds).size, 41);
  for (const cmd of slashCommands) {
   assert.ok(categorizedCmds.includes(cmd.name), `Missing /${cmd.name} from HELP_CATEGORIES`);
  }

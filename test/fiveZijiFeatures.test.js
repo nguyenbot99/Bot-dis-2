@@ -13,6 +13,7 @@ import { installAudioEnhancer, setAudioEnhancement, triggerSmoothTransitionFade 
 import { CONTEXT_AVATAR_NAME, CONTEXT_PLAY_NAME, contextCommands } from '../src/commands.js';
 import { isStaleBotNoticeMessage } from '../src/messageCleaner.js';
 import { buildSaveQueuePayload, extractPlayableFromMessage, extractSaveQueueUrls } from '../src/saveQueue.js';
+import { createSpamTagManager } from '../src/spamTag.js';
 import { createWebRemoteManager, normalizeRemoteCommandInput } from '../src/webRemote.js';
 import workerDefault, { NowPlayingRoom } from '../cloudflare-worker/worker.js';
 
@@ -296,4 +297,88 @@ test('Feature #5: Smart Smooth Micro-Fade S-Curve Envelope on Music vs Zero-Dela
  await new Promise(r => sfxVt.once('finish', r));
  const outSfx = Buffer.concat(outSfxChunks);
  assert.ok(Math.abs(outSfx.readInt16LE(0)) > 11500);
+});
+
+test('Feature #6: /spamtag Owner-Only Wakeup Ping Loop + Instant Stop + BulkDelete & No-Perm Single-Delete Fallback', async () => {
+ const sentPayloads = [];
+ const bulkDeletedCalls = [];
+ const singleDeletedIds = [];
+ let simulateNoBulkPerm = false;
+ let nextMsgSeq = 1000;
+
+ const mockRest = {
+  post: async (route, opts) => {
+   if (String(route).endsWith('/bulk-delete')) {
+    if (simulateNoBulkPerm) {
+     const err = new Error('Missing Permissions');
+     err.code = 50013;
+     throw err;
+    }
+    bulkDeletedCalls.push(opts.body.messages);
+    return {};
+   }
+   const id = String(++nextMsgSeq);
+   sentPayloads.push({ route, id, body: opts.body });
+   return { id };
+  },
+  delete: async route => {
+   singleDeletedIds.push(String(route).split('/').pop());
+   return {};
+  },
+ };
+
+ const mgr = createSpamTagManager({
+  rest: mockRest,
+  intervalOverrideMs: 15,
+ });
+
+ // 1. Chặn tuyệt đối người lạ (không phải Chủ Bot 1243061570247069696)
+ await assert.rejects(
+  () =>
+   mgr.startSpam({
+    channelId: '555555555555555555',
+    requesterId: '999999999999999999',
+    targetUserId: '333333333333333333',
+    count: 5,
+   }),
+  /Chỉ Chủ Bot/,
+ );
+
+ // 2. Chủ Bot bật réo 6 lần -> kiểm tra allowed_mentions CHỈ cho phép đúng targetUserId, chặn @everyone
+ await mgr.startSpam({
+  channelId: '555555555555555555',
+  requesterId: '1243061570247069696',
+  targetUserId: '333333333333333333',
+  count: 6,
+  customMessage: '@everyone vào voice lẹ!',
+ });
+ await new Promise(r => setTimeout(r, 38));
+
+ // Dừng giữa chừng khi chưa chạy hết 6 lần
+ const stopped = mgr.stopChannel('555555555555555555');
+ assert.equal(stopped.wasRunning, true);
+ assert.ok(stopped.sent >= 2 && stopped.sent < 6);
+ assert.deepEqual(sentPayloads[0].body.allowed_mentions, {
+  parse: [],
+  users: ['333333333333333333'],
+ });
+ assert.ok(sentPayloads[0].body.components.length === 1);
+
+ // 3. Xóa sạch bằng BulkDelete trong 1 chạm
+ const cleaned1 = await mgr.stopAndCleanChannel('555555555555555555');
+ assert.equal(cleaned1.deletedCount, stopped.sent);
+ assert.equal(bulkDeletedCalls.length, 1);
+
+ // 4. Nếu kênh không cấp quyền ManageMessages (lỗi 50013), tự lùi về xóa lẻ từng tin của bot và vẫn sạch 100%!
+ simulateNoBulkPerm = true;
+ await mgr.startSpam({
+  channelId: '666666666666666666',
+  requesterId: '1243061570247069696',
+  targetUserId: '444444444444444444',
+  count: 3,
+ });
+ await new Promise(r => setTimeout(r, 60));
+ const cleaned2 = await mgr.stopAndCleanChannel('666666666666666666');
+ assert.equal(cleaned2.deletedCount, 3);
+ assert.equal(singleDeletedIds.length, 3);
 });

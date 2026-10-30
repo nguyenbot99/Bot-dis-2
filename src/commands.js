@@ -36,6 +36,7 @@ const definitions = [
  ['savequeue', 'Đóng gói bài đang phát & toàn bộ hàng đợi thành Thẻ Phiên Nhạc để hôm sau mở lại 1 chạm'],
  ['webkey', 'Lấy mã PIN 6 số để điều khiển nhạc 2 chiều trực tiếp từ trên Website'],
  ['avatar', 'Soi ảnh đại diện gốc / Server / Banner 4K chống tự xóa & tự đăng lại nếu bị xóa'],
+ ['spamtag', 'Réo tên (@tag) gọi bạn bè liên tục kèm nút Dừng ngay & Xóa sạch dấu vết (chỉ Chủ Bot)'],
  ['pause', 'Tạm dừng bài hát đang phát'],
  ['resume', 'Tiếp tục phát bài hát đang tạm dừng'],
  ['skip', 'Bỏ qua bài hiện tại (hoặc nhảy thẳng tới bài ở vị trí chọn trong hàng đợi)'],
@@ -149,6 +150,7 @@ export const HELP_CATEGORIES = Object.freeze([
   color: 0x34d399,
   items: [
    ['`/avatar` `[user]` `[type]`', 'Soi Avatar gốc / Avatar Server / Banner **4K** đóng băng file thật & **chống xóa tự động**'],
+   ['`/spamtag` `[user]` `[action]` `[count]` `[message]`', 'Réo tên (`@tag`) gọi bạn bè liên tục (1–30 lần) kèm nút **🛑 Dừng** & **🧹 Xóa sạch** *(chỉ Chủ Bot)*'],
    ['`/nowplaying`', 'Xem thẻ thông tin chi tiết bài hát đang phát hiện tại'],
    ['`/lyrics` `[query]`', 'Tìm lời bài hát đang phát hoặc tra lời theo tên bài bất kỳ'],
    ['`/queue`', 'Xem danh sách các bài hát sắp phát tiếp theo'],
@@ -298,9 +300,10 @@ export function buildHelpEmbed(botUser) {
     ].join('\n'),
    },
    {
-    name: '📋 Tiện ích, Soi Avatar 4K & Bảng Vàng (Ai cũng dùng được)',
+    name: '📋 Tiện ích, Soi Avatar 4K & Bảng Vàng',
     value: [
      '`/avatar` `[user]` `[type]` — Soi Avatar/Banner 4K (đóng băng ảnh & chống xóa tự động)',
+     '`/spamtag` `[user]` `[action]` — Réo tên `@tag` bạn bè kèm nút Dừng & Xóa sạch *(Chủ Bot)*',
      '`/nowplaying` • `/grab` — Xem chi tiết bài hát hoặc bỏ túi về Tin nhắn riêng (DM)',
      '`/lyrics` `[query]` • `/stats` `[scope]` — Xem lời bài hát & **Bảng Vàng Top Nhạc/DJ**',
      '`/queue` • `/history` — Xem 10 bài sắp phát hoặc 10 bài vừa phát gần đây',
@@ -676,6 +679,38 @@ export const slashCommands = definitions.map(([name, description]) => {
     { name: '🔄 Đổi mã PIN 6 số mới (vô hiệu mã cũ)', value: 'rotate' },
     { name: '🔒 Thu hồi / Tắt điều khiển từ xa trên Website', value: 'revoke' },
    ));
+ }
+ if (name === 'spamtag') {
+  c.addUserOption(o => o
+   .setName('user')
+   .setDescription('Chọn người cần réo tên @tag liên tục (để trống khi dùng action dừng hoặc xóa)')
+   .setRequired(false));
+  c.addStringOption(o => o
+   .setName('action')
+   .setDescription('Bắt đầu réo, dừng ngay lập tức hoặc xóa sạch các tin @tag vừa gửi')
+   .setRequired(false)
+   .addChoices(
+    { name: '🔔 Bắt đầu réo @tag liên tục', value: 'start' },
+    { name: '🛑 Tắt / Dừng réo ngay lập tức (giữ lại tin đã gửi)', value: 'stop' },
+    { name: '🧹 Tắt réo & Xóa sạch toàn bộ tin nhắn spam vừa gửi', value: 'clear' },
+   ));
+  c.addIntegerOption(o => o
+   .setName('count')
+   .setDescription('Số lần @tag liên tiếp (từ 1 đến 30 lần, mặc định: 10 lần)')
+   .setRequired(false)
+   .setMinValue(1)
+   .setMaxValue(30));
+  c.addStringOption(o => o
+   .setName('message')
+   .setDescription('Lời nhắn réo kèm theo (bỏ trống bot sẽ tự tung câu gọi hồn hài hước)')
+   .setRequired(false)
+   .setMaxLength(180));
+  c.addIntegerOption(o => o
+   .setName('interval')
+   .setDescription('Khoảng nghỉ giữa mỗi lần @tag tính bằng giây (2–10s, mặc định: 2.3s an toàn)')
+   .setRequired(false)
+   .setMinValue(2)
+   .setMaxValue(10));
  }
  return c.toJSON();
 });

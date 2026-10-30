@@ -42,6 +42,7 @@ import { createGuildTtsController, synthesizeGoogleTtsBuffer, TTS_VOICES } from 
 import { resolveTrackWebAudio, WEB_AUDIO_REFRESH_MS } from './src/webAudio.js';
 import { createWebRemoteManager } from './src/webRemote.js';
 import { buildSaveQueuePayload, extractPlayableFromMessage, extractSaveQueueUrls } from './src/saveQueue.js';
+import { buildSpamControlRow, createSpamTagManager } from './src/spamTag.js';
 import { buildVoiceGuardEmbed, evaluateBotVoiceTransition } from './src/voiceGuard.js';
 import { buildHelpPayload, commands, CONTEXT_AVATAR_NAME, CONTEXT_PLAY_NAME } from './src/commands.js';
 import {
@@ -284,6 +285,12 @@ const avatarGuard = createAvatarGuardManager({
  getChannel: async channelId => client.channels.cache.get(channelId) ?? await client.channels.fetch(channelId).catch(() => null),
 });
 client.on(Events.Raw, packet => avatarGuard.handleRawGatewayPacket(packet));
+
+// Bộ réo tên (@tag liên tục) siêu nhẹ (~0 MB RAM) chỉ dành riêng cho Chủ Bot, hỗ trợ Dừng tức thì & Xóa sạch hàng loạt.
+const spamTagManager = createSpamTagManager({
+ rest: client.rest,
+ env: process.env,
+});
 
 // Bộ tự động đặt trạng thái Kênh Thoại (Voice Channel Status) theo tên bài hát đang phát & dọn sạch khi dừng nhạc/rời phòng.
 const voiceRoomStatus = createVoiceRoomStatusSync({ rest: client.rest, client });
@@ -2161,6 +2168,58 @@ async function handlePlayerComponent(i) {
   return;
  }
 
+ // Nút Dừng réo tên (@tag) ngay lập tức — CHỈ Chủ Bot mới bấm được.
+ if (i.isButton() && i.customId.startsWith('spamtag_stop:')) {
+  if (!isBotOwner(i.user.id)) {
+   await i.reply({
+    content: '🔒 Chỉ **Chủ Bot** mới có quyền tắt hoặc xóa đợt réo tên này.',
+    flags: MessageFlags.Ephemeral,
+   });
+   return;
+  }
+  const targetChId = i.customId.slice('spamtag_stop:'.length) || i.channelId;
+  const res = spamTagManager.stopChannel(targetChId);
+  const nextComponents = res.trackedCount > 0
+   ? [buildSpamControlRow(targetChId, { running: false, trackedCount: res.trackedCount })]
+   : [];
+  await i.update({ components: nextComponents }).catch(() => {});
+  const stopMsg = res.wasRunning
+   ? `🛑 Đã **dừng réo ngay lập tức** (đã gửi **${res.sent}/${res.total}** tin) — bấm nút **🧹 Xóa sạch dấu vết** bất cứ lúc nào nếu muốn dọn kênh!`
+   : '🛑 Đợt réo tên đã dừng từ trước.';
+  await i.followUp({ content: stopMsg, flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } }).catch(() => {});
+  return;
+ }
+
+ // Nút Dừng & Xóa sạch toàn bộ tin nhắn @tag vừa gửi — CHỈ Chủ Bot mới bấm được.
+ if (i.isButton() && i.customId.startsWith('spamtag_clean:')) {
+  if (!isBotOwner(i.user.id)) {
+   await i.reply({
+    content: '🔒 Chỉ **Chủ Bot** mới có quyền tắt hoặc xóa đợt réo tên này.',
+    flags: MessageFlags.Ephemeral,
+   });
+   return;
+  }
+  const targetChId = i.customId.slice('spamtag_clean:'.length) || i.channelId;
+  const isEphemeralCard = Boolean(i.message?.flags?.has?.(MessageFlags.Ephemeral));
+  if (isEphemeralCard) {
+   await i.deferUpdate();
+   const res = await spamTagManager.stopAndCleanChannel(targetChId);
+   await i.editReply({
+    content: `🧹 Đã **tắt réo & dọn sạch hoàn toàn ${res.deletedCount} tin nhắn** khỏi kênh <#${targetChId}>!`,
+    components: [],
+    allowedMentions: { parse: [] },
+   }).catch(() => {});
+   return;
+  }
+  await i.deferReply({ flags: MessageFlags.Ephemeral });
+  const res = await spamTagManager.stopAndCleanChannel(targetChId);
+  await i.editReply({
+   content: `🧹 Đã **tắt réo & dọn sạch hoàn toàn ${res.deletedCount} tin nhắn** khỏi kênh chat!`,
+   allowedMentions: { parse: [] },
+  }).catch(() => {});
+  return;
+ }
+
  // Nút lưu bản sao Avatar vĩnh viễn về Tin nhắn riêng (DM) — ai bấm cũng tự lưu về hộp thư của mình được.
  if (i.isButton() && i.customId.startsWith('avatar_dm:')) {
   const parts = i.customId.split(':');
@@ -2867,6 +2926,66 @@ client.on(Events.InteractionCreate, async i => {
    }));
   }
   if (i.commandName === 'ping') return await reply(`Độ trễ: ${client.ws.ping} ms • Bộ nhớ Node: ${Math.round(process.memoryUsage().rss / 1048576)} MiB (chưa tính tiến trình FFmpeg).`);
+
+  // Lệnh /spamtag: Réo tên (@tag) gọi hồn bạn bè liên tục kèm nút Dừng & Xóa sạch (chỉ Chủ Bot sử dụng, không khóa hàng đợi nhạc).
+  if (i.commandName === 'spamtag') {
+   spamTagManager.assertOwner(i.user.id);
+   const targetOptUser = i.options.getUser('user');
+   const action = i.options.getString('action') || (targetOptUser ? 'start' : null);
+   if (!action) {
+    throw new Error('Hãy chọn thành viên ở tham số `user` để bắt đầu réo, hoặc chọn `action: stop` / `action: clear` để tắt & xóa tin nhắn.');
+   }
+   if (action === 'stop') {
+    const res = spamTagManager.stopChannel(i.channelId);
+    const comps = res.trackedCount > 0
+     ? [buildSpamControlRow(i.channelId, { running: false, trackedCount: res.trackedCount })]
+     : [];
+    const txt = res.wasRunning
+     ? `🛑 Đã **dừng réo ngay lập tức** sau **${res.sent}/${res.total}** tin nhắn.`
+     : (res.trackedCount > 0
+        ? `ℹ️ Hiện không có đợt réo nào đang chạy (còn **${res.trackedCount} tin cũ** có thể dọn sạch bằng nút bên dưới).`
+        : 'ℹ️ Hiện không có đợt réo tên nào đang chạy trong kênh này.');
+    return await i.editReply({ content: txt, components: comps, allowedMentions: { parse: [] } });
+   }
+   if (action === 'clear') {
+    const res = await spamTagManager.stopAndCleanChannel(i.channelId);
+    return await reply(
+     res.deletedCount > 0
+      ? `🧹 Đã **dừng réo & xóa sạch hoàn toàn ${res.deletedCount} tin nhắn** khỏi kênh chat!`
+      : '🧹 Kênh hiện đã sạch sẽ, không còn tin nhắn réo tên nào cần xóa.',
+    );
+   }
+   if (!targetOptUser) {
+    throw new Error('Hãy chọn người cần réo tên ở tham số `user` nhé!');
+   }
+   if (targetOptUser.id === client.user?.id) {
+    throw new Error('Không thể tự réo tên chính Bot — hãy chọn một thành viên khác nhé!');
+   }
+   const count = i.options.getInteger('count') ?? 10;
+   const intervalSec = i.options.getInteger('interval');
+   const customMessage = i.options.getString('message');
+   const started = await spamTagManager.startSpam({
+    channelId: i.channelId,
+    requesterId: i.user.id,
+    targetUserId: targetOptUser.id,
+    count,
+    intervalSec,
+    customMessage,
+   });
+   const ctrlRow = buildSpamControlRow(i.channelId, {
+    running: started.running,
+    trackedCount: started.trackedCount,
+   });
+   const statusText = started.running
+    ? `🔔 Đang réo <@${targetOptUser.id}> tổng cộng **${started.total} lần** *(cách nhau ${(started.stepMs / 1000).toFixed(1)}s)*.\n> 👇 Bấm nút bên dưới bất cứ lúc nào để **🛑 Dừng réo** hoặc **🧹 Xóa sạch dấu vết**:`
+    : `✅ Đã réo <@${targetOptUser.id}> (**${started.total} lần**).\n> 👇 Bấm nút bên dưới nếu muốn **🧹 Xóa sạch dấu vết**:`;
+   return await i.editReply({
+    content: statusText,
+    components: [ctrlRow],
+    allowedMentions: { parse: [] },
+   });
+  }
+
   if (busy) return await reply('Đang xử lý lệnh khác, vui lòng thử lại.');
   busy = true; ownsLock = true;
 
@@ -3568,6 +3687,7 @@ async function shutdown(code = 0) {
  if (closing) return; closing = true;
  const timer = setTimeout(() => process.exit(code || 1), 5000); timer.unref();
  try {
+  spamTagManager.stopAll();
   const activePlayers = manager.getAll();
   sessionStore.flushAllSync(activePlayers);
 

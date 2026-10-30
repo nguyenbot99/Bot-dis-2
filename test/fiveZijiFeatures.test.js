@@ -10,10 +10,10 @@ const prism = voiceRequire('prism-media');
 
 import { assertMusicAccess } from '../src/access.js';
 import { installAudioEnhancer, setAudioEnhancement, triggerSmoothTransitionFade } from '../src/audioEnhancer.js';
-import { CONTEXT_AVATAR_NAME, CONTEXT_PLAY_NAME, contextCommands } from '../src/commands.js';
+import { CONTEXT_AVATAR_NAME, CONTEXT_PLAY_NAME, contextCommands, slashCommands } from '../src/commands.js';
 import { isStaleBotNoticeMessage } from '../src/messageCleaner.js';
 import { buildSaveQueuePayload, extractPlayableFromMessage, extractSaveQueueUrls } from '../src/saveQueue.js';
-import { createSpamTagManager } from '../src/spamTag.js';
+import { createSpamTagManager, MAX_SPAM_COUNT } from '../src/spamTag.js';
 import { createWebRemoteManager, normalizeRemoteCommandInput } from '../src/webRemote.js';
 import workerDefault, { NowPlayingRoom } from '../cloudflare-worker/worker.js';
 
@@ -299,7 +299,13 @@ test('Feature #5: Smart Smooth Micro-Fade S-Curve Envelope on Music vs Zero-Dela
  assert.ok(Math.abs(outSfx.readInt16LE(0)) > 11500);
 });
 
-test('Feature #6: /spamtag Owner-Only Wakeup Ping Loop + Instant Stop + BulkDelete & No-Perm Single-Delete Fallback', async () => {
+test('Feature #6: /spamtag Owner-Only Wakeup Ping Loop (up to 100 rounds) + Instant Stop + BulkDelete & Fallback', async () => {
+ assert.equal(MAX_SPAM_COUNT, 100);
+ const spamCmd = slashCommands.find(c => c.name === 'spamtag');
+ const countOpt = spamCmd.options.find(o => o.name === 'count');
+ assert.equal(countOpt.min_value, 1);
+ assert.equal(countOpt.max_value, 100);
+
  const sentPayloads = [];
  const bulkDeletedCalls = [];
  const singleDeletedIds = [];

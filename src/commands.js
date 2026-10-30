@@ -150,7 +150,7 @@ export const HELP_CATEGORIES = Object.freeze([
   color: 0x34d399,
   items: [
    ['`/avatar` `[user]` `[type]`', 'Soi Avatar gốc / Avatar Server / Banner **4K** đóng băng file thật & **chống xóa tự động**'],
-   ['`/spamtag` `[user]` `[action]` `[count]` `[message]`', 'Réo tên (`@tag`) gọi bạn bè liên tục (1–30 lần) kèm nút **🛑 Dừng** & **🧹 Xóa sạch** *(chỉ Chủ Bot)*'],
+   ['`/spamtag` `[user]` `[action]` `[count]` `[message]`', 'Réo tên (`@tag`) gọi bạn bè liên tục (1–100 lần) kèm nút **🛑 Dừng** & **🧹 Xóa sạch** *(chỉ Chủ Bot)*'],
    ['`/nowplaying`', 'Xem thẻ thông tin chi tiết bài hát đang phát hiện tại'],
    ['`/lyrics` `[query]`', 'Tìm lời bài hát đang phát hoặc tra lời theo tên bài bất kỳ'],
    ['`/queue`', 'Xem danh sách các bài hát sắp phát tiếp theo'],
@@ -696,10 +696,10 @@ export const slashCommands = definitions.map(([name, description]) => {
    ));
   c.addIntegerOption(o => o
    .setName('count')
-   .setDescription('Số lần @tag liên tiếp (từ 1 đến 30 lần, mặc định: 10 lần)')
+   .setDescription('Số lần @tag liên tiếp (từ 1 đến 100 lần, mặc định: 10 lần)')
    .setRequired(false)
    .setMinValue(1)
-   .setMaxValue(30));
+   .setMaxValue(100));
   c.addStringOption(o => o
    .setName('message')
    .setDescription('Lời nhắn réo kèm theo (bỏ trống bot sẽ tự tung câu gọi hồn hài hước)')

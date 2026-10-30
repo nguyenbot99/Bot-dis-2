@@ -3,12 +3,12 @@ import { isBotOwner } from './access.js';
 import { cleanText } from './playerGui.js';
 
 export const MIN_SPAM_COUNT = 1;
-export const MAX_SPAM_COUNT = 30;
+export const MAX_SPAM_COUNT = 100;
 export const DEFAULT_SPAM_COUNT = 10;
 export const MIN_SPAM_INTERVAL_SEC = 2;
 export const MAX_SPAM_INTERVAL_SEC = 10;
 export const DEFAULT_SPAM_INTERVAL_MS = 2300; // Nhịp 2.3s/tin: nhảy thông báo đỏ liên tục mà an toàn 100% trước giới hạn 5 tin/5s của Discord
-const MAX_HISTORY_IDS_PER_CHANNEL = 150;
+const MAX_HISTORY_IDS_PER_CHANNEL = 300;
 
 const FUNNY_WAKEUP_TEMPLATES = [
  '🔔 Ê {mention} dậy lẹ vào kênh thoại anh em đang chờ kìa!',
@@ -200,8 +200,8 @@ export function createSpamTagManager({
     ? `🔔 ${mention} — ${cleanCustom} *(${nextIndex}/${loopState.total})*`
     : `${FUNNY_WAKEUP_TEMPLATES[(nextIndex - 1) % FUNNY_WAKEUP_TEMPLATES.length].replace('{mention}', mention)} *(${nextIndex}/${loopState.total})*`;
 
-   // Gắn nút điều khiển ngay ở tin đầu tiên và tin cuối cùng để Chủ Bot tiện tay bấm Dừng / Xóa sạch mà không tốn thêm request sửa tin.
-   const includeButtons = isFirst || isLast;
+   // Gắn nút điều khiển ở tin đầu, mỗi 25 tin và tin cuối để khi chạy 100 lượt Chủ Bot không cần cuộn ngược lên tìm nút!
+   const includeButtons = isFirst || isLast || nextIndex % 25 === 0;
    const row = includeButtons
     ? buildSpamControlRow(ch, {
        running: !isLast,

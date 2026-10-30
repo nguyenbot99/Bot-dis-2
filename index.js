@@ -42,6 +42,7 @@ import { createGuildTtsController, synthesizeGoogleTtsBuffer, TTS_VOICES } from 
 import { resolveTrackWebAudio, WEB_AUDIO_REFRESH_MS } from './src/webAudio.js';
 import { createWebRemoteManager } from './src/webRemote.js';
 import { buildSaveQueuePayload, extractPlayableFromMessage, extractSaveQueueUrls } from './src/saveQueue.js';
+import { buildAnnounceModal, buildChannelLockButtons, createChannelLockManager } from './src/channelLock.js';
 import { buildSpamControlRow, createSpamTagManager } from './src/spamTag.js';
 import { buildVoiceGuardEmbed, evaluateBotVoiceTransition } from './src/voiceGuard.js';
 import { buildHelpPayload, commands, CONTEXT_AVATAR_NAME, CONTEXT_PLAY_NAME } from './src/commands.js';
@@ -288,6 +289,12 @@ client.on(Events.Raw, packet => avatarGuard.handleRawGatewayPacket(packet));
 
 // Bộ réo tên (@tag liên tục) siêu nhẹ (~0 MB RAM) chỉ dành riêng cho Chủ Bot, hỗ trợ Dừng tức thì & Xóa sạch hàng loạt.
 const spamTagManager = createSpamTagManager({
+ rest: client.rest,
+ env: process.env,
+});
+
+// Bộ Khóa / Mở khóa kênh (hỗ trợ Kênh 📢 Thông Báo có nút xanh "Theo dõi") & Đăng bài bằng Bot (chỉ Chủ Bot, ~0 MB RAM).
+const channelLockManager = createChannelLockManager({
  rest: client.rest,
  env: process.env,
 });
@@ -2168,6 +2175,78 @@ async function handlePlayerComponent(i) {
   return;
  }
 
+ // Nút Mở khóa / Khóa lại kênh nhanh 1 chạm — CHỈ Chủ Bot mới bấm được.
+ if (i.isButton() && (i.customId.startsWith('chlock_unlock:') || i.customId.startsWith('chlock_lock:'))) {
+  if (!isBotOwner(i.user.id)) {
+   await i.reply({
+    content: '🔒 Chỉ **Chủ Bot** mới có quyền khóa hoặc mở khóa kênh này.',
+    flags: MessageFlags.Ephemeral,
+   });
+   return;
+  }
+  const wantUnlock = i.customId.startsWith('chlock_unlock:');
+  const targetChId = i.customId.split(':')[1] || i.channelId;
+  await i.deferUpdate();
+  if (wantUnlock) {
+   await channelLockManager.unlockChannel({
+    guildId: i.guildId,
+    channelId: targetChId,
+    requesterId: i.user.id,
+   });
+   await i.editReply({
+    content: `🔓 Đã **mở khóa lại** kênh <#${targetChId}> về trạng thái bình thường!`,
+    components: [buildChannelLockButtons(targetChId, { locked: false })],
+    allowedMentions: { parse: [] },
+   });
+  } else {
+   const res = await channelLockManager.lockChannel({
+    guildId: i.guildId,
+    channelId: targetChId,
+    requesterId: i.user.id,
+    botUserId: client.user?.id,
+    mode: 'announcement',
+    allowReactions: true,
+   });
+   const note = res.announcementStatus === 'community_needed'
+    ? '\n> 💡 *Mẹo:* Bật **Cộng đồng (Community)** trong Cài đặt Server nếu muốn hiện nút xanh **[Theo dõi]** ở đáy kênh.'
+    : '';
+   await i.editReply({
+    content: `🔒 Đã **khóa lại** kênh <#${targetChId}> thành công!${note}`,
+    components: [buildChannelLockButtons(targetChId, { locked: true })],
+    allowedMentions: { parse: [] },
+   });
+  }
+  return;
+ }
+
+ // Xử lý hộp thoại gõ nhiều dòng khi Chủ Bot dùng /announce mà để trống tham số message.
+ if (i.isModalSubmit() && i.customId.startsWith('announce_modal:')) {
+  channelLockManager.assertOwner(i.user.id);
+  const parts = i.customId.slice('announce_modal:'.length).split(':');
+  const targetChId = parts[0] || i.channelId;
+  const pingRoleId = parts[1] && parts[1] !== '0' ? parts[1] : null;
+  const pingEveryone = parts[2] === '1';
+  const style = parts[3] === 'embed' ? 'embed' : 'text';
+  const autoReact = parts[4] !== '0';
+  const rawContent = i.fields.getTextInputValue('announce_content');
+  await i.deferReply({ flags: MessageFlags.Ephemeral });
+  const res = await channelLockManager.postBotAnnouncement({
+   channelId: targetChId,
+   requesterId: i.user.id,
+   rawContent,
+   pingRoleId,
+   pingEveryone,
+   style,
+   autoReact,
+  });
+  const pubNote = res.published ? ' *(đã tự động Xuất bản tới tất cả máy chủ đang Theo dõi)*' : '';
+  await i.editReply({
+   content: `📢 Đã dùng Bot đăng thông báo lên kênh <#${targetChId}> thành công!${pubNote}`,
+   allowedMentions: { parse: [] },
+  });
+  return;
+ }
+
  // Nút Dừng réo tên (@tag) ngay lập tức — CHỈ Chủ Bot mới bấm được.
  if (i.isButton() && i.customId.startsWith('spamtag_stop:')) {
   if (!isBotOwner(i.user.id)) {
@@ -2916,6 +2995,24 @@ client.on(Events.InteractionCreate, async i => {
    return await i.editReply(payload);
   }
 
+  // Nếu Chủ Bot gõ /announce mà để trống tham số message -> mở ngay bảng gõ nhiều dòng (Modal) tiện lợi trên Điện thoại & PC!
+  if (i.commandName === 'announce' && !i.options.getString('message')?.trim()) {
+   channelLockManager.assertOwner(i.user.id);
+   const targetCh = i.options.getChannel('channel') ?? i.channel;
+   const pingRole = i.options.getRole('ping_role');
+   const pingEveryone = i.options.getBoolean('ping_everyone') ?? false;
+   const style = i.options.getString('style') || 'text';
+   const autoReact = i.options.getBoolean('auto_react') ?? true;
+   await i.showModal(buildAnnounceModal({
+    channelId: targetCh.id,
+    pingRoleId: pingRole?.id ?? '',
+    pingEveryone,
+    style,
+    autoReact,
+   }));
+   return;
+  }
+
   await i.deferReply({ flags: MessageFlags.Ephemeral });
   if (i.commandName === 'help') {
    const initialCat = i.options.getString('category') || 'overview';
@@ -2926,6 +3023,84 @@ client.on(Events.InteractionCreate, async i => {
    }));
   }
   if (i.commandName === 'ping') return await reply(`Độ trễ: ${client.ws.ping} ms • Bộ nhớ Node: ${Math.round(process.memoryUsage().rss / 1048576)} MiB (chưa tính tiến trình FFmpeg).`);
+
+  // Nhóm lệnh Quản trị Kênh & Đăng bài bằng Bot (/lock, /unlock, /announce — chỉ Chủ Bot sử dụng).
+  if (i.commandName === 'lock') {
+   const targetCh = i.options.getChannel('channel') ?? i.channel;
+   const mode = i.options.getString('mode') || 'announcement';
+   const allowReactions = i.options.getBoolean('reactions') ?? true;
+   const extraRole = i.options.getRole('role');
+   const res = await channelLockManager.lockChannel({
+    guildId: i.guildId,
+    channelId: targetCh.id,
+    requesterId: i.user.id,
+    botUserId: client.user?.id,
+    mode,
+    allowReactions,
+    extraRoleId: extraRole?.id ?? null,
+   });
+   const reactLine = res.allowReactions
+    ? '• Thành viên vẫn **xem tin & thả biểu cảm ❤️ 🔥** được (ô gõ chat & tạo Thread đã bị khóa).'
+    : '• Đã khóa cả ô gõ chat, tạo Thread lẫn thả biểu cảm.';
+   let statusHeader = `🔒 Đã **khóa kênh** <#${res.channelId}> thành công!`;
+   let extraTip = '';
+   if (mode === 'announcement') {
+    if (res.announcementStatus === 'converted_announcement' || res.announcementStatus === 'already_announcement') {
+     statusHeader = `🔒📢 Đã **khóa kênh** <#${res.channelId}> ở chế độ **Kênh Thông Báo** — đáy kênh nay hiện hộp nút xanh **\`[Theo dõi]\`** y hệt mẫu!`;
+    } else if (res.announcementStatus === 'community_needed') {
+     extraTip = '\n> 💡 *Để đáy kênh hiện hộp nút xanh **`[Theo dõi]`** thay vì dòng chữ xám: bạn vào **Cài đặt Máy chủ -> Bật Cộng đồng (Enable Community)** (miễn phí, mất 10 giây) rồi gõ lại `/lock` một lần nữa là lên ngay!*';
+    }
+   }
+   return await i.editReply({
+    content: [
+     statusHeader,
+     reactLine,
+     '• **Chủ Bot & Bot** vẫn nhắn tin / dùng `/announce` vào kênh này bình thường.',
+     extraTip,
+    ].filter(Boolean).join('\n'),
+    components: [buildChannelLockButtons(res.channelId, { locked: true })],
+    allowedMentions: { parse: [] },
+   });
+  }
+
+  if (i.commandName === 'unlock') {
+   const targetCh = i.options.getChannel('channel') ?? i.channel;
+   const revertNormal = i.options.getBoolean('revert_normal') ?? false;
+   const extraRole = i.options.getRole('role');
+   const res = await channelLockManager.unlockChannel({
+    guildId: i.guildId,
+    channelId: targetCh.id,
+    requesterId: i.user.id,
+    extraRoleId: extraRole?.id ?? null,
+    revertNormalText: revertNormal,
+   });
+   const revertMsg = res.revertedType ? ' *(đã chuyển về lại kênh chữ `#` thường)*' : '';
+   return await i.editReply({
+    content: `🔓 Đã **mở khóa** kênh <#${res.channelId}> về trạng thái bình thường${revertMsg}!`,
+    components: [buildChannelLockButtons(res.channelId, { locked: false })],
+    allowedMentions: { parse: [] },
+   });
+  }
+
+  if (i.commandName === 'announce') {
+   const targetCh = i.options.getChannel('channel') ?? i.channel;
+   const rawContent = i.options.getString('message') ?? '';
+   const pingRole = i.options.getRole('ping_role');
+   const pingEveryone = i.options.getBoolean('ping_everyone') ?? false;
+   const style = i.options.getString('style') || 'text';
+   const autoReact = i.options.getBoolean('auto_react') ?? true;
+   const res = await channelLockManager.postBotAnnouncement({
+    channelId: targetCh.id,
+    requesterId: i.user.id,
+    rawContent,
+    pingRoleId: pingRole?.id ?? null,
+    pingEveryone,
+    style,
+    autoReact,
+   });
+   const pubNote = res.published ? ' *(đã tự động Xuất bản tới người Theo dõi)*' : '';
+   return await reply(`📢 Đã dùng Bot đăng thông báo lên kênh <#${targetCh.id}> thành công!${pubNote}`);
+  }
 
   // Lệnh /spamtag: Réo tên (@tag) gọi hồn bạn bè liên tục kèm nút Dừng & Xóa sạch (chỉ Chủ Bot sử dụng, không khóa hàng đợi nhạc).
   if (i.commandName === 'spamtag') {

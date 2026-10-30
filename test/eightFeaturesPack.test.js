@@ -396,18 +396,18 @@ test('Feature #5 (/mixtape Shared Server Mixtapes) & Feature #6 (/similar): CRUD
  assert.doesNotThrow(() => assertMusicAccess('similar', '1243061570247069696', activePlayer));
 });
 
-test('Feature #7 (Website Vinyl Turntable + Poster Card Generator) & 41 Slash + 2 Context Commands Registry', () => {
- assert.equal(slashCommands.length, 41);
+test('Feature #7 (Website Vinyl Turntable + Poster Card Generator) & 44 Slash + 2 Context Commands Registry', () => {
+ assert.equal(slashCommands.length, 44);
  assert.equal(contextCommands.length, 2);
- assert.equal(commands.length, 43);
+ assert.equal(commands.length, 46);
  const names = new Set(slashCommands.map(c => c.name));
- for (const expected of ['avatar', 'spamtag', 'ambient', 'search', 'dedicate', 'mixtape', 'similar', 'tts', 'savequeue', 'webkey']) {
+ for (const expected of ['avatar', 'lock', 'unlock', 'announce', 'spamtag', 'ambient', 'search', 'dedicate', 'mixtape', 'similar', 'tts', 'savequeue', 'webkey']) {
   assert.ok(names.has(expected), `Command /${expected} must be registered`);
  }
  const helpEmbed = buildHelpEmbed({ username: 'Bắt_Don', displayAvatarURL: () => 'https://example.com/a.png' }).toJSON();
  assert.equal(helpEmbed.fields.length, 6);
 
- // Kiểm tra giao diện /help phân chia 7 danh mục gọn gàng kèm menu "Chọn danh mục"
+ // Kiểm tra giao diện /help phân chia 8 danh mục gọn gàng kèm menu "Chọn danh mục"
  const overviewPayload = buildHelpPayload({
   botUser: { username: 'Bắt_Don', displayAvatarURL: () => 'https://example.com/bot.png' },
   guild: { name: '⚡ Box Sét ⚡⚡', iconURL: () => 'https://example.com/guild.png' },
@@ -417,12 +417,12 @@ test('Feature #7 (Website Vinyl Turntable + Poster Card Generator) & 41 Slash + 
  const overviewSelect = overviewPayload.components[0].toJSON().components[0];
  assert.equal(overviewEmbed.author.name, '⚡ Box Sét ⚡⚡');
  assert.equal(overviewEmbed.title, 'Danh sách các lệnh của Bắt_Don');
- assert.ok(overviewEmbed.footer.text.includes('Tổng 7 danh mục lệnh'));
+ assert.ok(overviewEmbed.footer.text.includes('Tổng 8 danh mục lệnh'));
  assert.equal(overviewSelect.custom_id, 'help_category');
  assert.equal(overviewSelect.placeholder, 'Chọn danh mục');
- assert.equal(overviewSelect.options.length, 7);
+ assert.equal(overviewSelect.options.length, 8);
 
- // Đảm bảo đủ 41/41 lệnh slash nằm trọn trong 7 danh mục mà không sót hay trùng bất kỳ lệnh nào
+ // Đảm bảo đủ 44/44 lệnh slash nằm trọn trong 8 danh mục mà không sót hay trùng bất kỳ lệnh nào
  const categorizedCmds = [];
  for (const cat of HELP_CATEGORIES) {
   const catPayload = buildHelpPayload({
@@ -432,15 +432,15 @@ test('Feature #7 (Website Vinyl Turntable + Poster Card Generator) & 41 Slash + 
   });
   const catSelect = catPayload.components[0].toJSON().components[0];
   assert.equal(catSelect.options[0].value, 'overview');
-  assert.equal(catSelect.options.length, 8);
+  assert.equal(catSelect.options.length, 9);
   for (const [syntax] of cat.items) {
    const m = syntax.match(/`\/([a-z0-9]+)`/);
    assert.ok(m, `Invalid syntax entry: ${syntax}`);
    categorizedCmds.push(m[1]);
   }
  }
- assert.equal(categorizedCmds.length, 41);
- assert.equal(new Set(categorizedCmds).size, 41);
+ assert.equal(categorizedCmds.length, 44);
+ assert.equal(new Set(categorizedCmds).size, 44);
  for (const cmd of slashCommands) {
   assert.ok(categorizedCmds.includes(cmd.name), `Missing /${cmd.name} from HELP_CATEGORIES`);
  }

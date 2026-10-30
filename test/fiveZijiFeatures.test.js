@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { ApplicationCommandType } from 'discord.js';
+import { ApplicationCommandType, ChannelType, PermissionFlagsBits } from 'discord.js';
 import ffmpeg from 'ffmpeg-static';
 
 const voiceRequire = createRequire(import.meta.resolve('@discordjs/voice'));
@@ -13,6 +13,7 @@ import { installAudioEnhancer, setAudioEnhancement, triggerSmoothTransitionFade 
 import { CONTEXT_AVATAR_NAME, CONTEXT_PLAY_NAME, contextCommands, slashCommands } from '../src/commands.js';
 import { isStaleBotNoticeMessage } from '../src/messageCleaner.js';
 import { buildSaveQueuePayload, extractPlayableFromMessage, extractSaveQueueUrls } from '../src/saveQueue.js';
+import { buildAnnounceModal, createChannelLockManager } from '../src/channelLock.js';
 import { createSpamTagManager, MAX_SPAM_COUNT } from '../src/spamTag.js';
 import { createWebRemoteManager, normalizeRemoteCommandInput } from '../src/webRemote.js';
 import workerDefault, { NowPlayingRoom } from '../cloudflare-worker/worker.js';
@@ -387,4 +388,119 @@ test('Feature #6: /spamtag Owner-Only Wakeup Ping Loop (up to 100 rounds) + Inst
  const cleaned2 = await mgr.stopAndCleanChannel('666666666666666666');
  assert.equal(cleaned2.deletedCount, 3);
  assert.equal(singleDeletedIds.length, 3);
+});
+
+test('Feature #7: /lock, /unlock & /announce (Owner-Only Announcement Follow Mode, Auto Role Lock/Restore & Bot Post)', async () => {
+ let channelType = ChannelType.GuildText;
+ // Giả lập kênh đang có sẵn Role @Member được bật tường minh SendMessages (giống ảnh chụp của người dùng)
+ let currentOverwrites = [
+  {
+   id: '777777777777777777', // @Member role
+   type: 0,
+   allow: String(PermissionFlagsBits.ViewChannel | PermissionFlagsBits.SendMessages),
+   deny: '0',
+  },
+ ];
+ const postedMessages = [];
+ const addedReactions = [];
+ let crosspostedCount = 0;
+
+ const mockRest = {
+  get: async () => ({
+   id: '888888888888888888',
+   name: 'announcement',
+   type: channelType,
+   permission_overwrites: currentOverwrites,
+  }),
+  put: async (route, opts) => {
+   const r = String(route);
+   if (r.includes('/reactions/')) {
+    addedReactions.push(decodeURIComponent(r.split('/reactions/')[1].split('/')[0]));
+    return {};
+   }
+   const idx = currentOverwrites.findIndex(o => o.id === opts.body.id && o.type === opts.body.type);
+   if (idx >= 0) currentOverwrites[idx] = { ...opts.body };
+   else currentOverwrites.push({ ...opts.body });
+   return {};
+  },
+  patch: async (_route, opts) => {
+   if (typeof opts.body?.type === 'number') channelType = opts.body.type;
+   return { type: channelType };
+  },
+  post: async (route, opts) => {
+   if (String(route).endsWith('/crosspost')) {
+    crosspostedCount++;
+    return {};
+   }
+   postedMessages.push(opts.body);
+   return { id: '900000000000000001' };
+  },
+ };
+
+ const lockMgr = createChannelLockManager({ rest: mockRest });
+
+ // 1. Chặn người không phải Chủ Bot
+ await assert.rejects(
+  () =>
+   lockMgr.lockChannel({
+    guildId: '111111111111111111',
+    channelId: '888888888888888888',
+    requesterId: '999999999999999999',
+    botUserId: '222222222222222222',
+   }),
+  /Chỉ Chủ Bot/,
+ );
+
+ // 2. Chủ Bot khóa kênh ở chế độ "announcement" -> tự chuyển sang Kênh Thông Báo (type 5), khóa cả @everyone lẫn @Member, mở thả tim ❤️🔥 & cấp quyền cho Chủ Bot + Bot
+ const lockRes = await lockMgr.lockChannel({
+  guildId: '111111111111111111',
+  channelId: '888888888888888888',
+  requesterId: '1243061570247069696',
+  botUserId: '222222222222222222',
+  mode: 'announcement',
+  allowReactions: true,
+ });
+ assert.equal(lockRes.announcementStatus, 'converted_announcement');
+ assert.equal(channelType, ChannelType.GuildAnnouncement);
+
+ const everyoneOv = currentOverwrites.find(o => o.id === '111111111111111111');
+ const memberRoleOv = currentOverwrites.find(o => o.id === '777777777777777777');
+ const ownerOv = currentOverwrites.find(o => o.id === '1243061570247069696');
+ assert.ok((BigInt(everyoneOv.deny) & PermissionFlagsBits.SendMessages) !== 0n);
+ assert.ok((BigInt(everyoneOv.allow) & PermissionFlagsBits.AddReactions) !== 0n);
+ assert.equal(BigInt(memberRoleOv.allow) & PermissionFlagsBits.SendMessages, 0n);
+ assert.ok((BigInt(memberRoleOv.deny) & PermissionFlagsBits.SendMessages) !== 0n);
+ assert.ok((BigInt(ownerOv.allow) & PermissionFlagsBits.SendMessages) !== 0n);
+
+ // 3. Dùng /announce đăng bài nhiều dòng + tag @Member + tự gắn ❤️ 🔥 + tự Crosspost cho người bấm [Theo dõi]
+ const annRes = await lockMgr.postBotAnnouncement({
+  channelId: '888888888888888888',
+  requesterId: '1243061570247069696',
+  rawContent: 'Mấy nay nhiều việc quá\\nHẹn mn cuối tuần sau nhé',
+  pingRoleId: '777777777777777777',
+  pingEveryone: false,
+  style: 'text',
+  autoReact: true,
+ });
+ assert.equal(annRes.published, true);
+ assert.equal(crosspostedCount, 1);
+ assert.deepEqual(addedReactions, ['❤️', '🔥']);
+ assert.ok(postedMessages[0].content.startsWith('<@&777777777777777777> Mấy nay nhiều việc quá\nHẹn mn cuối tuần sau nhé'));
+ assert.deepEqual(postedMessages[0].allowed_mentions.roles, ['777777777777777777']);
+
+ // Modal gõ nhiều dòng serialize hợp lệ
+ const modalJson = buildAnnounceModal({ channelId: '888888888888888888', pingRoleId: '777777777777777777' }).toJSON();
+ assert.ok(modalJson.custom_id.startsWith('announce_modal:888888888888888888:777777777777777777'));
+
+ // 4. Mở khóa /unlock -> khôi phục lại nguyên trạng quyền SendMessages của @Member và đưa kênh về lại chữ thường khi chọn revertNormalText
+ const unlockRes = await lockMgr.unlockChannel({
+  guildId: '111111111111111111',
+  channelId: '888888888888888888',
+  requesterId: '1243061570247069696',
+  revertNormalText: true,
+ });
+ assert.equal(unlockRes.revertedType, true);
+ assert.equal(channelType, ChannelType.GuildText);
+ const restoredMemberOv = currentOverwrites.find(o => o.id === '777777777777777777');
+ assert.ok((BigInt(restoredMemberOv.allow) & PermissionFlagsBits.SendMessages) !== 0n);
 });

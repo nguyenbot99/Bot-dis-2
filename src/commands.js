@@ -1,6 +1,7 @@
 import {
  ActionRowBuilder,
  ApplicationCommandType,
+ ChannelType,
  ContextMenuCommandBuilder,
  EmbedBuilder,
  SlashCommandBuilder,
@@ -37,6 +38,9 @@ const definitions = [
  ['webkey', 'Lấy mã PIN 6 số để điều khiển nhạc 2 chiều trực tiếp từ trên Website'],
  ['avatar', 'Soi ảnh đại diện gốc / Server / Banner 4K chống tự xóa & tự đăng lại nếu bị xóa'],
  ['spamtag', 'Réo tên (@tag) gọi bạn bè liên tục kèm nút Dừng ngay & Xóa sạch dấu vết (chỉ Chủ Bot)'],
+ ['lock', 'Khóa kênh chat (hỗ trợ chế độ 📢 Kênh Thông Báo hiện nút Theo dõi y hệt mẫu, chỉ Chủ Bot)'],
+ ['unlock', 'Mở khóa lại kênh chat đã khóa về trạng thái bình thường (chỉ Chủ Bot)'],
+ ['announce', 'Cho Bot đăng thông báo / bài viết vào kênh đã khóa kèm thả sẵn ❤️ 🔥 (chỉ Chủ Bot)'],
  ['pause', 'Tạm dừng bài hát đang phát'],
  ['resume', 'Tiếp tục phát bài hát đang tạm dừng'],
  ['skip', 'Bỏ qua bài hiện tại (hoặc nhảy thẳng tới bài ở vị trí chọn trong hàng đợi)'],
@@ -150,7 +154,6 @@ export const HELP_CATEGORIES = Object.freeze([
   color: 0x34d399,
   items: [
    ['`/avatar` `[user]` `[type]`', 'Soi Avatar gốc / Avatar Server / Banner **4K** đóng băng file thật & **chống xóa tự động**'],
-   ['`/spamtag` `[user]` `[action]` `[count]` `[message]`', 'Réo tên (`@tag`) gọi bạn bè liên tục (1–100 lần) kèm nút **🛑 Dừng** & **🧹 Xóa sạch** *(chỉ Chủ Bot)*'],
    ['`/nowplaying`', 'Xem thẻ thông tin chi tiết bài hát đang phát hiện tại'],
    ['`/lyrics` `[query]`', 'Tìm lời bài hát đang phát hoặc tra lời theo tên bài bất kỳ'],
    ['`/queue`', 'Xem danh sách các bài hát sắp phát tiếp theo'],
@@ -160,6 +163,18 @@ export const HELP_CATEGORIES = Object.freeze([
    ['`/help` `[category]`', 'Mở bảng danh mục lệnh rút gọn này'],
   ],
   extraNote: '🖼️ **Mẹo cực nhanh:** Chạm giữ (hoặc chuột phải) vào bất kỳ thành viên nào -> **Ứng dụng (Apps) -> 🖼️ Soi Avatar 4K** để soi ngay không cần gõ lệnh!',
+ },
+ {
+  key: 'owner_tools',
+  label: 'Quản trị Kênh & Chủ Bot',
+  description: 'Các lệnh khóa kênh 📢 Theo dõi, đăng thông báo & réo tên riêng cho Chủ Bot',
+  color: 0xef4444,
+  items: [
+   ['`/lock` `[channel]` `[mode]` `[reactions]` `[role]`', 'Khóa kênh chat — hỗ trợ **Kênh 📢 Thông Báo hiện nút xanh `[Theo dõi]`** + giữ thả tim `❤️🔥` *(chỉ Chủ Bot)*'],
+   ['`/unlock` `[channel]` `[revert_normal]` `[role]`', 'Mở khóa lại kênh chat đã khóa về bình thường *(chỉ Chủ Bot)*'],
+   ['`/announce` `[channel]` `[message]` `[ping_role]` `[style]`', 'Cho Bot đăng bài / thông báo vào kênh đã khóa (bỏ trống `message` sẽ mở bảng gõ nhiều dòng) *(chỉ Chủ Bot)*'],
+   ['`/spamtag` `[user]` `[action]` `[count]` `[message]`', 'Réo tên (`@tag`) gọi bạn bè liên tục (1–100 lần) kèm nút **🛑 Dừng** & **🧹 Xóa sạch** *(chỉ Chủ Bot)*'],
+  ],
  },
 ]);
 
@@ -300,14 +315,14 @@ export function buildHelpEmbed(botUser) {
     ].join('\n'),
    },
    {
-    name: '📋 Tiện ích, Soi Avatar 4K & Bảng Vàng',
+    name: '📋 Tiện ích, Quản trị Kênh & Bảng Vàng',
     value: [
      '`/avatar` `[user]` `[type]` — Soi Avatar/Banner 4K (đóng băng ảnh & chống xóa tự động)',
-     '`/spamtag` `[user]` `[action]` — Réo tên `@tag` bạn bè kèm nút Dừng & Xóa sạch *(Chủ Bot)*',
+     '`/lock` • `/unlock` • `/announce` — Khóa kênh kiểu 📢 Theo dõi & Đăng bài bằng Bot *(Chủ Bot)*',
+     '`/spamtag` `[user]` `[action]` — Réo tên `@tag` (1–100 lần) kèm nút Dừng & Xóa sạch *(Chủ Bot)*',
      '`/nowplaying` • `/grab` — Xem chi tiết bài hát hoặc bỏ túi về Tin nhắn riêng (DM)',
      '`/lyrics` `[query]` • `/stats` `[scope]` — Xem lời bài hát & **Bảng Vàng Top Nhạc/DJ**',
-     '`/queue` • `/history` — Xem 10 bài sắp phát hoặc 10 bài vừa phát gần đây',
-     '`/ping` • `/help` — Kiểm tra độ trễ/RAM hoặc mở bảng hướng dẫn này',
+     '`/queue` • `/history` • `/ping` • `/help` — Hàng đợi, lịch sử, kiểm tra RAM & hướng dẫn',
     ].join('\n'),
    },
    {
@@ -711,6 +726,76 @@ export const slashCommands = definitions.map(([name, description]) => {
    .setRequired(false)
    .setMinValue(2)
    .setMaxValue(10));
+ }
+ if (name === 'lock') {
+  c.addChannelOption(o => o
+   .setName('channel')
+   .setDescription('Kênh muốn khóa (bỏ trống để khóa ngay kênh hiện tại)')
+   .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
+   .setRequired(false));
+  c.addStringOption(o => o
+   .setName('mode')
+   .setDescription('Kiểu giao diện khóa kênh (mặc định: Kiểu Kênh 📢 Thông Báo hiện nút xanh Theo dõi)')
+   .setRequired(false)
+   .addChoices(
+    { name: '📢 Kênh Thông Báo — Hiện nút xanh [Theo dõi] ở đáy y hệt mẫu', value: 'announcement' },
+    { name: '🔒 Kênh Chữ Thường — Chỉ khóa ô chat, giữ nguyên loại kênh #', value: 'normal' },
+   ));
+  c.addBooleanOption(o => o
+   .setName('reactions')
+   .setDescription('Cho phép thành viên thả biểu cảm ❤️ 🔥 dưới bài viết (mặc định: True giống ảnh mẫu)')
+   .setRequired(false));
+  c.addRoleOption(o => o
+   .setName('role')
+   .setDescription('Khóa kèm thêm một Role cụ thể nếu muốn (mặc định bot đã tự khóa @everyone & Role mở chat)')
+   .setRequired(false));
+ }
+ if (name === 'unlock') {
+  c.addChannelOption(o => o
+   .setName('channel')
+   .setDescription('Kênh muốn mở khóa (bỏ trống để mở ngay kênh hiện tại)')
+   .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
+   .setRequired(false));
+  c.addBooleanOption(o => o
+   .setName('revert_normal')
+   .setDescription('Đặt True nếu muốn đổi kênh 📢 Thông báo về lại kênh chữ # bình thường')
+   .setRequired(false));
+  c.addRoleOption(o => o
+   .setName('role')
+   .setDescription('Mở khóa kèm thêm một Role cụ thể (tùy chọn)')
+   .setRequired(false));
+ }
+ if (name === 'announce') {
+  c.addChannelOption(o => o
+   .setName('channel')
+   .setDescription('Kênh muốn đăng bài (bỏ trống sẽ đăng ngay vào kênh hiện tại)')
+   .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
+   .setRequired(false));
+  c.addStringOption(o => o
+   .setName('message')
+   .setDescription('Nội dung thông báo (Dùng \\n để xuống dòng, hoặc ĐỂ TRỐNG để mở bảng gõ nhiều dòng tiện lợi!)')
+   .setRequired(false)
+   .setMaxLength(1900));
+  c.addRoleOption(o => o
+   .setName('ping_role')
+   .setDescription('Tag đính kèm một vai trò ở đầu bài giống ảnh mẫu (ví dụ: @Member)')
+   .setRequired(false));
+  c.addBooleanOption(o => o
+   .setName('ping_everyone')
+   .setDescription('Đặt True nếu muốn tag @everyone ở đầu bài thông báo')
+   .setRequired(false));
+  c.addStringOption(o => o
+   .setName('style')
+   .setDescription('Kiểu hiển thị bài đăng của Bot (mặc định: Tin nhắn chữ tự nhiên giống Meow Bot)')
+   .setRequired(false)
+   .addChoices(
+    { name: '💬 Tin nhắn chữ tự nhiên (Giống hệt Meow Bot trong ảnh)', value: 'text' },
+    { name: '📋 Khung thẻ Embed đóng viền màu nổi bật', value: 'embed' },
+   ));
+  c.addBooleanOption(o => o
+   .setName('auto_react')
+   .setDescription('Tự gắn sẵn biểu cảm ❤️ 🔥 bên dưới bài vừa đăng (mặc định: True)')
+   .setRequired(false));
  }
  return c.toJSON();
 });

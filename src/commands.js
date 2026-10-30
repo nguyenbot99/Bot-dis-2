@@ -1,11 +1,16 @@
 import {
  ActionRowBuilder,
+ ApplicationCommandType,
+ ContextMenuCommandBuilder,
  EmbedBuilder,
  SlashCommandBuilder,
  StringSelectMenuBuilder,
  StringSelectMenuOptionBuilder,
 } from 'discord.js';
 import { resolveNowPlayingWebUrl } from './playerGui.js';
+
+export const CONTEXT_PLAY_NAME = '▶️ Phát / Thêm nhạc';
+export const CONTEXT_AVATAR_NAME = '🖼️ Soi Avatar 4K';
 
 // Giữ nguyên tên lệnh và tên tham số bằng tiếng Anh/số chuẩn Discord (lưu ý Discord không cho dấu "/" trong tên lệnh nên 24/7 viết là /247);
 // Việt hóa toàn bộ phần chú thích hiển thị trên Discord.
@@ -28,6 +33,8 @@ const definitions = [
  ['similar', 'Bơm ngay 5 bài hát cùng Vibe & cùng gu với bài đang phát vào hàng đợi'],
  ['replay', 'Tua nhanh bài hát đang phát về lại từ đầu (0:00)'],
  ['grab', 'Bỏ túi thông tin, ảnh bìa & link bài đang nghe về Tin nhắn riêng (DM) của bạn'],
+ ['savequeue', 'Đóng gói bài đang phát & toàn bộ hàng đợi thành Thẻ Phiên Nhạc để hôm sau mở lại 1 chạm'],
+ ['webkey', 'Lấy mã PIN 6 số để điều khiển nhạc 2 chiều trực tiếp từ trên Website'],
  ['avatar', 'Soi ảnh đại diện gốc / Server / Banner 4K chống tự xóa & tự đăng lại nếu bị xóa'],
  ['pause', 'Tạm dừng bài hát đang phát'],
  ['resume', 'Tiếp tục phát bài hát đang tạm dừng'],
@@ -65,6 +72,7 @@ export const HELP_CATEGORIES = Object.freeze([
    ['`/radio` `station`', 'Mở Đài Radio Không Ngủ theo tâm trạng (Lo-Fi, V-Pop, EDM, Piano, US-UK, Ngủ ngon)'],
    ['`/replay`', 'Tua nhanh bài hát đang phát quay lại từ đầu (`0:00`)'],
   ],
+  extraNote: '🖱️ **Mẹo cực nhanh:** Chạm giữ (hoặc chuột phải) vào bất kỳ tin nhắn nào trong chat -> chọn **Ứng dụng (Apps) -> ▶️ Phát / Thêm nhạc** để bắt bài ngay không cần gõ lệnh!',
  },
  {
   key: 'playback_ctrl',
@@ -79,6 +87,7 @@ export const HELP_CATEGORIES = Object.freeze([
    ['`/seek` `time`', 'Tua bài đang phát tới mốc bất kỳ (ví dụ: `1:30` hoặc `90`)'],
    ['`/stop`', 'Dừng phát nhạc và dọn sạch hàng đợi (vẫn giữ phòng nếu đang bật 24/7)'],
    ['`/volume` `percent`', 'Chỉnh âm lượng phát nhạc tùy ý từ `0%` đến `200%`'],
+   ['`/webkey` `[action]`', 'Lấy mã PIN 6 số mở khóa **Điều khiển nhạc 2 chiều từ Website**'],
   ],
  },
  {
@@ -118,6 +127,7 @@ export const HELP_CATEGORIES = Object.freeze([
   items: [
    ['`/fav` `action` `[query]` `[position]`', 'Quản lý & phát **Tủ nhạc Yêu thích cá nhân** của riêng bạn (tối đa 25 bài/người)'],
    ['`/mixtape` `action` `[name]` `[query]`', 'Cùng anh em lập & phát **Tủ đĩa Mixtape chung của cả hội** (5 chủ đề × 20 bài)'],
+   ['`/savequeue` `[destination]` `[title]`', 'Đóng gói nguyên dàn bài đang nghe thành **Thẻ Phiên Nhạc** để hôm sau mở lại 1 chạm'],
    ['`/grab`', 'Bỏ túi thẻ bài hát đang nghe kèm link gốc về **Tin nhắn riêng (DM)** của bạn'],
   ],
  },
@@ -147,6 +157,7 @@ export const HELP_CATEGORIES = Object.freeze([
    ['`/ping`', 'Kiểm tra độ trễ mạng Discord và mức tiêu thụ RAM hiện tại của bot'],
    ['`/help` `[category]`', 'Mở bảng danh mục lệnh rút gọn này'],
   ],
+  extraNote: '🖼️ **Mẹo cực nhanh:** Chạm giữ (hoặc chuột phải) vào bất kỳ thành viên nào -> **Ứng dụng (Apps) -> 🖼️ Soi Avatar 4K** để soi ngay không cần gõ lệnh!',
  },
 ]);
 
@@ -165,9 +176,9 @@ export function buildHelpPayload({ botUser = null, guild = null, category = 'ove
 
  if (!selectedCat) {
   const descLines = [
-   '🌸 **Tiền tố (lệnh) :** `/` *(Slash Commands)*',
-   `💿 **Tổng số lệnh :** **${totalCommands}** lệnh chia làm **${totalCategories}** danh mục`,
-   webUrl ? `🌐 **Phòng nghe Web :** [Mở Live Radio, Đĩa Than & Karaoke](${webUrl})` : null,
+   '🌸 **Tiền tố (lệnh) :** `/` *(Slash Commands)* + **Chạm giữ tin nhắn (Apps)**',
+   `💿 **Tổng số lệnh :** **${totalCommands}** lệnh \`/\` chia làm **${totalCategories}** danh mục`,
+   webUrl ? `🌐 **Phòng nghe & Điều khiển Web :** [Mở Live Radio, Karaoke & Web Remote](${webUrl})` : null,
   ].filter(Boolean);
 
   embed = new EmbedBuilder()
@@ -270,8 +281,8 @@ export function buildHelpEmbed(botUser) {
     value: [
      '`/play` `query` • `/search` `query` — Phát ngay (hỗ trợ Playlist) hoặc chọn từ Top 5',
      '`/dedicate` `query` `to` `message` — Tặng bài hát kèm lời nhắn lên Discord & Web',
-     '`/fav` `action` • `/mixtape` `action` — Tủ nhạc cá nhân & Tủ nhạc chung cả hội',
-     '`/sleeptimer` — Hẹn giờ giảm dần âm lượng tắt nhạc êm ái khi đi ngủ',
+     '`/fav` `action` • `/mixtape` `action` • `/savequeue` — Tủ cá nhân, Tủ hội & Lưu hàng đợi',
+     '`/sleeptimer` • `/webkey` — Hẹn giờ đi ngủ & Mã PIN điều khiển nhạc trên Website',
      '`/pause` • `/resume` • `/stop` — Tạm dừng, tiếp tục hoặc dừng hẳn nhạc',
      '`/skip` • `/previous` • `/replay` • `/seek` — Qua bài, bài trước, từ `0:00` hoặc tua giây',
     ].join('\n'),
@@ -314,7 +325,7 @@ export function buildHelpEmbed(botUser) {
  return embed;
 }
 
-export const commands = definitions.map(([name, description]) => {
+export const slashCommands = definitions.map(([name, description]) => {
  const c = new SlashCommandBuilder().setName(name).setDescription(description).setDMPermission(false);
  if (name === 'help') {
   c.addStringOption(o => o
@@ -640,5 +651,47 @@ export const commands = definitions.map(([name, description]) => {
     { name: '🎨 Ảnh bìa hồ sơ cá nhân (Profile Banner 4K)', value: 'banner' },
    ));
  }
+ if (name === 'savequeue') {
+  c.addStringOption(o => o
+   .setName('destination')
+   .setDescription('Nơi lưu Thẻ Phiên Nhạc (mặc định gửi ra kênh chat để bấm Khôi phục 1 chạm)')
+   .setRequired(false)
+   .addChoices(
+    { name: '💬 Gửi ra Kênh Chat hiện tại (Hỗ trợ nút Khôi phục 1 chạm)', value: 'channel' },
+    { name: '📩 Gửi riêng về Hộp thư DM cá nhân', value: 'dm' },
+   ));
+  c.addStringOption(o => o
+   .setName('title')
+   .setDescription('Đặt tên cho hộp phiên nhạc này (ví dụ: Đêm Mưa Chill Cùng Hội)')
+   .setRequired(false)
+   .setMaxLength(70));
+ }
+ if (name === 'webkey') {
+  c.addStringOption(o => o
+   .setName('action')
+   .setDescription('Xem mã PIN hiện tại, đổi mã PIN mới hoặc khóa lại quyền điều khiển từ Website')
+   .setRequired(false)
+   .addChoices(
+    { name: '🔑 Xem / Cấp mã PIN 6 số điều khiển Website', value: 'show' },
+    { name: '🔄 Đổi mã PIN 6 số mới (vô hiệu mã cũ)', value: 'rotate' },
+    { name: '🔒 Thu hồi / Tắt điều khiển từ xa trên Website', value: 'revoke' },
+   ));
+ }
  return c.toJSON();
 });
+
+// Hai lệnh Menu ngữ cảnh (Chạm giữ trên Điện thoại / Chuột phải trên PC -> Ứng dụng) — tốn 0 MB RAM.
+export const contextCommands = [
+ new ContextMenuCommandBuilder()
+  .setName(CONTEXT_PLAY_NAME)
+  .setType(ApplicationCommandType.Message)
+  .setDMPermission(false)
+  .toJSON(),
+ new ContextMenuCommandBuilder()
+  .setName(CONTEXT_AVATAR_NAME)
+  .setType(ApplicationCommandType.User)
+  .setDMPermission(false)
+  .toJSON(),
+];
+
+export const commands = [...slashCommands, ...contextCommands];

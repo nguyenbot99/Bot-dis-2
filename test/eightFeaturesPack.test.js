@@ -18,7 +18,7 @@ import {
  createAvatarGuardManager,
  resolveAvatarTargetInfo,
 } from '../src/avatarGuard.js';
-import { buildHelpEmbed, buildHelpPayload, commands, HELP_CATEGORIES } from '../src/commands.js';
+import { buildHelpEmbed, buildHelpPayload, commands, contextCommands, HELP_CATEGORIES, slashCommands } from '../src/commands.js';
 import { isStaleBotNoticeMessage } from '../src/messageCleaner.js';
 import {
  buildMixtapeDetailEmbed,
@@ -396,10 +396,12 @@ test('Feature #5 (/mixtape Shared Server Mixtapes) & Feature #6 (/similar): CRUD
  assert.doesNotThrow(() => assertMusicAccess('similar', '1243061570247069696', activePlayer));
 });
 
-test('Feature #7 (Website Vinyl Turntable + Poster Card Generator) & 38 Slash Commands Registry', () => {
- assert.equal(commands.length, 38);
- const names = new Set(commands.map(c => c.name));
- for (const expected of ['avatar', 'ambient', 'search', 'dedicate', 'mixtape', 'similar', 'tts']) {
+test('Feature #7 (Website Vinyl Turntable + Poster Card Generator) & 40 Slash + 2 Context Commands Registry', () => {
+ assert.equal(slashCommands.length, 40);
+ assert.equal(contextCommands.length, 2);
+ assert.equal(commands.length, 42);
+ const names = new Set(slashCommands.map(c => c.name));
+ for (const expected of ['avatar', 'ambient', 'search', 'dedicate', 'mixtape', 'similar', 'tts', 'savequeue', 'webkey']) {
   assert.ok(names.has(expected), `Command /${expected} must be registered`);
  }
  const helpEmbed = buildHelpEmbed({ username: 'Bắt_Don', displayAvatarURL: () => 'https://example.com/a.png' }).toJSON();
@@ -420,7 +422,7 @@ test('Feature #7 (Website Vinyl Turntable + Poster Card Generator) & 38 Slash Co
  assert.equal(overviewSelect.placeholder, 'Chọn danh mục');
  assert.equal(overviewSelect.options.length, 7);
 
- // Đảm bảo đủ 38/38 lệnh nằm trọn trong 7 danh mục mà không sót hay trùng bất kỳ lệnh nào
+ // Đảm bảo đủ 40/40 lệnh slash nằm trọn trong 7 danh mục mà không sót hay trùng bất kỳ lệnh nào
  const categorizedCmds = [];
  for (const cat of HELP_CATEGORIES) {
   const catPayload = buildHelpPayload({
@@ -437,9 +439,9 @@ test('Feature #7 (Website Vinyl Turntable + Poster Card Generator) & 38 Slash Co
    categorizedCmds.push(m[1]);
   }
  }
- assert.equal(categorizedCmds.length, 38);
- assert.equal(new Set(categorizedCmds).size, 38);
- for (const cmd of commands) {
+ assert.equal(categorizedCmds.length, 40);
+ assert.equal(new Set(categorizedCmds).size, 40);
+ for (const cmd of slashCommands) {
   assert.ok(categorizedCmds.includes(cmd.name), `Missing /${cmd.name} from HELP_CATEGORIES`);
  }
 

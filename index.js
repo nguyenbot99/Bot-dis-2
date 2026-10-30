@@ -17,6 +17,7 @@ import {
  parseCustomVolumeInput,
  setAudioEnhancement,
  SOUND_PRESETS,
+ triggerSmoothTransitionFade,
  VIBE_MODES,
 } from './src/audioEnhancer.js';
 import { assertMusicAccess, isBotOwner, resolveHumanRequester } from './src/access.js';
@@ -39,8 +40,10 @@ import { buildStatsEmbed, createStatsStore } from './src/statsStore.js';
 import { createVoiceRoomStatusSync } from './src/voiceStatus.js';
 import { createGuildTtsController, synthesizeGoogleTtsBuffer, TTS_VOICES } from './src/tts.js';
 import { resolveTrackWebAudio, WEB_AUDIO_REFRESH_MS } from './src/webAudio.js';
+import { createWebRemoteManager } from './src/webRemote.js';
+import { buildSaveQueuePayload, extractPlayableFromMessage, extractSaveQueueUrls } from './src/saveQueue.js';
 import { buildVoiceGuardEmbed, evaluateBotVoiceTransition } from './src/voiceGuard.js';
-import { buildHelpPayload, commands } from './src/commands.js';
+import { buildHelpPayload, commands, CONTEXT_AVATAR_NAME, CONTEXT_PLAY_NAME } from './src/commands.js';
 import {
  buildAddSongModal,
  buildEndedPayload,
@@ -285,7 +288,10 @@ client.on(Events.Raw, packet => avatarGuard.handleRawGatewayPacket(packet));
 // Bộ tự động đặt trạng thái Kênh Thoại (Voice Channel Status) theo tên bài hát đang phát & dọn sạch khi dừng nhạc/rời phòng.
 const voiceRoomStatus = createVoiceRoomStatusSync({ rest: client.rest, client });
 
-// Trung tâm Website "Now Playing" (giao diện kiểu Ziji V10 + SSE thời gian thực + tự động đồng bộ ra Cloudflare Worker).
+// Bộ quản lý mã PIN 6 số điều khiển nhạc 2 chiều trên Website (/webkey — không cần Ngrok hay cơ sở dữ liệu ngoài).
+const webRemote = createWebRemoteManager({ env: process.env });
+
+// Trung tâm Website "Now Playing" (giao diện kiểu Ziji V10 + SSE thời gian thực + điều khiển 2 chiều + tự động đồng bộ ra Cloudflare Worker).
 const nowPlayingHub = createNowPlayingHub({
  getPlayer: () => manager.getAll()[0] ?? null,
  getResumeSeal: () => {
@@ -298,6 +304,8 @@ const nowPlayingHub = createNowPlayingHub({
  onRemoteStats: opened => statsStore.importPlainStats(opened),
  getMixtapesSeal: () => mixtapeStore.exportSeal(DISCORD_TOKEN),
  onRemoteMixtapes: opened => mixtapeStore.importPlainMixtapes(opened),
+ webRemote,
+ onRemoteCommand: cmd => executeWebRemoteCommand(cmd),
  client,
  botToken: DISCORD_TOKEN,
  deferInitialPush: true,
@@ -333,7 +341,7 @@ const channelLastSweepAt = new Map();
 const KICK_SNAPSHOT_TTL_MS = 30 * 60 * 1000; // Giữ trạng thái bài đang phát & hàng đợi trong 30 phút sau khi bị kick để khôi phục khi /join.
 const PROGRESS_TICK_MS = 5000; // Chu kỳ cập nhật thanh tiến trình (5 giây/lần: chuẩn mượt, không bao giờ chạm giới hạn rate-limit Discord).
 const CHANNEL_SWEEP_COOLDOWN_MS = 180000; // Quét dọn tin nhắn mồ côi tối đa 3 phút/lần mỗi kênh.
-const KNOWN_ERROR_RE = /^(Hãy|Bạn|Bot|Chờ|Chỉ|Hàng|Không|Chưa|Tên|URL|Lệnh|Bản|Link|Thời|Số|Định|Vị|Mức|Âm|Nội|Tủ|Hẹn|Hiệu|Đài|Người|Máy|Phiên|Bài)/;
+const KNOWN_ERROR_RE = /^(Hãy|Bạn|Bot|Chờ|Chỉ|Hàng|Không|Chưa|Tên|URL|Lệnh|Bản|Link|Thời|Số|Định|Vị|Mức|Âm|Nội|Tủ|Hẹn|Hiệu|Đài|Người|Máy|Phiên|Bài|Tin|Mã|Hiện|Thao)/;
 const ttsController = createGuildTtsController();
 
 function syncSleepTimerLabel(player) {
@@ -1002,6 +1010,7 @@ manager.on('trackStart', (player, track) => {
  void postFreshPanel(player, track);
 });
 manager.on('trackEnd', player => {
+ triggerSmoothTransitionFade(360);
  if (!player?.guildId) return;
  sleepTimerManager.notifyTrackEnded(player.guildId);
 });
@@ -1538,6 +1547,188 @@ async function enqueueFavoriteTracks({ guild, voiceChannel, textChannel, favItem
  }
 }
 
+// Khôi phục toàn bộ danh sách bài hát từ Thẻ Phiên Nhạc (/savequeue) chỉ với 1 chạm (tối đa 3 luồng tìm song song nhẹ RAM).
+async function restoreSavedQueueBatch({ guild, voiceChannel, textChannel, urls, userId }) {
+ if (!Array.isArray(urls) || urls.length === 0) {
+  throw new Error('Thẻ phiên nhạc này không có đường dẫn hợp lệ để khôi phục.');
+ }
+ const { player: p, created } = await ensureVoiceSession({ guild, voiceChannel, textChannel, userId });
+ guildKickSnapshots.delete(guild.id);
+ try {
+  const hadCurrent = Boolean(p.queue.currentTrack);
+  const maxWanted = Math.min(urls.length, (hadCurrent ? 0 : 1) + Math.max(0, 20 - p.queue.size));
+  if (maxWanted <= 0) throw new Error('Hàng đợi đã đủ 20 bài.');
+  const targets = urls.slice(0, maxWanted);
+  const resolved = new Array(targets.length).fill(null);
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(3, targets.length) }, async () => {
+   while (cursor < targets.length) {
+    const idx = cursor++;
+    const rawUrl = targets[idx];
+    const res = await p.search(rawUrl, userId).catch(() => null);
+    const track = res?.tracks?.[0] ?? null;
+    if (track && !track.isLive && !(Number(track.duration) > 10800000)) {
+     resolved[idx] = track;
+    }
+   }
+  });
+  await Promise.all(workers);
+  const finalList = resolved.filter(Boolean);
+  if (finalList.length === 0) {
+   throw new Error('Không khôi phục được bài hát nào từ hộp lưu này.');
+  }
+  const batch = await enqueueTrackBatch(p, finalList, userId, false);
+  return {
+   track: batch.firstTrack,
+   addedCount: batch.addedCount,
+   queued: batch.queued,
+  };
+ } catch (e) {
+  if (created && !p.userdata?.stay247) manager.delete(guild.id);
+  throw e;
+ }
+}
+
+// Thực thi lệnh điều khiển 2 chiều từ Website (đã xác thực PIN 6 số /webkey, kiểm tra chặt quyền Chủ Bot & Người đang cầm bài).
+async function executeWebRemoteCommand(cmd) {
+ const p = manager.getAll()[0] ?? null;
+ if (!p || p.destroyed) {
+  throw new Error('Bot hiện chưa ở trong kênh thoại — hãy gọi /join hoặc /play trong Discord trước.');
+ }
+ const guild = client.guilds.cache.get(p.guildId) ?? await client.guilds.fetch(p.guildId).catch(() => null);
+ const actorId = String(cmd?.userId ?? '').trim();
+ const isOwnerRole = cmd?.role === 'owner' || isBotOwner(actorId);
+
+ if (!isOwnerRole) {
+  assertMusicAccess('play', actorId, p);
+  const memberChannelId = guild?.voiceStates?.cache?.get(actorId)?.channelId ?? null;
+  if (p.userdata?.voiceChannelId && memberChannelId && memberChannelId !== p.userdata.voiceChannelId) {
+   throw new Error('Bạn cần ở cùng kênh thoại với bot để điều khiển từ xa.');
+  }
+ }
+
+ const syncPanelAndWeb = (overrides = {}) => {
+  markPanelTouched(p);
+  schedulePanelUpdate(p, overrides);
+  nowPlayingHub.publish({ player: p, ...overrides }, { immediatePush: true });
+ };
+
+ switch (cmd.action) {
+  case 'toggle_pause': {
+   if (!p.queue?.currentTrack) throw new Error('Hiện chưa có bài hát nào đang phát.');
+   if (p.isPaused) {
+    triggerSmoothTransitionFade(180);
+    p.resume();
+    syncPanelAndWeb({ paused: false });
+    return { message: '▶️ Đã tiếp tục phát nhạc.' };
+   }
+   p.pause();
+   syncPanelAndWeb({ paused: true });
+   return { message: '⏸️ Đã tạm dừng phát nhạc.' };
+  }
+  case 'skip': {
+   if (!p.queue?.currentTrack) throw new Error('Hiện chưa có bài hát nào để bỏ qua.');
+   triggerSmoothTransitionFade(360);
+   p.skip();
+   syncPanelAndWeb();
+   return { message: '⏭️ Đã chuyển sang bài tiếp theo.' };
+  }
+  case 'previous': {
+   triggerSmoothTransitionFade(360);
+   const ok = await p.previous().catch(() => false);
+   if (!ok) throw new Error('Chưa có bài hát trước đó trong lịch sử.');
+   syncPanelAndWeb();
+   return { message: '⏮️ Đã quay lại bài trước đó.' };
+  }
+  case 'replay': {
+   if (!p.queue?.currentTrack) throw new Error('Hiện chưa có bài hát nào để phát lại từ đầu.');
+   triggerSmoothTransitionFade(260);
+   await p.seek(0);
+   syncPlayerVibeAnchor(p, p.userdata?.vibeMode ?? 'normal', 0);
+   syncPanelAndWeb();
+   return { message: '⏪ Đã tua bài hát về lại 0:00.' };
+  }
+  case 'shuffle': {
+   if (p.upcomingTracks.length < 2) throw new Error('Hàng đợi cần ít nhất 2 bài để trộn.');
+   p.shuffle();
+   syncPanelAndWeb();
+   return { message: '🔀 Đã trộn ngẫu nhiên hàng đợi.' };
+  }
+  case 'loop': {
+   const order = ['off', 'track', 'queue'];
+   const nextMode = (cmd.value && order.includes(cmd.value))
+    ? cmd.value
+    : order[(order.indexOf(p.loop()) + 1) % order.length];
+   p.loop(nextMode);
+   syncPanelAndWeb({ loopMode: nextMode });
+   return { message: `🔁 Chế độ lặp: ${LOOP_LABELS[nextMode]}` };
+  }
+  case 'autoplay': {
+   const nextAuto = !p.autoPlay();
+   p.autoPlay(nextAuto);
+   syncPanelAndWeb({ autoPlay: nextAuto });
+   return { message: `♾️ Tự phát liên quan: ${nextAuto ? 'Đã bật' : 'Đã tắt'}` };
+  }
+  case 'volume': {
+   configurePlayerAudio(p);
+   const target = clampVolumePercent(cmd.value);
+   if (!p.setVolume(target)) throw new Error('Không thể chỉnh âm lượng lúc này.');
+   syncPanelAndWeb({ volume: target });
+   return { message: `🔊 Âm lượng phòng thoại: ${target}%` };
+  }
+  case 'preset': {
+   const nextPreset = cmd.value && SOUND_PRESETS[cmd.value]
+    ? cmd.value
+    : getNextSoundPreset(p.userdata?.soundPreset ?? 'hd');
+   if (p.userdata) p.userdata.soundPreset = nextPreset;
+   setAudioEnhancement({ preset: nextPreset });
+   syncPanelAndWeb({ soundPreset: nextPreset });
+   return { message: `🎧 Chất âm phòng thoại: ${SOUND_PRESETS[nextPreset].label}` };
+  }
+  case 'vibe': {
+   const nextVibe = cmd.value && VIBE_MODES[cmd.value]
+    ? cmd.value
+    : getNextVibeMode(p.userdata?.vibeMode ?? 'normal');
+   const info = applyPlayerVibe(p, nextVibe);
+   schedulePanelUpdate(p, { vibeMode: nextVibe });
+   return { message: `${info.emoji} Đã chuyển Vibe phòng thoại: ${info.label}` };
+  }
+  case 'ambient': {
+   const nextAmb = cmd.value && AMBIENT_MODES[cmd.value]
+    ? cmd.value
+    : getNextAmbientMode(p.userdata?.ambientMode ?? 'off');
+   const { info } = applyPlayerAmbient(p, nextAmb);
+   schedulePanelUpdate(p, { ambientMode: nextAmb });
+   return { message: `${info.emoji} Nền phòng thoại: ${info.label}` };
+  }
+  case 'play': {
+   if (!guild || !p.userdata?.voiceChannelId) {
+    throw new Error('Không tìm thấy kênh thoại hiện tại của bot.');
+   }
+   const voiceCh = guild.channels.cache.get(p.userdata.voiceChannelId)
+    ?? await guild.channels.fetch(p.userdata.voiceChannelId).catch(() => null);
+   if (!voiceCh) throw new Error('Không đọc được kênh thoại của bot.');
+   const effectiveRequester = actorId || p.userdata?.ownerId || client.user?.id;
+   const res = await enqueueAndPlay({
+    guild,
+    voiceChannel: voiceCh,
+    textChannel: p.userdata?.textChannel ?? null,
+    rawQuery: cmd.value,
+    userId: effectiveRequester,
+    playNext: Boolean(cmd.playNext),
+   });
+   nowPlayingHub.publish({ player: p }, { immediatePush: true });
+   return {
+    message: res.collectionName
+     ? `📚 Đã nạp ${res.addedCount} bài từ "${cleanText(res.collectionName, 50)}"`
+     : (res.queued ? `✅ Đã thêm vào hàng đợi: ${cleanText(res.track.title, 65)}` : `▶️ Đang phát: ${cleanText(res.track.title, 65)}`),
+   };
+  }
+  default:
+   throw new Error('Thao tác điều khiển từ xa chưa được hỗ trợ.');
+ }
+}
+
 // Theo dõi biến động kênh thoại: phát hiện bị tắt mic (Server Mute / Stage), bị kick khỏi phòng, chuyển kênh AFK, hoặc kênh trống.
 client.on(Events.VoiceStateUpdate, (oldState, newState) => {
  if (closing) return;
@@ -2008,6 +2199,39 @@ async function handlePlayerComponent(i) {
    return;
   }
   await i.reply({ content: '🗑️ Đã gỡ bảo vệ chống xóa và thu hồi khung Avatar.', flags: MessageFlags.Ephemeral }).catch(() => {});
+  return;
+ }
+
+ // Nút Khôi phục 1 chạm trên Thẻ Phiên Nhạc (/savequeue) — tự đọc ngược danh sách URL ngay trên thẻ mà không tốn RAM lưu trữ.
+ if (i.isButton() && i.customId === 'savequeue_restore') {
+  const saved = extractSaveQueueUrls(i.message);
+  if (!saved?.urls?.length) {
+   throw new Error('Không tìm thấy danh sách bài hát trên thẻ phiên nhạc này.');
+  }
+  let ownsLock = false;
+  try {
+   await i.deferReply({ flags: MessageFlags.Ephemeral });
+   if (busy) {
+    await i.editReply({ content: 'Đang xử lý thao tác khác, vui lòng thử lại.' });
+    return;
+   }
+   busy = true; ownsLock = true;
+   const voiceCh = await requireSameVoiceChannel(i.guild, i.user.id);
+   assertMusicAccess('play', i.user.id, manager.get(i.guildId));
+   const restored = await restoreSavedQueueBatch({
+    guild: i.guild,
+    voiceChannel: voiceCh,
+    textChannel: i.channel,
+    urls: saved.urls,
+    userId: i.user.id,
+   });
+   const msg = restored.queued
+    ? `✅ Đã nối thêm **${restored.addedCount} bài** từ **${saved.title}** vào hàng đợi!`
+    : `▶️ Đã khôi phục **${restored.addedCount} bài** từ **${saved.title}** — bắt đầu phát: **${cleanText(restored.track.title, 80)}**!`;
+   await i.editReply({ content: msg, allowedMentions: { parse: [] } });
+  } finally {
+   if (ownsLock) busy = false;
+  }
   return;
  }
 
@@ -2492,6 +2716,82 @@ client.on(Events.InteractionCreate, async i => {
   return;
  }
 
+ // Lệnh Menu ngữ cảnh trên Tin nhắn (Chạm giữ / Chuột phải tin nhắn -> Ứng dụng -> "▶️ Phát / Thêm nhạc").
+ if (i.isMessageContextMenuCommand?.() && i.commandName === CONTEXT_PLAY_NAME) {
+  let ownsLock = false;
+  try {
+   await i.deferReply({ flags: MessageFlags.Ephemeral });
+   if (busy) {
+    await i.editReply({ content: 'Đang xử lý lệnh khác, vui lòng thử lại.' });
+    return;
+   }
+   busy = true; ownsLock = true;
+   const extracted = extractPlayableFromMessage(i.targetMessage);
+   const voiceCh = await requireSameVoiceChannel(i.guild, i.user.id);
+   assertMusicAccess('play', i.user.id, manager.get(i.guildId));
+   if (extracted.kind === 'savequeue') {
+    const restored = await restoreSavedQueueBatch({
+     guild: i.guild,
+     voiceChannel: voiceCh,
+     textChannel: i.channel,
+     urls: extracted.urls,
+     userId: i.user.id,
+    });
+    const text = restored.queued
+     ? `✅ Đã khôi phục & nối **${restored.addedCount} bài** từ **${extracted.title}** vào hàng đợi!`
+     : `▶️ Đã khôi phục **${restored.addedCount} bài** từ **${extracted.title}** — đang phát: **${cleanText(restored.track.title, 80)}**!`;
+    await i.editReply({ content: text, allowedMentions: { parse: [] } });
+    return;
+   }
+   const res = await enqueueAndPlay({
+    guild: i.guild,
+    voiceChannel: voiceCh,
+    textChannel: i.channel,
+    rawQuery: extracted.query,
+    userId: i.user.id,
+    playNext: false,
+   });
+   const summary = res.collectionName
+    ? `📚 Đã nạp **${res.addedCount} bài** từ **${cleanText(res.collectionName, 70)}**!`
+    : (res.queued
+       ? `✅ Đã bắt từ tin nhắn & thêm vào hàng đợi: **${cleanText(res.track.title, 85)}**`
+       : `▶️ Đang phát ngay từ tin nhắn: **${cleanText(res.track.title, 85)}**`);
+   await i.editReply({ content: summary, allowedMentions: { parse: [] } });
+  } catch (e) {
+   await replyInteractionError(i, e);
+  } finally {
+   if (ownsLock) busy = false;
+  }
+  return;
+ }
+
+ // Lệnh Menu ngữ cảnh trên Thành viên (Chạm giữ / Chuột phải người dùng -> Ứng dụng -> "🖼️ Soi Avatar 4K").
+ if (i.isUserContextMenuCommand?.() && i.commandName === CONTEXT_AVATAR_NAME) {
+  try {
+   await i.deferReply();
+   const targetUser = await client.users.fetch(i.targetUser.id, { force: true }).catch(() => i.targetUser);
+   const targetMember = i.targetMember?.avatar !== undefined
+    ? i.targetMember
+    : await i.guild.members.fetch(targetUser.id).catch(() => null);
+   const info = resolveAvatarTargetInfo(targetUser, targetMember, 'auto');
+   const imageBuffer = await downloadAvatarBuffer(info.attachUrl);
+   const payload = buildAvatarMessagePayload(info, {
+    requesterId: i.user.id,
+    imageBuffer,
+    includeGuardButtons: true,
+   });
+   const sentMsg = await i.editReply(payload);
+   avatarGuard.registerProtectedMessage(sentMsg, {
+    info,
+    requesterId: i.user.id,
+    imageBuffer,
+   });
+  } catch (e) {
+   await replyInteractionError(i, e);
+  }
+  return;
+ }
+
  if (!i.isChatInputCommand()) return;
  const reply = content => i.editReply({ content, allowedMentions: { parse: [] } });
  let ownsLock = false;
@@ -2518,6 +2818,43 @@ client.on(Events.InteractionCreate, async i => {
     imageBuffer,
    });
    return;
+  }
+
+  // Lệnh /savequeue gửi Thẻ Phiên Nhạc ra kênh chat (để hôm sau bấm nút Khôi phục 1 chạm) hoặc gửi về hộp thư DM riêng.
+  if (i.commandName === 'savequeue') {
+   const dest = i.options.getString('destination') || 'channel';
+   const customTitle = i.options.getString('title')?.trim() || null;
+   const pSnap = manager.get(i.guildId);
+   if (dest === 'dm') {
+    await i.deferReply({ flags: MessageFlags.Ephemeral });
+    const { payload, count } = buildSaveQueuePayload(pSnap, {
+     customTitle,
+     requesterId: i.user.id,
+     botUser: client.user,
+     includeRestoreButton: false,
+    });
+    try {
+     await i.user.send(payload);
+    } catch (err) {
+     if (err?.code === 50007) {
+      throw new Error('Không thể gửi tin nhắn riêng (DM) cho bạn — hãy bật **"Cho phép tin nhắn trực tiếp từ thành viên máy chủ"** trong Cài đặt quyền riêng tư Discord nhé!');
+     }
+     throw new Error('Không thể gửi hộp phiên nhạc về DM lúc này.');
+    }
+    return await reply(`💾 Đã đóng gói **${count} bài hát** và gửi về **Tin nhắn riêng (DM)** của bạn!`);
+   }
+   if (!pSnap || (!pSnap.queue?.currentTrack && !(pSnap.upcomingTracks?.length > 0))) {
+    await i.deferReply({ flags: MessageFlags.Ephemeral });
+    return await reply('Hiện chưa có bài hát nào đang phát hoặc trong hàng đợi để đóng gói.');
+   }
+   await i.deferReply();
+   const { payload } = buildSaveQueuePayload(pSnap, {
+    customTitle,
+    requesterId: i.user.id,
+    botUser: client.user,
+    includeRestoreButton: true,
+   });
+   return await i.editReply(payload);
   }
 
   await i.deferReply({ flags: MessageFlags.Ephemeral });
@@ -2571,6 +2908,42 @@ client.on(Events.InteractionCreate, async i => {
    if (!cur) return await reply('Hiện chưa phát bài hát nào để bỏ túi về Tin nhắn riêng.');
    await sendGrabDmToUser(i.user, cur, p, i.guild);
    return await reply(`📩 Đã gửi thẻ thông tin & link bài **${cleanText(cur.title, 85)}** về **Tin nhắn riêng (DM)** của bạn!`);
+  }
+
+  // Lệnh /webkey: Cấp / Đổi / Thu hồi mã PIN 6 số bí mật để mở khóa Điều khiển nhạc 2 chiều ngay trên Website.
+  if (i.commandName === 'webkey') {
+   const action = i.options.getString('action') || 'show';
+   const ownerUser = isBotOwner(i.user.id);
+   if (!ownerUser) {
+    if (!p || !p.queue?.currentTrack) {
+     throw new Error('Hiện chưa có bài hát nào đang phát — hãy phát nhạc bằng `/play` trước khi lấy mã PIN điều khiển từ xa.');
+    }
+    await requireSameVoiceChannel(i.guild, i.user.id);
+    assertMusicAccess('webkey', i.user.id, p);
+   }
+   if (action === 'revoke') {
+    const hadAny = webRemote.revokePin(i.user.id);
+    nowPlayingHub.publish({}, { immediatePush: true });
+    return await reply(
+     hadAny
+      ? '🔒 Đã thu hồi mã PIN và khóa chế độ **Điều khiển từ xa trên Website**.'
+      : '🔒 Hiện không có mã PIN điều khiển Website nào đang mở.',
+    );
+   }
+   const issued = webRemote.issueOrGetPin(i.user.id, { rotate: action === 'rotate' });
+   nowPlayingHub.publish({}, { immediatePush: true });
+   const webUrl = resolveNowPlayingWebUrl();
+   const expUnix = Math.floor(issued.expiresAt / 1000);
+   const roleBadge = issued.role === 'owner'
+    ? '👑 **Quyền Chủ Bot Toàn Năng (24 giờ)**'
+    : '🎧 **Quyền DJ Bài Hiện Tại (2 giờ)**';
+   const lines = [
+    `🔑 **Mã PIN Điều Khiển Website 2 Chiều:** \`${issued.pin}\``,
+    `• Cấp độ: ${roleBadge} • Hết hạn: <t:${expUnix}:R>`,
+    webUrl ? `• Mở bảng điều khiển: **[Bấm vào đây để mở Website](${webUrl})** -> chọn mục **🎛️ Điều khiển Bot** rồi nhập mã \`${issued.pin}\`!` : '• Mở trang Website của bot -> chọn mục **🎛️ Điều khiển Bot** rồi nhập mã PIN này!',
+    '> 🛡️ *Tin nhắn này chỉ mình bạn nhìn thấy. Không chia sẻ mã PIN nếu không muốn người khác đổi bài!*',
+   ];
+   return await reply(lines.join('\n'));
   }
 
   // Lệnh /fav: Xem / Lưu / Xóa Tủ nhạc Yêu thích cá nhân (ai cũng tự quản lý tủ riêng của mình được; khi phát vào phòng mới kiểm tra quyền phòng thoại).
@@ -3112,6 +3485,7 @@ client.on(Events.InteractionCreate, async i => {
    case 'replay': {
     const cur = p.queue.currentTrack;
     if (!cur) throw new Error('Hiện chưa phát bài hát nào để phát lại từ đầu.');
+    triggerSmoothTransitionFade(260);
     if (!(await p.seek(0))) throw new Error('Không thể tua lại bài hát lúc này.');
     syncPlayerVibeAnchor(p, p.userdata?.vibeMode ?? 'normal', 0);
     nowPlayingHub.publish({ player: p }, { immediatePush: true });
@@ -3126,6 +3500,7 @@ client.on(Events.InteractionCreate, async i => {
     if (durationMs > 0 && targetMs >= durationMs) {
      throw new Error(`Thời gian tua vượt quá độ dài bài hát (${formatDuration(durationMs)}).`);
     }
+    triggerSmoothTransitionFade(240);
     if (!(await p.seek(targetMs))) throw new Error('Không thể tua bài hát lúc này.');
     syncPlayerVibeAnchor(p, p.userdata?.vibeMode ?? 'normal', targetMs);
     nowPlayingHub.publish({ player: p }, { immediatePush: true });

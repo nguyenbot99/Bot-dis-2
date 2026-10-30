@@ -1,5 +1,5 @@
 // Các lệnh chỉ đọc thông tin, ai trong máy chủ cũng có thể xem được.
-const readOnlyCommands = new Set(['help', 'queue', 'nowplaying', 'history', 'lyrics', 'ping', 'stats', 'grab', 'avatar']);
+const readOnlyCommands = new Set(['help', 'queue', 'nowplaying', 'history', 'lyrics', 'ping', 'stats', 'grab', 'avatar', 'savequeue']);
 const sharedVoiceFunCommands = new Set(['tts', 'sfx']);
 const sessionStarterCommands = new Set(['play', 'search', 'dedicate', 'radio', 'fav', 'mixtape']);
 

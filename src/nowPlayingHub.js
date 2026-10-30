@@ -1,4 +1,4 @@
-import { createHmac } from 'node:crypto';
+import { createHmac, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { AMBIENT_MODES, SOUND_PRESETS, VIBE_MODES } from './audioEnhancer.js';
 import { openFavoritesPayload } from './favoritesStore.js';
@@ -7,6 +7,7 @@ import { cleanText, LOOP_LABELS, renderSyncedProgress, safeHttpUrl } from './pla
 import { openSessionPayload } from './sessionStore.js';
 import { openStatsPayload } from './statsStore.js';
 import { sanitizeWebAudioDescriptor } from './webAudio.js';
+import { normalizeRemoteCommandInput } from './webRemote.js';
 
 export const DEFAULT_NOW_PLAYING_PUSH_URL =
  'https://bot-dis-2.botmusicvip.workers.dev/api/now-playing';
@@ -230,6 +231,9 @@ export function serializeNowPlayingState({ player, client, overrides = {} } = {}
    ambientLabel: ambientInfo.label,
    sleepTimerLabel,
   },
+  remoteControl: {
+   enabled: Boolean(overrides.remoteControlEnabled),
+  },
   track: trackPayload,
   upcoming: upcomingRaw.slice(0, 10).map((t, i) => serializeMiniTrack(t, i + 1)).filter(Boolean),
   history: historyRaw.slice(-5).reverse().map(t => serializeMiniTrack(t)).filter(Boolean),
@@ -246,6 +250,8 @@ export function createNowPlayingHub({
  onRemoteStats = null,
  getMixtapesSeal = null,
  onRemoteMixtapes = null,
+ webRemote = null,
+ onRemoteCommand = null,
  client,
  htmlPath = new URL('../web/index.html', import.meta.url),
  env = process.env,
@@ -263,8 +269,26 @@ export function createNowPlayingHub({
  let outboundPushPaused = Boolean(deferInitialPush);
  let remoteBackupCheckFailed = false;
  let explicitSealClear = false;
+ let remoteDrainBusy = false;
+ let remoteDrainUnsupportedUntil = 0;
 
  const { pushUrl: rawPushUrl, pushSecret, ownerProof } = resolvePushEndpoint(env, botToken);
+ const remoteDrainUrl = rawPushUrl
+  ? rawPushUrl.replace(/\/api\/now-playing\/?$/, '/api/remote-drain')
+  : null;
+
+ async function dispatchRemoteCommands(commands) {
+  if (!Array.isArray(commands) || commands.length === 0 || typeof onRemoteCommand !== 'function') return;
+  for (const rawCmd of commands) {
+   if (!rawCmd || typeof rawCmd !== 'object') continue;
+   if (webRemote?.markCommandExecuted && !webRemote.markCommandExecuted(rawCmd.id)) continue;
+   try {
+    await onRemoteCommand(rawCmd);
+   } catch (err) {
+    logger?.warn?.(`[web-remote] Bỏ qua lệnh từ xa lỗi: ${err?.message ?? err}`);
+   }
+  }
+ }
 
  const heartbeatTimer = setInterval(() => {
   for (const res of sseClients) {
@@ -284,7 +308,11 @@ export function createNowPlayingHub({
   const activePlayer = Object.prototype.hasOwnProperty.call(overrides, 'player')
    ? overrides.player
    : getPlayer?.();
-  return serializeNowPlayingState({ player: activePlayer, client, overrides });
+  const mergedOverrides = {
+   ...overrides,
+   remoteControlEnabled: Boolean(webRemote?.hasActivePins?.()),
+  };
+  return serializeNowPlayingState({ player: activePlayer, client, overrides: mergedOverrides });
  }
 
  async function executeOutboundPush() {
@@ -307,6 +335,7 @@ export function createNowPlayingHub({
    ...(typeof getFavoritesSeal === 'function' ? { favoritesSeal: favSeal ?? null } : {}),
    ...(typeof getStatsSeal === 'function' ? { statsSeal: statsSeal ?? null } : {}),
    ...(typeof getMixtapesSeal === 'function' ? { mixtapesSeal: mixtapesSeal ?? null } : {}),
+   ...(webRemote?.exportWorkerAuth ? { remoteAuth: webRemote.exportWorkerAuth() } : {}),
   };
   const headers = { 'Content-Type': 'application/json' };
   if (pushSecret) headers.Authorization = `Bearer ${pushSecret}`;
@@ -332,6 +361,10 @@ export function createNowPlayingHub({
    if (!lastPushOk) {
     lastPushOk = true;
     logger?.log?.(`[web-now-playing] ✅ Đã kết nối & đồng bộ trạng thái nhạc lên Website: ${rawPushUrl}`);
+   }
+   const respJson = await res.json?.().catch(() => null);
+   if (Array.isArray(respJson?.commands) && respJson.commands.length > 0) {
+    void dispatchRemoteCommands(respJson.commands);
    }
    return true;
   } catch (err) {
@@ -371,6 +404,40 @@ export function createNowPlayingHub({
   : null;
  resyncTimer?.unref?.();
 
+ // Kéo nhanh lệnh điều khiển 2 chiều từ Cloudflare Worker (~1.8s/lần CHỈ KHI có mã PIN /webkey đang hoạt động; bình thường tốn 0 băng thông!).
+ const remoteDrainTimer = remoteDrainUrl
+  ? setInterval(async () => {
+     if (outboundPushPaused || remoteDrainBusy) return;
+     if (!webRemote?.hasActivePins?.() || typeof onRemoteCommand !== 'function') return;
+     if (Date.now() < remoteDrainUnsupportedUntil) return;
+     remoteDrainBusy = true;
+     try {
+      const headers = { 'Content-Type': 'application/json' };
+      if (pushSecret) headers.Authorization = `Bearer ${pushSecret}`;
+      if (ownerProof) headers['X-Bot-Proof'] = ownerProof;
+      const res = await fetchImpl(remoteDrainUrl, {
+       method: 'POST',
+       headers,
+       body: '{}',
+       signal: AbortSignal.timeout(3500),
+      });
+      if (res?.status === 404) {
+       remoteDrainUnsupportedUntil = Date.now() + 180_000;
+       return;
+      }
+      if (!res?.ok) return;
+      const data = await res.json().catch(() => null);
+      if (Array.isArray(data?.commands) && data.commands.length > 0) {
+       await dispatchRemoteCommands(data.commands);
+      }
+     } catch {
+     } finally {
+      remoteDrainBusy = false;
+     }
+    }, 1800)
+  : null;
+ remoteDrainTimer?.unref?.();
+
  function publish(overrides = {}, { immediatePush = false, clearRemoteSession = false } = {}) {
   lastOverrides = overrides;
   if (clearRemoteSession) explicitSealClear = true;
@@ -398,7 +465,7 @@ export function createNowPlayingHub({
 
  function applyCors(_req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
  }
@@ -416,6 +483,64 @@ export function createNowPlayingHub({
 
   app.options('/api/now-playing', (req, res) => { applyCors(req, res); res.status(204).end(); });
   app.options('/api/now-playing/events', (req, res) => { applyCors(req, res); res.status(204).end(); });
+  app.options('/api/remote-command', (req, res) => { applyCors(req, res); res.status(204).end(); });
+
+  // API điều khiển nhạc 2 chiều trực tiếp trên Express (bảo vệ bằng mã PIN 6 số /webkey + giới hạn chống dò mã).
+  app.post('/api/remote-command', (req, res) => {
+   applyCors(req, res);
+   if (!webRemote || typeof onRemoteCommand !== 'function') {
+    res.status(503).json({ ok: false, error: 'Chế độ điều khiển từ xa chưa sẵn sàng.' });
+    return;
+   }
+   let rawBody = '';
+   let aborted = false;
+   req.on('data', chunk => {
+    if (aborted) return;
+    rawBody += chunk.toString('utf8');
+    if (rawBody.length > 4096) {
+     aborted = true;
+     res.status(413).json({ ok: false, error: 'Dữ liệu gửi lên quá lớn.' });
+    }
+   });
+   req.on('end', async () => {
+    if (aborted) return;
+    let body = null;
+    try {
+     body = rawBody ? JSON.parse(rawBody) : null;
+    } catch {
+     res.status(400).json({ ok: false, error: 'Định dạng JSON không hợp lệ.' });
+     return;
+    }
+    const clientIp = String(req.headers?.['x-forwarded-for'] ?? req.socket?.remoteAddress ?? 'local').split(',')[0].trim();
+    const verified = webRemote.verifyPin(body?.pin, clientIp);
+    if (!verified.ok) {
+     res.status(verified.locked ? 429 : 401).json({ ok: false, error: verified.error });
+     return;
+    }
+    let cmd;
+    try {
+     cmd = normalizeRemoteCommandInput(body);
+    } catch (err) {
+     res.status(400).json({ ok: false, error: err?.message ?? 'Lệnh không hợp lệ.' });
+     return;
+    }
+    if (cmd.action === 'verify') {
+     res.status(200).json({ ok: true, role: verified.role, expiresAt: verified.expiresAt });
+     return;
+    }
+    try {
+     const result = await onRemoteCommand({
+      id: randomUUID(),
+      ...cmd,
+      role: verified.role,
+      userId: verified.userId,
+     });
+     res.status(200).json({ ok: true, executed: true, role: verified.role, ...(result ?? {}) });
+    } catch (err) {
+     res.status(403).json({ ok: false, error: err?.message ?? 'Không thể thực thi thao tác này.' });
+    }
+   });
+  });
 
   // Giao diện Website "Now Playing" kiểu Ziji V10.
   app.get('/', (_req, res) => {
@@ -458,6 +583,7 @@ export function createNowPlayingHub({
  function close() {
   clearInterval(heartbeatTimer);
   if (resyncTimer) clearInterval(resyncTimer);
+  if (remoteDrainTimer) clearInterval(remoteDrainTimer);
   if (pushTimer) {
    clearTimeout(pushTimer);
    pushTimer = null;

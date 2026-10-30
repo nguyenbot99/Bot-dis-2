@@ -1087,6 +1087,176 @@
       color: #f9a8d4;
     }
 
+    .karaoke-text-wrap {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
+    }
+
+    .karaoke-phonetic {
+      font-size: 0.76rem;
+      font-weight: 600;
+      color: rgba(165, 243, 252, 0.62);
+      font-style: italic;
+      line-height: 1.32;
+    }
+
+    .karaoke-line.active .karaoke-phonetic {
+      color: #67e8f9;
+      font-size: 0.82rem;
+    }
+
+    .stage-phonetic-sub {
+      display: block;
+      margin-top: 5px;
+      font-size: 0.56em;
+      font-weight: 600;
+      color: rgba(165, 243, 252, 0.78);
+      font-style: italic;
+      letter-spacing: 0.01em;
+    }
+
+    .lyrics-hdr-btns {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .lyrics-stage-mini-btn.active,
+    .stage-ctrl-btn.active {
+      background: rgba(56, 189, 248, 0.26);
+      border-color: rgba(56, 189, 248, 0.65);
+      color: #e0f2fe;
+    }
+
+    /* Bảng Điều Khiển Bot 2 Chiều từ Website (/webkey) */
+    .remote-box {
+      display: flex;
+      flex-direction: column;
+      gap: 11px;
+      padding: 4px 2px;
+    }
+
+    .remote-card {
+      padding: 12px;
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(255, 255, 255, 0.09);
+      display: flex;
+      flex-direction: column;
+      gap: 9px;
+    }
+
+    .remote-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 0.78rem;
+      font-weight: 700;
+      color: #e2e8f0;
+    }
+
+    .remote-role-pill {
+      padding: 3px 9px;
+      border-radius: 999px;
+      font-size: 0.7rem;
+      font-weight: 800;
+      background: rgba(34, 197, 94, 0.18);
+      border: 1px solid rgba(34, 197, 94, 0.42);
+      color: #86efac;
+    }
+
+    .remote-input-row {
+      display: flex;
+      gap: 7px;
+      align-items: center;
+    }
+
+    .remote-input {
+      flex: 1;
+      min-width: 0;
+      padding: 9px 11px;
+      border-radius: 10px;
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      background: rgba(9, 11, 19, 0.72);
+      color: #ffffff;
+      font-size: 0.84rem;
+      outline: none;
+    }
+
+    .remote-input:focus {
+      border-color: rgba(139, 92, 246, 0.75);
+    }
+
+    .remote-pin-input {
+      letter-spacing: 0.25em;
+      font-weight: 800;
+      text-align: center;
+      font-size: 0.96rem;
+    }
+
+    .remote-btn-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 7px;
+    }
+
+    .remote-chip-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .remote-act-btn {
+      padding: 8px 9px;
+      border-radius: 10px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      background: rgba(255, 255, 255, 0.06);
+      color: #f8fafc;
+      font-size: 0.76rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: background 0.15s ease, border-color 0.15s ease, transform 0.12s ease;
+    }
+
+    .remote-act-btn:hover {
+      background: rgba(139, 92, 246, 0.24);
+      border-color: rgba(139, 92, 246, 0.52);
+    }
+
+    .remote-act-btn.active {
+      background: linear-gradient(135deg, rgba(139, 92, 246, 0.42), rgba(236, 72, 153, 0.32));
+      border-color: rgba(244, 114, 182, 0.7);
+      color: #ffffff;
+    }
+
+    .remote-primary-btn {
+      padding: 9px 13px;
+      border-radius: 10px;
+      border: 1px solid rgba(139, 92, 246, 0.6);
+      background: linear-gradient(135deg, #8b5cf6, #ec4899);
+      color: #ffffff;
+      font-size: 0.8rem;
+      font-weight: 800;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .remote-toast {
+      font-size: 0.75rem;
+      font-weight: 600;
+      min-height: 1.2em;
+      color: #a5f3fc;
+      line-height: 1.4;
+    }
+
+    .remote-toast.err {
+      color: #fda4af;
+    }
+
     .plain-lyrics-box {
       white-space: pre-wrap;
       word-break: break-word;
@@ -1601,6 +1771,7 @@
           <button id="tabLyricsBtn" class="tab-btn" type="button">🎤 Karaoke</button>
           <button id="tabQueueBtn" class="tab-btn active" type="button">Sắp phát (0)</button>
           <button id="tabHistoryBtn" class="tab-btn" type="button">Vừa phát (0)</button>
+          <button id="tabRemoteBtn" class="tab-btn" type="button">🎛️ Điều khiển</button>
         </div>
         <div id="trackList" class="track-list">
           <div class="empty-list">Hàng đợi hiện đang trống.<br/>Khi thêm bài bằng <strong>/play</strong>, danh sách sẽ tự hiện tại đây.</div>
@@ -1624,6 +1795,7 @@
         <span id="stageSoundBadge">• Rõ nét HD</span>
       </div>
       <div class="stage-controls">
+        <button id="stagePhoneticBtn" class="stage-ctrl-btn active" type="button">🔤 Phiên âm: Bật</button>
         <button id="stageListenBtn" class="stage-ctrl-btn" type="button">🔊 Nghe cùng Bot</button>
         <button id="stageFullscreenBtn" class="stage-ctrl-btn" type="button">⛶ Toàn màn hình</button>
         <button id="stageCloseBtn" class="stage-ctrl-btn" type="button">✕ Đóng (Esc)</button>
@@ -1747,10 +1919,12 @@
         tabLyricsBtn: document.getElementById("tabLyricsBtn"),
         tabQueueBtn: document.getElementById("tabQueueBtn"),
         tabHistoryBtn: document.getElementById("tabHistoryBtn"),
+        tabRemoteBtn: document.getElementById("tabRemoteBtn"),
         trackList: document.getElementById("trackList"),
         stageOverlay: document.getElementById("stageOverlay"),
         stageBackdrop: document.getElementById("stageBackdrop"),
         stageSoundBadge: document.getElementById("stageSoundBadge"),
+        stagePhoneticBtn: document.getElementById("stagePhoneticBtn"),
         stageListenBtn: document.getElementById("stageListenBtn"),
         stageFullscreenBtn: document.getElementById("stageFullscreenBtn"),
         stageCloseBtn: document.getElementById("stageCloseBtn"),
@@ -2635,6 +2809,237 @@
       let stageLineEls = [];
       let activeStageIdx = -1;
 
+      // Bộ chuyển đổi Phiên âm Hát theo (Hàn Hangul & Nhật Kana -> Romaji) chạy 100% trên trình duyệt, tốn 0 MB RAM của Bot!
+      let phoneticMode = true;
+      try {
+        const savedPh = localStorage.getItem("bd_phonetic_on");
+        if (savedPh === "0") phoneticMode = false;
+      } catch {}
+
+      const KR_INITIALS = ["g","kk","n","d","tt","r","m","b","pp","s","ss","","j","jj","ch","k","t","p","h"];
+      const KR_MEDIALS = ["a","ae","ya","yae","eo","e","yeo","ye","o","wa","wae","oe","yo","u","wo","we","wi","yu","eu","ui","i"];
+      const KR_FINALS = ["","k","k","ks","n","nj","nh","t","l","lg","lm","lb","ls","lt","lp","lh","m","p","ps","t","t","ng","t","t","k","t","p","t"];
+
+      const JP_DIGRAPHS = {
+        "きゃ":"kya","きゅ":"kyu","きょ":"kyo","しゃ":"sha","しゅ":"shu","しょ":"sho",
+        "ちゃ":"cha","ちゅ":"chu","ちょ":"cho","にゃ":"nya","にゅ":"nyu","にょ":"nyo",
+        "ひゃ":"hya","ひゅ":"hyu","ひょ":"hyo","みゃ":"mya","みゅ":"myu","みょ":"myo",
+        "りゃ":"rya","りゅ":"ryu","りょ":"ryo","ぎゃ":"gya","ぎゅ":"gyu","ぎょ":"gyo",
+        "じゃ":"ja","じゅ":"ju","じょ":"jo","びゃ":"bya","びゅ":"byu","びょ":"byo",
+        "ぴゃ":"pya","ぴゅ":"pyu","ぴょ":"pyo","ふぁ":"fa","ふぃ":"fi","ふぇ":"fe","ふぉ":"fo",
+        "てぃ":"ti","でぃ":"di","うぃ":"wi","うぇ":"we","うぉ":"wo","ゔぁ":"va","ゔぃ":"vi","ゔぇ":"ve","ゔぉ":"vo"
+      };
+      const JP_MONO = {
+        "あ":"a","い":"i","う":"u","え":"e","お":"o",
+        "か":"ka","き":"ki","く":"ku","け":"ke","こ":"ko",
+        "さ":"sa","し":"shi","す":"su","せ":"se","そ":"so",
+        "た":"ta","ち":"chi","つ":"tsu","て":"te","と":"to",
+        "な":"na","に":"ni","ぬ":"nu","ね":"ne","の":"no",
+        "は":"ha","ひ":"hi","ふ":"fu","へ":"he","ほ":"ho",
+        "ま":"ma","み":"mi","む":"mu","め":"me","も":"mo",
+        "や":"ya","ゆ":"yu","よ":"yo",
+        "ら":"ra","り":"ri","る":"ru","れ":"re","ろ":"ro",
+        "わ":"wa","ゐ":"wi","ゑ":"we","を":"wo","ん":"n",
+        "が":"ga","ぎ":"gi","ぐ":"gu","げ":"ge","ご":"go",
+        "ざ":"za","じ":"ji","ず":"zu","ぜ":"ze","ぞ":"zo",
+        "だ":"da","ぢ":"ji","づ":"zu","で":"de","ど":"do",
+        "ば":"ba","び":"bi","ぶ":"bu","べ":"be","ぼ":"bo",
+        "ぱ":"pa","ぴ":"pi","ぷ":"pu","ぺ":"pe","ぽ":"po",
+        "ぁ":"a","ぃ":"i","ぅ":"u","ぇ":"e","ぉ":"o","ゃ":"ya","ゅ":"yu","ょ":"yo","ゔ":"vu"
+      };
+
+      function kataToHira(str) {
+        let out = "";
+        for (let i = 0; i < str.length; i++) {
+          const c = str.charCodeAt(i);
+          if (c >= 0x30A1 && c <= 0x30F6) out += String.fromCharCode(c - 0x60);
+          else out += str[i];
+        }
+        return out;
+      }
+
+      function transliterateSingAlong(rawLine) {
+        if (!phoneticMode || typeof rawLine !== "string" || !rawLine.trim()) return "";
+        if (!/[\uAC00-\uD7A3\u3040-\u309F\u30A0-\u30FF]/.test(rawLine)) return "";
+        const norm = kataToHira(rawLine);
+        let out = "";
+        let sokuon = false;
+        let prevWasHangul = false;
+
+        for (let i = 0; i < norm.length; i++) {
+          const code = norm.charCodeAt(i);
+
+          // 1. Âm tiết tiếng Hàn Hangul (toán học Unicode chuẩn Revised Romanization)
+          if (code >= 0xAC00 && code <= 0xD7A3) {
+            const idx = code - 0xAC00;
+            const ini = Math.floor(idx / 588);
+            const med = Math.floor((idx % 588) / 28);
+            const fin = idx % 28;
+            if (prevWasHangul) out += " ";
+            out += KR_INITIALS[ini] + KR_MEDIALS[med] + KR_FINALS[fin];
+            prevWasHangul = true;
+            sokuon = false;
+            continue;
+          }
+          prevWasHangul = false;
+
+          // 2. Âm ngắt Nhật っ (nhân đôi phụ âm đứng sau)
+          if (norm[i] === "っ") {
+            sokuon = true;
+            continue;
+          }
+
+          // 3. Trường âm ー (kéo dài nguyên âm đứng trước)
+          if (norm[i] === "ー") {
+            const m = out.match(/[aeiou]$/);
+            if (m) out += m[0];
+            continue;
+          }
+
+          // 4. Âm ghép 2 ký tự Hiragana (きゃ, しゃ, ちゃ...)
+          const pair = norm.slice(i, i + 2);
+          if (pair.length === 2 && JP_DIGRAPHS[pair]) {
+            const rom = JP_DIGRAPHS[pair];
+            if (sokuon && /^[bcdfghjklmnpqrstvwxyz]/.test(rom)) {
+              out += (rom.startsWith("ch") ? "t" : rom[0]) + rom;
+            } else {
+              out += rom;
+            }
+            sokuon = false;
+            if (norm[i + 2] !== "っ" && norm[i + 2] !== "ー") out += " ";
+            i++;
+            continue;
+          }
+
+          // 5. Âm đơn Hiragana
+          if (JP_MONO[norm[i]]) {
+            const rom = JP_MONO[norm[i]];
+            if (sokuon && /^[bcdfghjklmnpqrstvwxyz]/.test(rom)) {
+              out += (rom.startsWith("ch") ? "t" : rom[0]) + rom;
+            } else {
+              out += rom;
+            }
+            sokuon = false;
+            if (norm[i] !== "ん" && norm[i + 1] !== "っ" && norm[i + 1] !== "ー") out += " ";
+            continue;
+          }
+
+          sokuon = false;
+          out += rawLine[i];
+        }
+        return out.replace(/\s+/g, " ").trim();
+      }
+
+      function syncPhoneticBtnUi() {
+        if (els.stagePhoneticBtn) {
+          els.stagePhoneticBtn.textContent = phoneticMode ? "🔤 Phiên âm: Bật" : "🔤 Phiên âm: Tắt";
+          els.stagePhoneticBtn.classList.toggle("active", phoneticMode);
+        }
+      }
+
+      function togglePhoneticMode() {
+        phoneticMode = !phoneticMode;
+        try { localStorage.setItem("bd_phonetic_on", phoneticMode ? "1" : "0"); } catch {}
+        syncPhoneticBtnUi();
+        renderedLyricsKey = "";
+        renderedStageLyricsKey = "";
+        renderSideList();
+        renderStageLyrics();
+      }
+
+      syncPhoneticBtnUi();
+      if (els.stagePhoneticBtn) {
+        els.stagePhoneticBtn.addEventListener("click", togglePhoneticMode);
+      }
+
+      // Trạng thái Điều Khiển Bot 2 Chiều từ Website (/webkey)
+      let remotePin = "";
+      let remoteRole = "";
+      try {
+        remotePin = sessionStorage.getItem("bd_remote_pin") || "";
+        remoteRole = sessionStorage.getItem("bd_remote_role") || "";
+      } catch {}
+      let renderedRemoteMode = "";
+      let remoteToastMsg = "";
+      let remoteToastErr = false;
+
+      async function callRemoteApi(payload) {
+        const endpoint = (rawBase || "") + "/api/remote-command";
+        const res = await fetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (res.status === 404) {
+          throw new Error("Worker đám mây đang chạy bản cũ chưa bật /api/remote-command — hãy chạy npx wrangler deploy trong thư mục cloudflare-worker (hoặc mở trực tiếp cổng HTTP của bot) nhé!");
+        }
+        const data = await res.json().catch(function () { return null; });
+        if (!res.ok || !data?.ok) {
+          if (res.status === 401 && payload.action !== "verify") {
+            remotePin = "";
+            remoteRole = "";
+            try {
+              sessionStorage.removeItem("bd_remote_pin");
+              sessionStorage.removeItem("bd_remote_role");
+            } catch {}
+            renderedRemoteMode = "";
+          }
+          throw new Error(data?.error || "Không gửi được lệnh điều khiển lúc này.");
+        }
+        return data;
+      }
+
+      function setRemoteToast(msg, isErr) {
+        remoteToastMsg = msg || "";
+        remoteToastErr = Boolean(isErr);
+        const toastEl = document.getElementById("remoteToastEl");
+        if (toastEl) {
+          toastEl.textContent = remoteToastMsg;
+          toastEl.classList.toggle("err", remoteToastErr);
+        }
+      }
+
+      async function sendRemoteAction(action, value, playNext) {
+        if (!remotePin) return;
+        setRemoteToast("⏳ Đang gửi lệnh tới Bot Discord...", false);
+        try {
+          const data = await callRemoteApi({
+            pin: remotePin,
+            action: action,
+            value: value ?? null,
+            playNext: Boolean(playNext),
+          });
+          setRemoteToast(
+            data.message || "✅ Đã gửi lệnh điều khiển tới phòng thoại Discord (~1s)!",
+            false
+          );
+        } catch (err) {
+          setRemoteToast("⚠️ " + (err?.message || "Lỗi điều khiển"), true);
+          if (!remotePin && activeTab === "remote") renderSideList();
+        }
+      }
+
+      function syncRemoteHighlightsInPlace() {
+        const st = latestState?.settings || {};
+        document.querySelectorAll("[data-rm-preset]").forEach(function (btn) {
+          btn.classList.toggle("active", (st.soundPreset || "hd") === btn.getAttribute("data-rm-preset"));
+        });
+        document.querySelectorAll("[data-rm-vibe]").forEach(function (btn) {
+          btn.classList.toggle("active", (st.vibeMode || "normal") === btn.getAttribute("data-rm-vibe"));
+        });
+        document.querySelectorAll("[data-rm-amb]").forEach(function (btn) {
+          btn.classList.toggle("active", (st.ambientMode || "off") === btn.getAttribute("data-rm-amb"));
+        });
+        const pauseBtn = document.getElementById("rmTogglePauseBtn");
+        if (pauseBtn) {
+          pauseBtn.textContent = latestState?.status === "paused" ? "▶️ Tiếp tục" : "⏸️ Tạm dừng";
+        }
+        const volBadge = document.getElementById("rmBotVolBadge");
+        if (volBadge) {
+          volBadge.textContent = (st.volume ?? 100) + "%";
+        }
+      }
+
       function getEffectiveKaraokePositionMs() {
         if (isListening && els.audio && !els.audio.paused && Number.isFinite(els.audio.currentTime) && els.audio.currentTime > 0) {
           return Math.round(els.audio.currentTime * 1000);
@@ -2732,7 +3137,14 @@
           lyricsObj.synced.forEach(function (line) {
             const row = document.createElement("div");
             row.className = "stage-lyric-line";
-            row.textContent = line.text;
+            row.appendChild(document.createTextNode(line.text));
+            const romaji = transliterateSingAlong(line.text);
+            if (romaji) {
+              const sub = document.createElement("span");
+              sub.className = "stage-phonetic-sub";
+              sub.textContent = romaji;
+              row.appendChild(sub);
+            }
             els.stageLyricsBox.appendChild(row);
             stageLineEls.push(row);
           });
@@ -3135,11 +3547,264 @@
         els.tabLyricsBtn.classList.toggle("active", activeTab === "lyrics");
         els.tabQueueBtn.classList.toggle("active", activeTab === "queue");
         els.tabHistoryBtn.classList.toggle("active", activeTab === "history");
+        els.tabRemoteBtn.classList.toggle("active", activeTab === "remote");
+        els.tabRemoteBtn.textContent = remotePin ? "🎛️ Điều khiển • Mở" : "🎛️ Điều khiển";
+
+        if (activeTab === "remote") {
+          renderedLyricsKey = "";
+          karaokeLineEls = [];
+          activeKaraokeIdx = -1;
+          const wantMode = remotePin ? ("unlocked:" + remoteRole) : "locked";
+          if (renderedRemoteMode === wantMode && els.trackList.querySelector(".remote-box")) {
+            syncRemoteHighlightsInPlace();
+            return;
+          }
+          renderedRemoteMode = wantMode;
+          els.trackList.replaceChildren();
+
+          const wrap = document.createElement("div");
+          wrap.className = "remote-box";
+
+          if (!remotePin) {
+            const lockCard = document.createElement("div");
+            lockCard.className = "remote-card";
+            const head = document.createElement("div");
+            head.className = "remote-head";
+            head.textContent = "🔐 Mở khóa Điều khiển Bot 2 Chiều";
+            lockCard.appendChild(head);
+
+            const guide = document.createElement("div");
+            guide.style.fontSize = "0.78rem";
+            guide.style.color = "rgba(226,232,240,0.82)";
+            guide.style.lineHeight = "1.5";
+            guide.innerHTML = latestState?.remoteControl?.enabled
+              ? "Phòng nhạc hiện <strong>đã bật mã PIN điều khiển</strong>! Nhập mã 6 số từ lệnh <code>/webkey</code> trong Discord để thêm bài, qua bài, chỉnh âm lượng 200% & đổi Vibe ngay trên Web."
+              : "Gõ lệnh <code>/webkey</code> trong kênh chat Discord để nhận <strong>mã PIN 6 số bí mật</strong> (dành cho Chủ Bot hoặc người đang cầm bài), sau đó nhập vào ô dưới đây:";
+            lockCard.appendChild(guide);
+
+            const row = document.createElement("div");
+            row.className = "remote-input-row";
+            const pinIn = document.createElement("input");
+            pinIn.type = "password";
+            pinIn.inputMode = "numeric";
+            pinIn.maxLength = 6;
+            pinIn.placeholder = "••••••";
+            pinIn.className = "remote-input remote-pin-input";
+            const unlockBtn = document.createElement("button");
+            unlockBtn.type = "button";
+            unlockBtn.className = "remote-primary-btn";
+            unlockBtn.textContent = "🔓 Mở khóa";
+
+            const doVerify = async function () {
+              const val = pinIn.value.trim();
+              if (!/^\d{6}$/.test(val)) {
+                setRemoteToast("⚠️ Hãy nhập đúng 6 chữ số từ lệnh /webkey trong Discord.", true);
+                return;
+              }
+              setRemoteToast("⏳ Đang xác thực mã PIN...", false);
+              try {
+                const res = await callRemoteApi({ pin: val, action: "verify" });
+                remotePin = val;
+                remoteRole = res.role || "dj";
+                try {
+                  sessionStorage.setItem("bd_remote_pin", remotePin);
+                  sessionStorage.setItem("bd_remote_role", remoteRole);
+                } catch {}
+                renderedRemoteMode = "";
+                remoteToastMsg = "✅ Đã mở khóa Bảng Điều Khiển 2 Chiều!";
+                remoteToastErr = false;
+                renderSideList();
+              } catch (err) {
+                setRemoteToast("⚠️ " + (err?.message || "Mã PIN không hợp lệ."), true);
+              }
+            };
+            unlockBtn.addEventListener("click", function () { void doVerify(); });
+            pinIn.addEventListener("keydown", function (e) { if (e.key === "Enter") void doVerify(); });
+            row.appendChild(pinIn);
+            row.appendChild(unlockBtn);
+            lockCard.appendChild(row);
+
+            const toast = document.createElement("div");
+            toast.id = "remoteToastEl";
+            toast.className = "remote-toast" + (remoteToastErr ? " err" : "");
+            toast.textContent = remoteToastMsg;
+            lockCard.appendChild(toast);
+
+            wrap.appendChild(lockCard);
+            els.trackList.appendChild(wrap);
+            return;
+          }
+
+          // Giao diện khi ĐÃ MỞ KHÓA bằng mã PIN /webkey
+          const topCard = document.createElement("div");
+          topCard.className = "remote-card";
+          const topHead = document.createElement("div");
+          topHead.className = "remote-head";
+          const badge = document.createElement("span");
+          badge.className = "remote-role-pill";
+          badge.textContent = remoteRole === "owner" ? "👑 Quyền Chủ Bot" : "🎧 Quyền DJ Hiện Tại";
+          const lockOutBtn = document.createElement("button");
+          lockOutBtn.type = "button";
+          lockOutBtn.className = "lyrics-stage-mini-btn";
+          lockOutBtn.textContent = "🔒 Khóa lại";
+          lockOutBtn.addEventListener("click", function () {
+            remotePin = "";
+            remoteRole = "";
+            try {
+              sessionStorage.removeItem("bd_remote_pin");
+              sessionStorage.removeItem("bd_remote_role");
+            } catch {}
+            renderedRemoteMode = "";
+            remoteToastMsg = "";
+            renderSideList();
+          });
+          topHead.appendChild(badge);
+          topHead.appendChild(lockOutBtn);
+          topCard.appendChild(topHead);
+
+          // Ô tìm & thêm bài hát trực tiếp vào phòng Discord
+          const addRow = document.createElement("div");
+          addRow.className = "remote-input-row";
+          const songIn = document.createElement("input");
+          songIn.type = "text";
+          songIn.maxLength = 280;
+          songIn.placeholder = "Tên bài hát hoặc link nhạc cần thêm...";
+          songIn.className = "remote-input";
+          const addBtn = document.createElement("button");
+          addBtn.type = "button";
+          addBtn.className = "remote-primary-btn";
+          addBtn.textContent = "➕ Phát";
+          const submitSong = function () {
+            const q = songIn.value.trim();
+            if (q.length < 2) {
+              setRemoteToast("⚠️ Nhập tên bài hoặc link nhạc trước khi bấm Phát nhé!", true);
+              return;
+            }
+            songIn.value = "";
+            void sendRemoteAction("play", q, false);
+          };
+          addBtn.addEventListener("click", submitSong);
+          songIn.addEventListener("keydown", function (e) { if (e.key === "Enter") submitSong(); });
+          addRow.appendChild(songIn);
+          addRow.appendChild(addBtn);
+          topCard.appendChild(addRow);
+
+          const toast = document.createElement("div");
+          toast.id = "remoteToastEl";
+          toast.className = "remote-toast" + (remoteToastErr ? " err" : "");
+          toast.textContent = remoteToastMsg || "✨ Mọi nút bấm dưới đây điều khiển trực tiếp phòng thoại Discord.";
+          topCard.appendChild(toast);
+          wrap.appendChild(topCard);
+
+          // Cụm nút điều khiển phát nhạc
+          const ctrlCard = document.createElement("div");
+          ctrlCard.className = "remote-card";
+          const ctrlGrid = document.createElement("div");
+          ctrlGrid.className = "remote-btn-grid";
+          [
+            ["⏮️ Bài trước", "previous", null, ""],
+            [latestState?.status === "paused" ? "▶️ Tiếp tục" : "⏸️ Tạm dừng", "toggle_pause", null, "rmTogglePauseBtn"],
+            ["⏭️ Qua bài", "skip", null, ""],
+            ["⏪ Về 0:00", "replay", null, ""],
+            ["🔀 Trộn bài", "shuffle", null, ""],
+            ["🔁 Đổi lặp", "loop", null, ""],
+          ].forEach(function (cfg) {
+            const b = document.createElement("button");
+            b.type = "button";
+            b.className = "remote-act-btn";
+            if (cfg[3]) b.id = cfg[3];
+            b.textContent = cfg[0];
+            b.addEventListener("click", function () { void sendRemoteAction(cfg[1], cfg[2]); });
+            ctrlGrid.appendChild(b);
+          });
+          ctrlCard.appendChild(ctrlGrid);
+
+          // Thanh âm lượng phòng thoại Bot 0% - 200%
+          const volRow = document.createElement("div");
+          volRow.className = "remote-input-row";
+          const volTitle = document.createElement("span");
+          volTitle.style.fontSize = "0.75rem";
+          volTitle.style.fontWeight = "700";
+          volTitle.textContent = "🔊 Bot:";
+          const volSlider = document.createElement("input");
+          volSlider.type = "range";
+          volSlider.min = "0";
+          volSlider.max = "200";
+          volSlider.step = "5";
+          volSlider.value = String(latestState?.settings?.volume ?? 100);
+          volSlider.style.flex = "1";
+          const volBadge = document.createElement("span");
+          volBadge.id = "rmBotVolBadge";
+          volBadge.style.fontSize = "0.76rem";
+          volBadge.style.fontWeight = "800";
+          volBadge.style.minWidth = "38px";
+          volBadge.textContent = volSlider.value + "%";
+          volSlider.addEventListener("input", function () { volBadge.textContent = volSlider.value + "%"; });
+          volSlider.addEventListener("change", function () { void sendRemoteAction("volume", Number(volSlider.value)); });
+          volRow.appendChild(volTitle);
+          volRow.appendChild(volSlider);
+          volRow.appendChild(volBadge);
+          ctrlCard.appendChild(volRow);
+          wrap.appendChild(ctrlCard);
+
+          // Cụm Vibe + Studio EQ + Thiên nhiên nền
+          const dspCard = document.createElement("div");
+          dspCard.className = "remote-card";
+          const dspHead = document.createElement("div");
+          dspHead.className = "remote-head";
+          dspHead.textContent = "🎚️ Đổi Chất âm, Vibe & Tiếng Nền Phòng Thoại";
+          dspCard.appendChild(dspHead);
+
+          const presetRow = document.createElement("div");
+          presetRow.className = "remote-chip-grid";
+          [["hd","✨ HD"],["vocal","🎤 Rõ lời"],["bass","🔥 Bass"],["8d","🌀 8D"],["flat","🎚️ Gốc"]].forEach(function (it) {
+            const b = document.createElement("button");
+            b.type = "button";
+            b.className = "remote-act-btn";
+            b.setAttribute("data-rm-preset", it[0]);
+            b.textContent = it[1];
+            b.addEventListener("click", function () { void sendRemoteAction("preset", it[0]); });
+            presetRow.appendChild(b);
+          });
+          dspCard.appendChild(presetRow);
+
+          const vibeRow = document.createElement("div");
+          vibeRow.className = "remote-chip-grid";
+          [["normal","💿 Chuẩn"],["nightcore","⚡ Nightcore"],["slowed","🌙 Slowed"],["lofi","📻 Lo-Fi"]].forEach(function (it) {
+            const b = document.createElement("button");
+            b.type = "button";
+            b.className = "remote-act-btn";
+            b.setAttribute("data-rm-vibe", it[0]);
+            b.textContent = it[1];
+            b.addEventListener("click", function () { void sendRemoteAction("vibe", it[0]); });
+            vibeRow.appendChild(b);
+          });
+          dspCard.appendChild(vibeRow);
+
+          const ambRow = document.createElement("div");
+          ambRow.className = "remote-chip-grid";
+          [["off","🔇 Tắt nền"],["rain","🌧️ Mưa"],["fire","🔥 Lửa"],["ocean","🌊 Biển"],["wind","🍃 Gió"]].forEach(function (it) {
+            const b = document.createElement("button");
+            b.type = "button";
+            b.className = "remote-act-btn";
+            b.setAttribute("data-rm-amb", it[0]);
+            b.textContent = it[1];
+            b.addEventListener("click", function () { void sendRemoteAction("ambient", it[0]); });
+            ambRow.appendChild(b);
+          });
+          dspCard.appendChild(ambRow);
+
+          wrap.appendChild(dspCard);
+          els.trackList.appendChild(wrap);
+          syncRemoteHighlightsInPlace();
+          return;
+        }
+        renderedRemoteMode = "";
 
         if (activeTab === "lyrics") {
           const curTrack = latestState?.track;
           const nextLyricsKey = curTrack
-            ? (curTrack.url || curTrack.title || "") + "|" + (hasSynced ? "S" + lyricsObj.synced.length : hasPlain ? "P" + lyricsObj.plain.length : "none")
+            ? (curTrack.url || curTrack.title || "") + "|" + (phoneticMode ? "PH1" : "PH0") + "|" + (hasSynced ? "S" + lyricsObj.synced.length : hasPlain ? "P" + lyricsObj.plain.length : "none")
             : "idle";
           if (renderedLyricsKey === nextLyricsKey) {
             syncKaraokeHighlight(false);
@@ -3162,14 +3827,26 @@
             const header = document.createElement("div");
             header.className = "lyrics-header-tag";
             const hdrText = document.createElement("span");
-            hdrText.textContent = "✨ Karaoke tự cuộn • " + (lyricsObj.source || "LRCLIB");
+            hdrText.textContent = "✨ Karaoke • " + (lyricsObj.source || "LRCLIB");
+            const btnGroup = document.createElement("div");
+            btnGroup.className = "lyrics-hdr-btns";
+
+            const phBtn = document.createElement("button");
+            phBtn.type = "button";
+            phBtn.className = "lyrics-stage-mini-btn" + (phoneticMode ? " active" : "");
+            phBtn.textContent = phoneticMode ? "🔤 Phiên âm: Bật" : "🔤 Phiên âm: Tắt";
+            phBtn.addEventListener("click", togglePhoneticMode);
+
             const expandBtn = document.createElement("button");
             expandBtn.type = "button";
             expandBtn.className = "lyrics-stage-mini-btn";
-            expandBtn.textContent = "⛶ Phóng to Sân khấu";
+            expandBtn.textContent = "⛶ Sân khấu";
             expandBtn.addEventListener("click", openStageMode);
+
+            btnGroup.appendChild(phBtn);
+            btnGroup.appendChild(expandBtn);
             header.appendChild(hdrText);
-            header.appendChild(expandBtn);
+            header.appendChild(btnGroup);
             els.trackList.appendChild(header);
 
             lyricsObj.synced.forEach(function (line) {
@@ -3178,10 +3855,20 @@
               const ts = document.createElement("span");
               ts.className = "karaoke-time";
               ts.textContent = formatTime(line.t);
+              const wrapTxt = document.createElement("div");
+              wrapTxt.className = "karaoke-text-wrap";
               const txt = document.createElement("span");
               txt.textContent = line.text;
+              wrapTxt.appendChild(txt);
+              const romaji = transliterateSingAlong(line.text);
+              if (romaji) {
+                const sub = document.createElement("span");
+                sub.className = "karaoke-phonetic";
+                sub.textContent = romaji;
+                wrapTxt.appendChild(sub);
+              }
               row.appendChild(ts);
-              row.appendChild(txt);
+              row.appendChild(wrapTxt);
               els.trackList.appendChild(row);
               karaokeLineEls.push(row);
             });
@@ -3285,6 +3972,11 @@
       els.tabHistoryBtn.addEventListener("click", function () {
         userSelectedTabManually = true;
         activeTab = "history";
+        renderSideList();
+      });
+      els.tabRemoteBtn.addEventListener("click", function () {
+        userSelectedTabManually = true;
+        activeTab = "remote";
         renderSideList();
       });
 

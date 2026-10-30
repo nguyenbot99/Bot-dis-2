@@ -10,7 +10,7 @@ import {
  resolveMusicRequest,
  validateQuery,
 } from '../src/policy.js';
-import { buildHelpEmbed, commands } from '../src/commands.js';
+import { buildHelpEmbed, commands, contextCommands, slashCommands } from '../src/commands.js';
 
 test('valid search, SoundCloud/Spotify normalization, and mobile share text extraction', () => {
  assert.equal(validateQuery(' hello '), 'hello');
@@ -146,15 +146,18 @@ test('resolveConfig works with DISCORD_TOKEN only and optional GUILD_ID', () => 
  assert.throws(() => resolveConfig({ DISCORD_TOKEN: 'abc', GUILD_ID: 'ten-server' }), /GUILD_ID không hợp lệ/);
 });
 
-test('unique guild-only commands and valid help embed covering all 38 commands', () => {
- assert.equal(new Set(commands.map(c => c.name)).size, 38);
+test('unique guild-only commands (40 slash + 2 context menu) and valid help embed covering all 40 slash commands', () => {
+ assert.equal(slashCommands.length, 40);
+ assert.equal(contextCommands.length, 2);
+ assert.equal(commands.length, 42);
+ assert.equal(new Set(commands.map(c => c.name)).size, 42);
  assert.ok(commands.every(c => c.dm_permission === false));
  const data = buildHelpEmbed({ username: 'Bắt_Don', displayAvatarURL: () => 'https://cdn.discordapp.com/embed/avatars/0.png' }).toJSON();
  assert.equal(data.color, 0x5865f2);
  assert.equal(data.fields.length, 6);
  assert.ok(data.fields.every(f => f.name.length <= 256 && f.value.length <= 1024));
  const allValues = data.fields.map(f => f.value).join('\n');
- for (const c of commands) assert.ok(allValues.includes(`\`/${c.name}\``), `missing /${c.name} in help embed`);
+ for (const c of slashCommands) assert.ok(allValues.includes(`\`/${c.name}\``), `missing /${c.name} in help embed`);
 });
 
 test('new music command options are bounded', () => {

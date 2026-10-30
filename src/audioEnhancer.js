@@ -325,6 +325,15 @@ function applyOpusMusicTuning(opusStream, bitrate) {
  safeCtl(OPUS_CTL.SET_PACKET_LOSS_PERC, 5);
 }
 
+let pendingTransitionFadeSamples = 0;
+
+// Kích hoạt vuốt êm âm lượng chuyển cảnh (Smart Smooth Fade ~360ms, 0 MB RAM, không chạy thêm FFmpeg).
+export function triggerSmoothTransitionFade(durationMs = 360) {
+ const clampedMs = Math.min(800, Math.max(40, Number(durationMs) || 360));
+ pendingTransitionFadeSamples = Math.round((clampedMs / 1000) * 48000);
+ return pendingTransitionFadeSamples;
+}
+
 // Cập nhật cấu hình chất âm (áp dụng ngay lập tức lên bài đang phát!) và mức bitrate mục tiêu của kênh thoại.
 export function setAudioEnhancement({ preset, vibe, ambient, ambientLevel, channelBitrate } = {}) {
  if (preset && SOUND_PRESETS[preset]) {
@@ -621,9 +630,22 @@ export function installAudioEnhancer(ffmpegPath) {
    this._ambSparkL = 0;
    this._ambSparkR = 0;
    this._ambPhase = 0;
+   // Vuốt êm vào bài (mặc định 45ms chống nổ lụp bụp; hoặc 360ms khi chuyển bài / tua nhạc; bỏ qua cho /sfx & /tts).
+   const initFadeSamples = this._forcePresetKey
+    ? 0
+    : (pendingTransitionFadeSamples > 0 ? pendingTransitionFadeSamples : 2160);
+   if (!this._forcePresetKey && pendingTransitionFadeSamples > 0) {
+    pendingTransitionFadeSamples = 0;
+   }
+   this._microFadeTotal = initFadeSamples;
+   this._microFadeLeft = initFadeSamples;
    this._dspCurrentGain = computePerceptualGain(this.volume);
    if (this._readableState) this._readableState.highWaterMark = LOW_LATENCY_PCM_HWM;
    if (this._writableState) this._writableState.highWaterMark = LOW_LATENCY_PCM_HWM;
+  } else if (!this._forcePresetKey && pendingTransitionFadeSamples > 0) {
+   this._microFadeTotal = pendingTransitionFadeSamples;
+   this._microFadeLeft = pendingTransitionFadeSamples;
+   pendingTransitionFadeSamples = 0;
   }
 
   const input = this._dspCarry.length > 0 ? Buffer.concat([this._dspCarry, chunk]) : chunk;
@@ -762,6 +784,8 @@ export function installAudioEnhancer(ffmpegPath) {
   let ambSparkL = this._ambSparkL;
   let ambSparkR = this._ambSparkR;
   let ambPhase = this._ambPhase;
+  let microFadeLeft = this._microFadeLeft || 0;
+  const microFadeTotal = this._microFadeTotal || 1;
   const echoFeedback = forcedEcho ? 0.42 : 0.3;
   const echoWet = forcedEcho ? 0.38 : 0.25;
 
@@ -939,13 +963,23 @@ export function installAudioEnhancer(ffmpegPath) {
     r += bedR * ambGain;
    }
 
-   const outL = softLimitSample(l * currentGain);
-   const outR = softLimitSample(r * currentGain);
+   let fadeEnv = 1;
+   if (microFadeLeft > 0) {
+    const progress = 1 - (microFadeLeft / microFadeTotal);
+    // Đường cong Sine-squared êm tai tự nhiên như bàn mixer phòng thu
+    fadeEnv = Math.sin(progress * 1.5707963267948966);
+    fadeEnv *= fadeEnv;
+    microFadeLeft--;
+   }
+
+   const outL = softLimitSample(l * currentGain * fadeEnv);
+   const outR = softLimitSample(r * currentGain * fadeEnv);
 
    this._writeInt(out, Math.max(-32768, Math.min(32767, Math.round(outL * 32767))), i);
    this._writeInt(out, Math.max(-32768, Math.min(32767, Math.round(outR * 32767))), i + 2);
   }
 
+  this._microFadeLeft = microFadeLeft;
   this._dspCurrentGain = Math.abs(targetGain - currentGain) < 1e-6 ? targetGain : currentGain;
   this._dspRampSamples = ramp;
   this._dspOrbitPhase = orbitPhase;

@@ -865,13 +865,14 @@ function applyGifCommandOptions(c, { includePrivate = true } = {}) {
   .setMaxValue(3));
  c.addStringOption(o => o
   .setName('quality')
-  .setDescription('Độ nét ảnh GIF (mặc định tự kích 720p/600p HD cao nhất vừa trần Discord)')
+  .setDescription('Độ phân giải GIF (tới 1080p Full HD 1920×1080; tự căn nét cao nhất vừa Discord)')
   .setRequired(false)
   .addChoices(
-   { name: '🔥 Siêu Cấp Ultra — 720p • 33 FPS (Nét căng như video gốc)', value: 'ultra' },
-   { name: '💎 Chuẩn Nét Cao HD — 600p • 25 FPS (Mặc định khuyên dùng)', value: 'hd' },
-   { name: '✨ Cân Bằng Mượt — 480p • 20 FPS (Hợp clip vừa 6–10s)', value: 'balanced' },
-   { name: '🪶 Nén Gọn Nhẹ — 360p • 17 FPS (Hợp clip dài 10–15s)', value: 'compact' },
+   { name: '👑 Full HD 1080p Gốc — 1920×1080 • 25 FPS (Nét kịch trần 1:1)', value: 'fhd' },
+   { name: '🔥 Chuẩn 720p HD Thực — 1280×720 • 33 FPS (Sắc nét & siêu mượt)', value: 'ultra' },
+   { name: '💎 Nét Cao 540p qHD — 960×540 • 25 FPS (Mặc định cân đối)', value: 'hd' },
+   { name: '✨ Cân Bằng 432p — 768×432 • 20 FPS (Hợp clip dài 7–12s)', value: 'balanced' },
+   { name: '🪶 Nén Gọn 360p — 640×360 • 17 FPS (Hợp clip dài 10–15s)', value: 'compact' },
   ));
  c.addIntegerOption(o => o
   .setName('fps')

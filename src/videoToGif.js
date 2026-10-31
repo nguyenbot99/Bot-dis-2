@@ -23,7 +23,7 @@ export const CONTEXT_GIF_NAME = '🎞️ Đổi video sang GIF';
 
 export const MAX_VIDEO_DOWNLOAD_BYTES = 45 * 1024 * 1024; // 45 MiB đầu vào an toàn cho container 512MB RAM
 export const MAX_DISCORD_GIF_BYTES = Math.floor(9.75 * 1024 * 1024); // 9.75 MiB (dưới trần 10 MiB mặc định của Discord & DM)
-export const BOOSTED_DISCORD_GIF_BYTES = 24 * 1024 * 1024; // 24 MiB cho máy chủ có Boost Cấp 2/3 (trần Discord 50–100 MiB)
+export const BOOSTED_DISCORD_GIF_BYTES = 35 * 1024 * 1024; // 35 MiB cho máy chủ có Boost Cấp 2/3 (trần Discord 50–100 MiB)
 export const MIN_DURATION_SEC = 0.5;
 export const MAX_DURATION_SEC = 15;
 export const DEFAULT_DURATION_SEC = 6;
@@ -33,7 +33,7 @@ export const MAX_OUTPUT_SPAN_SEC = 16;
 
 const DOWNLOAD_TIMEOUT_MS = 25_000;
 const FFMPEG_PROBE_TIMEOUT_MS = 8_000;
-const FFMPEG_RENDER_TIMEOUT_MS = 45_000;
+const FFMPEG_RENDER_TIMEOUT_MS = 75_000;
 const USER_COOLDOWN_MS = 3_500;
 const MAX_QUEUED_JOBS = 5;
 const MAX_TUNE_SESSIONS = 30;
@@ -43,25 +43,47 @@ const SAFE_FONT_DIR = path.join(os.tmpdir(), 'batdon-gif-fonts');
 
 const BUNDLED_FONT_SRC = fileURLToPath(new URL('./assets/fonts/MemeSans-Bold.ttf', import.meta.url));
 
-// Các bậc độ nét dùng hệ số FPS ước số nguyên của 100 centi-giây (50, 100/3=33.3, 25, 20, 50/3=16.7, 25/2=12.5)
-// để mọi khung hình GIF có độ trễ chẵn tuyệt đối (20ms/30ms/40ms/50ms), mượt 100% không bao giờ bị khựng nhịp!
+// Các bậc độ phân giải video thực tế (cạnh dài × cạnh ngắn chuẩn 16:9 / 9:16: 1920×1080 Full HD, 1600×900, 1280×720 HD, 960×540 qHD...)
+// kết hợp FPS ước số nguyên của 100 centi-giây (50, 100/3=33.3, 25, 20, 50/3=16.7, 25/2=12.5) để vừa nét căng vừa mượt 100%!
 export const GIF_QUALITY_PRESETS = Object.freeze({
- ultra: {
-  key: 'ultra',
-  label: 'Siêu Cấp Ultra 720p',
-  maxWidth: 720,
-  maxHeight: 820,
-  fpsExpr: '100/3',
-  fps: 33,
+ fhd: {
+  key: 'fhd',
+  label: 'Full HD 1080p Gốc (1920×1080)',
+  maxLongSide: 1920,
+  maxShortSide: 1080,
+  fpsExpr: '25',
+  fps: 25,
   sharpen: 0.5,
   maxColors: 256,
-  dither: 'sierra2_4a',
+  dither: 'bayer:bayer_scale=3',
+ },
+ hd900: {
+  key: 'hd900',
+  label: 'HD+ 900p (1600×900)',
+  maxLongSide: 1600,
+  maxShortSide: 900,
+  fpsExpr: '25',
+  fps: 25,
+  sharpen: 0.48,
+  maxColors: 256,
+  dither: 'bayer:bayer_scale=3',
+ },
+ ultra: {
+  key: 'ultra',
+  label: 'Chuẩn 720p HD (1280×720)',
+  maxLongSide: 1280,
+  maxShortSide: 720,
+  fpsExpr: '100/3',
+  fps: 33,
+  sharpen: 0.48,
+  maxColors: 256,
+  dither: 'bayer:bayer_scale=3',
  },
  hd: {
   key: 'hd',
-  label: 'Chuẩn Nét Cao HD 600p',
-  maxWidth: 600,
-  maxHeight: 700,
+  label: 'Nét Cao 540p qHD (960×540)',
+  maxLongSide: 960,
+  maxShortSide: 540,
   fpsExpr: '25',
   fps: 25,
   sharpen: 0.45,
@@ -70,9 +92,9 @@ export const GIF_QUALITY_PRESETS = Object.freeze({
  },
  balanced: {
   key: 'balanced',
-  label: 'Cân Bằng Mượt 480p',
-  maxWidth: 480,
-  maxHeight: 560,
+  label: 'Cân Bằng 432p (768×432)',
+  maxLongSide: 768,
+  maxShortSide: 432,
   fpsExpr: '20',
   fps: 20,
   sharpen: 0.35,
@@ -81,9 +103,9 @@ export const GIF_QUALITY_PRESETS = Object.freeze({
  },
  compact: {
   key: 'compact',
-  label: 'Nén Gọn Nhẹ 360p',
-  maxWidth: 360,
-  maxHeight: 430,
+  label: 'Nén Gọn 360p (640×360)',
+  maxLongSide: 640,
+  maxShortSide: 360,
   fpsExpr: '50/3',
   fps: 17,
   sharpen: 0.25,
@@ -92,9 +114,9 @@ export const GIF_QUALITY_PRESETS = Object.freeze({
  },
  ultra_compact: {
   key: 'ultra_compact',
-  label: 'Siêu Nén 280p',
-  maxWidth: 280,
-  maxHeight: 340,
+  label: 'Siêu Nén 270p (480×270)',
+  maxLongSide: 480,
+  maxShortSide: 270,
   fpsExpr: '25/2',
   fps: 12,
   sharpen: 0.2,
@@ -129,12 +151,14 @@ export function parseQualityAndFpsInput(raw, fallbackQuality = 'hd', fallbackFps
  if (!txt) return { quality: fallbackQuality, fps: fallbackFps };
 
  let quality = fallbackQuality;
- if (/\b(ultra|720p?|max|sieucap)\b/.test(txt)) quality = 'ultra';
- else if (/\b(hd|600p?|cao)\b/.test(txt)) quality = 'hd';
- else if (/\b(balanced|480p?|vua)\b/.test(txt)) quality = 'balanced';
+ if (/\b(fhd|fullhd|1080p?|goc|native)\b/.test(txt)) quality = 'fhd';
+ else if (/\b(hd900|900p?)\b/.test(txt)) quality = 'hd900';
+ else if (/\b(ultra|720p?|max|sieucap)\b/.test(txt)) quality = 'ultra';
+ else if (/\b(hd|540p?|600p?|cao)\b/.test(txt)) quality = 'hd';
+ else if (/\b(balanced|432p?|480p?|vua)\b/.test(txt)) quality = 'balanced';
  else if (/\b(compact|360p?|nhe|nho)\b/.test(txt)) quality = 'compact';
 
- const cleanedForFps = txt.replace(/\b(720p|600p|480p|360p|280p)\b/g, ' ');
+ const cleanedForFps = txt.replace(/\b(1080p|900p|720p|600p|540p|480p|432p|360p|280p|270p)\b/g, ' ');
  const fpsMatch = cleanedForFps.match(/\b(\d{1,2})(?:\s*fps)?\b/);
  const fps = fpsMatch ? resolveExactGifFps(Number(fpsMatch[1])).customFps : fallbackFps;
  return { quality, fps };
@@ -415,12 +439,14 @@ export function extractVideoFromMessage(message) {
  throw new Error('Tin nhắn này không có file video đính kèm hay link video (.mp4, .mov, .webm) để đổi sang GIF.');
 }
 
-// Tính toán kích thước đầu ra chẵn, giữ nguyên tỷ lệ khung hình cho cả video ngang 16:9, vuông 1:1 và dọc TikTok 9:16.
+// Tính toán kích thước đầu ra chẵn theo chuẩn độ phân giải thực (cạnh dài × cạnh ngắn: 1920×1080 cho 1080p, 1280×720 cho 720p, cả ngang 16:9 lẫn dọc 9:16).
 export function computeScaledDimensions(inWidth, inHeight, preset) {
- const w = Math.max(2, Number(inWidth) || 380);
- const h = Math.max(2, Number(inHeight) || 280);
- const maxW = preset?.maxWidth ?? 380;
- const maxH = preset?.maxHeight ?? 460;
+ const w = Math.max(2, Number(inWidth) || 960);
+ const h = Math.max(2, Number(inHeight) || 540);
+ const longCap = preset?.maxLongSide ?? preset?.maxWidth ?? 960;
+ const shortCap = preset?.maxShortSide ?? preset?.maxHeight ?? 540;
+ const maxW = w >= h ? longCap : shortCap;
+ const maxH = w >= h ? shortCap : longCap;
  const ratio = Math.min(1, maxW / w, maxH / h);
  const outW = Math.max(64, Math.round((w * ratio) / 2) * 2);
  const outH = Math.max(64, Math.round((h * ratio) / 2) * 2);
@@ -490,8 +516,8 @@ export function buildMemeAssConfig({ width, height, caption, captionStyle = 'bar
  }
 
  const useWhiteBar = topLines.length > 0 && captionStyle === 'bar';
- const barFontSize = Math.max(15, Math.min(44, Math.round(width * 0.056)));
- const subFontSize = Math.max(16, Math.min(46, Math.round(width * 0.06)));
+ const barFontSize = Math.max(16, Math.min(114, Math.round(width * 0.055)));
+ const subFontSize = Math.max(17, Math.min(120, Math.round(width * 0.058)));
  const lineStep = Math.round(barFontSize * 1.28);
  const padTop = useWhiteBar
   ? Math.round((topLines.length * lineStep + Math.max(18, Math.round(barFontSize * 0.85))) / 2) * 2
@@ -499,8 +525,10 @@ export function buildMemeAssConfig({ width, height, caption, captionStyle = 'bar
  const totalHeight = height + padTop;
  const barMarginV = useWhiteBar
   ? Math.max(8, Math.round((padTop - topLines.length * lineStep) / 2) + 2)
-  : 14;
- const outlinePx = Math.max(2, Math.round(subFontSize * 0.12));
+  : Math.max(14, Math.round(height * 0.032));
+ const subMarginV = Math.max(14, Math.round(height * 0.032));
+ const horizMargin = Math.max(12, Math.round(width * 0.03));
+ const outlinePx = Math.max(2, Math.round(subFontSize * 0.11));
 
  const dialogues = [];
  if (topLines.length > 0) {
@@ -523,9 +551,9 @@ export function buildMemeAssConfig({ width, height, caption, captionStyle = 'bar
   '',
   '[V4+ Styles]',
   'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
-  `Style: MemeBar,DejaVu Sans,${barFontSize},&H00111111,&H00111111,&H00FFFFFF,&H00FFFFFF,-1,0,0,0,100,100,0,0,1,0,0,8,12,12,${barMarginV},1`,
-  `Style: MemeTop,DejaVu Sans,${subFontSize},&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,${outlinePx},1,8,12,12,14,1`,
-  `Style: MemeSub,DejaVu Sans,${subFontSize},&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,${outlinePx},1,2,12,12,14,1`,
+  `Style: MemeBar,DejaVu Sans,${barFontSize},&H00111111,&H00111111,&H00FFFFFF,&H00FFFFFF,-1,0,0,0,100,100,0,0,1,0,0,8,${horizMargin},${horizMargin},${barMarginV},1`,
+  `Style: MemeTop,DejaVu Sans,${subFontSize},&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,${outlinePx},1,8,${horizMargin},${horizMargin},${subMarginV},1`,
+  `Style: MemeSub,DejaVu Sans,${subFontSize},&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,${outlinePx},1,2,${horizMargin},${horizMargin},${subMarginV},1`,
   '',
   '[Events]',
   'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
@@ -666,12 +694,12 @@ export function buildGifTuneModal(token, session = {}) {
    new ActionRowBuilder().addComponents(
     new TextInputBuilder()
      .setCustomId('gif_quality_fps')
-     .setLabel('Độ nét & FPS (ultra / hd + 20–50 FPS)')
+     .setLabel('Độ nét & FPS (1080p / 720p + 20–50 FPS)')
      .setStyle(TextInputStyle.Short)
      .setRequired(false)
      .setMaxLength(24)
      .setValue(qFpsDefault)
-     .setPlaceholder('VD: ultra 50 (720p 50FPS), ultra 33, hd 25, balanced 20'),
+     .setPlaceholder('VD: fhd 33 (1920x1080), ultra 50 (1280x720 50FPS), hd 25'),
    ),
   );
 }
@@ -1059,13 +1087,13 @@ export function createVideoToGifManager({ ffmpegPath, lookupFn = dns.lookup, fet
     ? Math.max(0.2, Math.min(opts.durationSec, probe.durationSec - opts.startSec))
     : opts.durationSec;
 
-   // Tự động kích lên 720p Ultra • 33 FPS cho các clip ngắn (<= 4s) khi người dùng để mặc định!
-   const autoPromoteUltra = !options.quality && (effectiveInputSpan / opts.speed <= 4.0);
+   // Tự động kích lên chuẩn 1280×720 HD thực (33 FPS) cho các clip <= 4.5s khi người dùng để mặc định!
+   const autoPromoteUltra = !options.quality && (effectiveInputSpan / opts.speed <= 4.5);
    const startQuality = autoPromoteUltra ? 'ultra' : opts.quality;
 
    const effectiveOpts = { ...opts, quality: startQuality, durationSec: effectiveInputSpan };
    const fontsDir = effectiveOpts.caption ? await ensureSafeFontDir() : SAFE_FONT_DIR;
-   const fullLadder = ['ultra', 'hd', 'balanced', 'compact', 'ultra_compact'];
+   const fullLadder = ['fhd', 'hd900', 'ultra', 'hd', 'balanced', 'compact', 'ultra_compact'];
    const startIdx = Math.max(0, fullLadder.indexOf(startQuality));
    const tierOrder = fullLadder.slice(startIdx);
 

@@ -2396,13 +2396,20 @@ async function handleGifComponent(i) {
    throw new Error('Không tìm thấy tệp ảnh GIF trên tin nhắn này để gửi về DM.');
   }
   await i.deferReply({ flags: MessageFlags.Ephemeral });
-  const buf = await videoToGifManager.downloadSmallGifBuffer(att.url);
   try {
-   await i.user.send({
-    content: '🎞️ **Bản lưu ảnh GIF của bạn đây!** *(Chạm biểu tượng ⭐ ở góc trên ảnh để lưu vào kho GIF yêu thích của Discord nhé)*',
-    files: [{ attachment: buf, name: 'bat-don.gif' }],
-    allowedMentions: { parse: [] },
-   });
+   if (Number(att.size) > MAX_DISCORD_GIF_BYTES) {
+    await i.user.send({
+     content: `🎞️ **Bản lưu ảnh GIF Full HD của bạn đây!** *(Do file nặng >10MB từ Server Boost nên gửi link gốc chất lượng 100%)*:\n${att.url}`,
+     allowedMentions: { parse: [] },
+    });
+   } else {
+    const buf = await videoToGifManager.downloadSmallGifBuffer(att.url);
+    await i.user.send({
+     content: '🎞️ **Bản lưu ảnh GIF của bạn đây!** *(Chạm biểu tượng ⭐ ở góc trên ảnh để lưu vào kho GIF yêu thích của Discord nhé)*',
+     files: [{ attachment: buf, name: 'bat-don.gif' }],
+     allowedMentions: { parse: [] },
+    });
+   }
   } catch (err) {
    if (err?.code === 50007) {
     throw new Error('Không thể gửi tin nhắn riêng (DM) cho bạn — hãy bật **"Cho phép tin nhắn trực tiếp từ thành viên máy chủ"** trong Cài đặt quyền riêng tư Discord nhé!');

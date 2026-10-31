@@ -146,17 +146,20 @@ test('Timestamp, timing range, option normalization, message video extraction & 
  assert.equal(probeRotated.height, 1920);
  assert.equal(probeRotated.durationSec, 8.4);
 
- const scaled = computeScaledDimensions(1080, 1920, { maxWidth: 380, maxHeight: 460 });
- assert.equal(scaled.width % 2, 0);
- assert.equal(scaled.height, 460);
+ const scaledPortraitFhd = computeScaledDimensions(1080, 1920, { maxLongSide: 1920, maxShortSide: 1080 });
+ assert.equal(scaledPortraitFhd.width, 1080);
+ assert.equal(scaledPortraitFhd.height, 1920);
+ const scaledLandscape720 = computeScaledDimensions(1920, 1080, { maxLongSide: 1280, maxShortSide: 720 });
+ assert.equal(scaledLandscape720.width, 1280);
+ assert.equal(scaledLandscape720.height, 720);
 
  const assCfg = buildMemeAssConfig({
-  width: 380,
-  height: 214,
+  width: 1920,
+  height: 1080,
   caption: 'Khi bạn phát hiện Bot đổi GIF | Đỉnh nóc kịch trần!',
   captionStyle: 'bar',
  });
- assert.ok(assCfg.padTop > 0);
+ assert.ok(assCfg.padTop > 120);
  assert.ok(assCfg.assContent.includes('MemeBar'));
  assert.ok(assCfg.assContent.includes('MemeSub'));
 
@@ -166,7 +169,7 @@ test('Timestamp, timing range, option normalization, message video extraction & 
   speed: 1.5,
   caption: 'Xin chào',
   captionStyle: 'bar',
-  quality: 'ultra',
+  quality: 'fhd',
   fps: 50,
  }).toJSON();
  assert.ok(modalJson.title.length <= 45);
@@ -177,7 +180,8 @@ test('Timestamp, timing range, option normalization, message video extraction & 
   assert.ok((input.placeholder ?? '').length <= 100);
  }
 
- assert.deepEqual(parseQualityAndFpsInput('ultra 50'), { quality: 'ultra', fps: 50 });
+ assert.deepEqual(parseQualityAndFpsInput('fhd 50'), { quality: 'fhd', fps: 50 });
+ assert.deepEqual(parseQualityAndFpsInput('1080p 33fps'), { quality: 'fhd', fps: 33 });
  assert.deepEqual(parseQualityAndFpsInput('720p 30fps'), { quality: 'ultra', fps: 33 });
  assert.equal(resolveExactGifFps(50).fpsExpr, '50');
  assert.equal(resolveExactGifFps(30).fpsExpr, '100/3');
@@ -187,14 +191,14 @@ test('Timestamp, timing range, option normalization, message video extraction & 
  assert.equal(comps[0].components.length, 3);
 });
 
-test('End-to-end FFmpeg two-pass 720p Ultra & 50 FPS Video-to-GIF conversion with Vietnamese Meme caption, HTML og:video hop, concurrency queue & /tmp cleanup', async () => {
+test('End-to-end FFmpeg two-pass True 1080p Full HD (1920x1080) & True 720p HD (1280x720) Video-to-GIF conversion', async () => {
  const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gif-test-src-'));
  const sampleMp4Path = path.join(fixtureDir, 'sample.mp4');
  try {
   execFileSync(ffmpegPath, [
    '-y',
    '-f', 'lavfi',
-   '-i', 'testsrc=duration=1.6:size=1280x720:rate=50',
+   '-i', 'testsrc=duration=1.2:size=1920x1080:rate=50',
    '-c:v', 'libx264',
    '-pix_fmt', 'yuv420p',
    sampleMp4Path,
@@ -226,8 +230,8 @@ test('End-to-end FFmpeg two-pass 720p Ultra & 50 FPS Video-to-GIF conversion wit
   });
 
   // Chạy đồng thời 2 yêu cầu:
-  // - res1: 720p Ultra + 50 FPS kịch trần chuẩn GIF + chữ Meme Tiếng Việt
-  // - res2: để mặc định trên clip ngắn <=4s -> tự kích lên 720p Ultra • 33 FPS!
+  // - res1: Full HD 1080p gốc (1920×1080) + chữ Meme Tiếng Việt
+  // - res2: để mặc định trên clip ngắn <=4.5s -> tự kích lên chuẩn 1280×720 HD thực • 33 FPS!
   let queuedCalled = false;
   const [res1, res2] = await Promise.all([
    gifMgr.convertVideoToGif({
@@ -235,18 +239,18 @@ test('End-to-end FFmpeg two-pass 720p Ultra & 50 FPS Video-to-GIF conversion wit
     requesterId: '111111111111111111',
     options: {
      start: '0.1',
-     duration: 1.0,
+     duration: 0.7,
      speed: 1.0,
-     caption: 'Khi Bot Discord đổi GIF | Nét căng 720p • 50 FPS!',
+     caption: 'Full HD 1080p gốc | Tiếng Việt 100% ăâđêôơư!',
      captionStyle: 'bar',
-     quality: 'ultra',
-     fps: 50,
+     quality: 'fhd',
+     fps: 25,
     },
    }),
    gifMgr.convertVideoToGif({
     sourceUrl: 'https://cdn.example.com/real-clip.mp4',
     requesterId: '222222222222222222',
-    options: { duration: 1.0 },
+    options: { duration: 0.8 },
     onQueued: async pos => {
      if (pos >= 1) queuedCalled = true;
     },
@@ -256,12 +260,13 @@ test('End-to-end FFmpeg two-pass 720p Ultra & 50 FPS Video-to-GIF conversion wit
   assert.equal(queuedCalled, true, 'Second concurrent job should wait in FIFO queue');
   assert.equal(res1.gifBuffer.subarray(0, 6).toString('ascii'), 'GIF89a');
   assert.equal(res2.gifBuffer.subarray(0, 6).toString('ascii'), 'GIF89a');
-  assert.equal(res1.meta.width, 720);
-  assert.equal(res1.meta.fps, 50);
-  assert.ok(res1.meta.height > 404, 'Meme white top bar should increase 720p GIF height');
-  assert.equal(res2.meta.width, 720, 'Short <=4s clip without explicit quality auto-promotes to 720p Ultra');
+  assert.equal(res1.meta.width, 1920);
+  assert.equal(res1.meta.fps, 25);
+  assert.ok(res1.meta.height > 1080, 'Meme white top bar should increase 1080p GIF height');
+  assert.equal(res2.meta.width, 1280, 'Short <=4.5s clip without explicit quality auto-promotes to true 1280x720 HD');
+  assert.equal(res2.meta.height, 720);
   assert.equal(res2.meta.fps, 33);
-  assert.ok(formatGifSummaryLine(res1.meta).includes('720×'));
+  assert.ok(formatGifSummaryLine(res1.meta).includes('1920×'));
   assert.ok(gifMgr.getTuneSession(res1.session.token));
 
   // Đảm bảo không còn thư mục tạm batdon-gif-* nào sót lại trên /tmp sau khi kết xuất xong

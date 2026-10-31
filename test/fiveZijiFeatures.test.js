@@ -509,11 +509,18 @@ test('Feature #7: /lock, /unlock & /announce (Owner-Only Announcement Follow Mod
  const restoredMemberOv = currentOverwrites.find(o => o.id === '777777777777777777');
  assert.ok((BigInt(restoredMemberOv.allow) & PermissionFlagsBits.SendMessages) !== 0n);
 
- // 5. Kiểm tra lệnh /announce trong hộp thư riêng (BotDM): contexts=[1] (không trùng lệnh ngoài Server) + Trạm chọn Kênh/Role/Khóa kênh từ xa
+ // 5. Kiểm tra lệnh /announce trong hộp thư riêng (BotDM): contexts=[1] (không trùng lệnh ngoài Server, không ép integration_types để tương thích app cũ) + Trạm chọn Kênh/Role/Khóa kênh từ xa & tự hồi phục sau restart
  assert.equal(dmCommands.length, 1);
  assert.equal(dmCommands[0].name, 'announce');
  assert.deepEqual(dmCommands[0].contexts, [InteractionContextType.BotDM]);
+ assert.equal(dmCommands[0].integration_types, undefined);
 
+ const manyTextChannels = Array.from({ length: 30 }, (_, idx) => ({
+  id: String(100000000000000100n + BigInt(idx)),
+  name: `kenh-so-${idx + 1}`,
+  type: ChannelType.GuildText,
+  position: idx + 5,
+ }));
  const dmRest = {
   get: async route => {
    const r = String(route);
@@ -521,6 +528,7 @@ test('Feature #7: /lock, /unlock & /announce (Owner-Only Announcement Follow Mod
     return [
      { id: '100000000000000001', name: 'chat-chung', type: ChannelType.GuildText, position: 0 },
      { id: '100000000000000002', name: 'announcement', type: ChannelType.GuildAnnouncement, position: 3 },
+     ...manyTextChannels,
     ];
    }
    if (r.endsWith('/roles')) {
@@ -541,7 +549,7 @@ test('Feature #7: /lock, /unlock & /announce (Owner-Only Announcement Follow Mod
 
  const dmSession = await dmMgr.openDmStudioSession({
   guildId: '111111111111111111',
-  guildName: '⚡ Box Sét ⚡⚡',
+  guildName: 'SECRET PRIME LEGEND',
   requesterId: '1243061570247069696',
   initialMessage: 'Bản tin tối\\nFree',
  });
@@ -549,9 +557,35 @@ test('Feature #7: /lock, /unlock & /announce (Owner-Only Announcement Follow Mod
  assert.equal(dmSession.channelId, '100000000000000002');
  assert.equal(dmSession.roles.length, 1);
  assert.equal(dmSession.roles[0].name, 'Member');
+ assert.equal(dmSession.channels.length, 32);
+
+ // Giữ nguyên kênh & role đã chọn khi Chủ Bot nhắn thêm tin nhắn mới trực tiếp trong DM
+ dmSession.channelId = '100000000000000001';
+ dmSession.pingMode = '777777777777777777';
+ const reused = await dmMgr.openOrReuseOwnerDmDraft({
+  guildId: '111111111111111111',
+  guildName: 'SECRET PRIME LEGEND',
+  requesterId: '1243061570247069696',
+  draftText: 'Tối nay 20h giải đấu bắt đầu!',
+ });
+ assert.equal(reused.channelId, '100000000000000001');
+ assert.equal(reused.pingMode, '777777777777777777');
+ assert.equal(reused.draftText, 'Tối nay 20h giải đấu bắt đầu!');
+
+ // Tự hồi phục phiên khi token chưa có trong RAM (ví dụ sau khi Bot restart trên host)
+ const recovered = await dmMgr.ensureDmStudioSession('deadbeef1234', {
+  requesterId: '1243061570247069696',
+  guildId: '111111111111111111',
+  guildName: 'SECRET PRIME LEGEND',
+ });
+ assert.equal(recovered.token, 'deadbeef1234');
+ assert.equal(recovered.channelId, '100000000000000002');
 
  const studioPayload = buildDmAnnounceStudioPayload(dmSession);
  assert.equal(studioPayload.components.length, 4);
+ // Trang kênh 1 chỉ có tối đa 25 mục (đúng chuẩn giới hạn Discord StringSelectMenu <= 25) + có nút chuyển trang kênh ở hàng 4!
+ assert.equal(studioPayload.components[0].components[0].options.length, 25);
+ assert.equal(studioPayload.components[3].components.length, 3);
  const dmModalJson = buildDmAnnounceModal(dmSession.token, dmSession.draftText).toJSON();
  assert.equal(dmModalJson.custom_id, `dm_ann_modal:${dmSession.token}`);
 });

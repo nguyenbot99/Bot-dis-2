@@ -1,7 +1,6 @@
 import {
  ActionRowBuilder,
  ApplicationCommandType,
- ApplicationIntegrationType,
  ChannelType,
  ContextMenuCommandBuilder,
  EmbedBuilder,
@@ -818,12 +817,11 @@ export const contextCommands = [
 
 export const commands = [...slashCommands, ...contextCommands];
 
-// Lệnh riêng chỉ hiện trong hộp thư Tin nhắn riêng (DM) với Bot (contexts: [BotDM] -> KHÔNG bao giờ bị trùng lệnh ngoài Server!).
+// Lệnh riêng chỉ hiện trong hộp thư Tin nhắn riêng (DM) với Bot (contexts: [BotDM] -> KHÔNG bao giờ bị trùng lệnh ngoài Server, không ép integration_types để tương thích 100% cả app cũ lẫn mới!).
 export const dmCommands = [
  new SlashCommandBuilder()
   .setName('announce')
   .setDescription('Mở Trạm Đăng Thông Báo & Khóa Kênh từ xa lên Server ngay trong DM (chỉ Chủ Bot)')
-  .setIntegrationTypes(ApplicationIntegrationType.GuildInstall)
   .setContexts(InteractionContextType.BotDM)
   .addStringOption(o => o
    .setName('message')

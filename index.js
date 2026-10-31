@@ -85,9 +85,15 @@ const pluginRoot = new URL('./node_modules/@ziplayer/plugin/dist/', import.meta.
 const { SoundCloudPlugin } = await import(new URL('SoundCloudPlugin.js', pluginRoot));
 
 // Khởi tạo Discord client với bộ nhớ đệm tối thiểu để giảm mức tiêu thụ RAM.
-// Bật thêm GuildMessages (intent thường, KHÔNG cần quyền đặc biệt trên Portal & MessageManager vẫn bằng 0 MB) để bắt gói tin MESSAGE_DELETE phục vụ chống xóa /avatar.
+// Bật GuildMessages & DirectMessages (đều là intent thường, KHÔNG cần quyền đặc biệt trên Portal & MessageManager vẫn bằng 0 MB)
+// để bắt MESSAGE_DELETE chống xóa /avatar và nhận lệnh /announce nhắn trực tiếp trong DM của Chủ Bot tức thì (không cần chờ cache lệnh global trên điện thoại).
 const client = new Client({
- intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates, GatewayIntentBits.GuildMessages],
+ intents: [
+  GatewayIntentBits.Guilds,
+  GatewayIntentBits.GuildVoiceStates,
+  GatewayIntentBits.GuildMessages,
+  GatewayIntentBits.DirectMessages,
+ ],
  allowedMentions: { parse: [] },
  makeCache: Options.cacheWithLimits({
   ...Options.DefaultMakeCacheSettings,
@@ -291,7 +297,10 @@ const avatarGuard = createAvatarGuardManager({
  rest: client.rest,
  getChannel: async channelId => client.channels.cache.get(channelId) ?? await client.channels.fetch(channelId).catch(() => null),
 });
-client.on(Events.Raw, packet => avatarGuard.handleRawGatewayPacket(packet));
+client.on(Events.Raw, packet => {
+ avatarGuard.handleRawGatewayPacket(packet);
+ void handleOwnerDmRawPacket(packet);
+});
 
 // Bộ réo tên (@tag liên tục) siêu nhẹ (~0 MB RAM) chỉ dành riêng cho Chủ Bot, hỗ trợ Dừng tức thì & Xóa sạch hàng loạt.
 const spamTagManager = createSpamTagManager({
@@ -2132,11 +2141,16 @@ client.once(Events.ClientReady, async c => {
  }
  if (!autoRegister) return;
  try {
-  // Đăng ký duy nhất lệnh BotDM (/announce trong hộp thư riêng của Bot, contexts=[BotDM] nên không bao giờ hiện trùng ngoài Server) & dọn sạch lệnh global cũ.
+  // Đăng ký riêng lệnh BotDM (/announce trong hộp thư riêng của Bot, contexts=[BotDM] nên không bao giờ hiện trùng ngoài Server) & dọn sạch lệnh global cũ.
   await client.rest.put(Routes.applicationCommands(c.application.id), { body: dmCommands });
+  console.log(`[đồng-bộ-dm] ✅ Đã đăng ký ${dmCommands.length} lệnh /announce cho hộp thư riêng (BotDM).`);
+ } catch (e) {
+  console.error('[đồng-bộ-dm-lỗi]', e?.code ?? e?.name ?? 'Error', e?.message ?? '');
+ }
+ try {
   const targets = GUILD_ID ? [GUILD_ID] : [...c.guilds.cache.keys()].slice(0, 5);
   await Promise.all(targets.map(gid => syncGuildCommands(c.application.id, gid)));
-  console.log(`[đồng-bộ] Đã cập nhật ${commands.length} lệnh máy chủ + ${dmCommands.length} lệnh DM cho ${targets.length} máy chủ.`);
+  console.log(`[đồng-bộ] Đã cập nhật ${commands.length} lệnh máy chủ cho ${targets.length} máy chủ.`);
  } catch (e) {
   console.error('[đồng-bộ-lỗi]', e?.name ?? 'Error', e?.message ?? '');
  }
@@ -2847,39 +2861,150 @@ async function handlePlayerComponent(i) {
  }
 }
 
+function resolveTargetGuildForOwnerDm() {
+ const targetGuild = (GUILD_ID ? client.guilds.cache.get(GUILD_ID) : null) ?? client.guilds.cache.first() ?? null;
+ const targetGuildId = targetGuild?.id ?? GUILD_ID;
+ if (!targetGuildId) {
+  throw new Error('Bot hiện chưa tham gia máy chủ nào để đăng thông báo.');
+ }
+ return { guildId: targetGuildId, guildName: targetGuild?.name ?? 'Máy chủ Discord' };
+}
+
+// Chống lặp gói tin Gateway DM (giữ tối đa 12 ID gần nhất ~ 0 KB RAM).
+const seenOwnerDmIds = new Set();
+
+// Cho phép Chủ Bot gõ thẳng `/announce` (hoặc dán thẳng bài thông báo nhiều dòng) trong khung chat riêng (DM) với Bot — chạy tức thì 0.1s không cần đợi Discord Mobile đồng bộ menu `/`!
+async function handleOwnerDmRawPacket(packet) {
+ if (packet?.t !== 'MESSAGE_CREATE') return;
+ const d = packet.d;
+ if (!d || d.guild_id || d.author?.bot) return;
+ const authorId = String(d.author?.id ?? '');
+ if (!isBotOwner(authorId)) return;
+
+ const msgId = String(d.id ?? '');
+ if (!msgId || seenOwnerDmIds.has(msgId)) return;
+ if (seenOwnerDmIds.size >= 12) {
+  const oldest = seenOwnerDmIds.values().next().value;
+  if (oldest) seenOwnerDmIds.delete(oldest);
+ }
+ seenOwnerDmIds.add(msgId);
+
+ const dmChannelId = String(d.channel_id ?? '');
+ if (!dmChannelId) return;
+
+ const attachmentUrls = Array.isArray(d.attachments)
+  ? d.attachments.map(a => a?.url).filter(Boolean)
+  : [];
+ const rawText = [String(d.content ?? '').trim(), ...attachmentUrls].filter(Boolean).join('\n').trim();
+ if (!rawText) return;
+
+ try {
+  const { guildId, guildName } = resolveTargetGuildForOwnerDm();
+  const cmdMatch = rawText.match(/^\/?(?:announce|tb|thongbao|menu|lock|unlock|help)(?:\s+([\s\S]*))?$/i);
+  let session;
+  let banner = null;
+
+  if (cmdMatch) {
+   const inlineDraft = String(cmdMatch[1] ?? '').trim();
+   session = await channelLockManager.openOrReuseOwnerDmDraft({
+    guildId,
+    guildName,
+    requesterId: authorId,
+    draftText: inlineDraft,
+    forceFresh: !inlineDraft,
+   });
+   if (inlineDraft) {
+    banner = '✍️ **Đã nạp nội dung nháp!** Chọn kênh / tag bên dưới rồi bấm **🚀 Đăng ngay nội dung nháp** để đăng lên Server!';
+   }
+  } else {
+   session = await channelLockManager.openOrReuseOwnerDmDraft({
+    guildId,
+    guildName,
+    requesterId: authorId,
+    draftText: rawText,
+    forceFresh: false,
+   });
+   banner = '✍️ **Đã nhận tin nhắn làm bản nháp sẵn sàng!** Chọn kênh / tag rồi bấm **🚀 Đăng ngay nội dung nháp** (hoặc **✍️ Sửa & Đăng**)!';
+  }
+
+  // Dọn bảng cũ trong DM (nếu có) để hộp thư riêng luôn gọn gàng chỉ 1 bảng điều khiển mới nhất ở dưới cùng.
+  const prevMsgId = session.lastDmMessageId;
+  const prevChId = session.lastDmChannelId;
+  const payload = buildDmAnnounceStudioPayload(session, banner);
+  const sent = await client.rest.post(Routes.channelMessages(dmChannelId), {
+   body: {
+    embeds: payload.embeds,
+    components: payload.components,
+    allowed_mentions: { parse: [] },
+   },
+  });
+  session.lastDmChannelId = dmChannelId;
+  session.lastDmMessageId = sent?.id ?? null;
+
+  if (prevMsgId && prevChId === dmChannelId && prevMsgId !== sent?.id) {
+   await client.rest.delete(Routes.channelMessage(prevChId, prevMsgId)).catch(() => {});
+  }
+ } catch (e) {
+  const msg = KNOWN_ERROR_RE.test(e?.message ?? '') ? e.message : 'Không thể mở bảng điều khiển DM lúc này.';
+  await client.rest.post(Routes.channelMessages(dmChannelId), {
+   body: { content: `⚠️ ${msg}`, allowed_mentions: { parse: [] } },
+  }).catch(() => {});
+ }
+}
+
 // Xử lý riêng Trạm Đăng Thông Báo & Khóa Kênh từ xa ngay trong hộp thư Tin nhắn riêng (DM) với Bot (chỉ Chủ Bot sử dụng).
 async function handleBotDmInteraction(i) {
  if (i.isChatInputCommand() && i.commandName === 'announce') {
   channelLockManager.assertOwner(i.user.id);
   await i.deferReply();
-  const targetGuild = (GUILD_ID ? client.guilds.cache.get(GUILD_ID) : null) ?? client.guilds.cache.first() ?? null;
-  const targetGuildId = targetGuild?.id ?? GUILD_ID;
-  if (!targetGuildId) {
-   throw new Error('Bot hiện chưa tham gia máy chủ nào để đăng thông báo.');
-  }
+  const { guildId, guildName } = resolveTargetGuildForOwnerDm();
   const session = await channelLockManager.openDmStudioSession({
-   guildId: targetGuildId,
-   guildName: targetGuild?.name ?? 'Máy chủ Discord',
+   guildId,
+   guildName,
    requesterId: i.user.id,
    initialMessage: i.options.getString('message') ?? '',
    style: i.options.getString('style') || 'text',
    autoReact: i.options.getBoolean('auto_react') ?? true,
   });
-  await i.editReply(buildDmAnnounceStudioPayload(session));
+  const replyMsg = await i.editReply(buildDmAnnounceStudioPayload(session));
+  session.lastDmChannelId = i.channelId ?? null;
+  session.lastDmMessageId = replyMsg?.id ?? null;
   return;
  }
 
+ const loadSession = async token => {
+  const { guildId, guildName } = resolveTargetGuildForOwnerDm();
+  return channelLockManager.ensureDmStudioSession(token, {
+   requesterId: i.user.id,
+   guildId,
+   guildName,
+  });
+ };
+
  if (i.isStringSelectMenu() && i.customId.startsWith('dm_ann_ch:')) {
   const token = i.customId.slice('dm_ann_ch:'.length);
-  const session = channelLockManager.getDmStudioSession(token, i.user.id);
+  const session = await loadSession(token);
   session.channelId = i.values[0];
+  const idx = session.channels.findIndex(c => c.id === session.channelId);
+  if (idx >= 0) session.channelPage = Math.floor(idx / 25);
+  await i.update(buildDmAnnounceStudioPayload(session));
+  return;
+ }
+
+ if (i.isButton() && i.customId.startsWith('dm_ann_chpage:')) {
+  const token = i.customId.slice('dm_ann_chpage:'.length);
+  const session = await loadSession(token);
+  const totalPages = Math.max(1, Math.ceil(session.channels.length / 25));
+  session.channelPage = ((Number(session.channelPage) || 0) + 1) % totalPages;
+  const firstOnPage = session.channels[session.channelPage * 25];
+  if (firstOnPage) session.channelId = firstOnPage.id;
   await i.update(buildDmAnnounceStudioPayload(session));
   return;
  }
 
  if (i.isStringSelectMenu() && i.customId.startsWith('dm_ann_ping:')) {
   const token = i.customId.slice('dm_ann_ping:'.length);
-  const session = channelLockManager.getDmStudioSession(token, i.user.id);
+  const session = await loadSession(token);
   session.pingMode = i.values[0] || 'none';
   await i.update(buildDmAnnounceStudioPayload(session));
   return;
@@ -2887,7 +3012,7 @@ async function handleBotDmInteraction(i) {
 
  if (i.isButton() && i.customId.startsWith('dm_ann_style:')) {
   const token = i.customId.slice('dm_ann_style:'.length);
-  const session = channelLockManager.getDmStudioSession(token, i.user.id);
+  const session = await loadSession(token);
   session.style = session.style === 'embed' ? 'text' : 'embed';
   await i.update(buildDmAnnounceStudioPayload(session));
   return;
@@ -2895,7 +3020,7 @@ async function handleBotDmInteraction(i) {
 
  if (i.isButton() && i.customId.startsWith('dm_ann_react:')) {
   const token = i.customId.slice('dm_ann_react:'.length);
-  const session = channelLockManager.getDmStudioSession(token, i.user.id);
+  const session = await loadSession(token);
   session.autoReact = !session.autoReact;
   await i.update(buildDmAnnounceStudioPayload(session));
   return;
@@ -2903,16 +3028,16 @@ async function handleBotDmInteraction(i) {
 
  if (i.isButton() && i.customId.startsWith('dm_ann_compose:')) {
   const token = i.customId.slice('dm_ann_compose:'.length);
-  const session = channelLockManager.getDmStudioSession(token, i.user.id);
+  const session = await loadSession(token);
   await i.showModal(buildDmAnnounceModal(session.token, session.draftText));
   return;
  }
 
  if (i.isButton() && i.customId.startsWith('dm_ann_send:')) {
   const token = i.customId.slice('dm_ann_send:'.length);
-  const session = channelLockManager.getDmStudioSession(token, i.user.id);
+  const session = await loadSession(token);
   if (!session.draftText) {
-   throw new Error('Chưa có nội dung nháp — hãy bấm nút **✍️ Soạn nhiều dòng & Đăng** nhé!');
+   throw new Error('Chưa có nội dung nháp — hãy bấm nút **✍️ Soạn nhiều dòng & Đăng** hoặc gõ tin nhắn vào DM nhé!');
   }
   await i.deferUpdate();
   const res = await channelLockManager.postBotAnnouncement({
@@ -2927,15 +3052,16 @@ async function handleBotDmInteraction(i) {
   const chObj = session.channels.find(c => c.id === session.channelId);
   session.draftText = '';
   const pubNote = res.published ? ' (đã Xuất bản tới người Theo dõi)' : '';
+  const jumpLink = res.messageId ? ` • [🔗 Xem bài đăng](https://discord.com/channels/${session.guildId}/${session.channelId}/${res.messageId})` : '';
   await i.editReply(
-   buildDmAnnounceStudioPayload(session, `✅ **Đã đăng bài thành công lên #${chObj?.name ?? 'kênh'}!**${pubNote} — Bạn có thể bấm **✍️ Soạn nhiều dòng & Đăng** nếu muốn đăng tiếp câu thứ 2.`),
+   buildDmAnnounceStudioPayload(session, `✅ **Đã đăng bài thành công lên #${chObj?.name ?? 'kênh'}!**${pubNote}${jumpLink}`),
   );
   return;
  }
 
  if (i.isModalSubmit() && i.customId.startsWith('dm_ann_modal:')) {
   const token = i.customId.slice('dm_ann_modal:'.length);
-  const session = channelLockManager.getDmStudioSession(token, i.user.id);
+  const session = await loadSession(token);
   const rawContent = i.fields.getTextInputValue('announce_content');
   await i.deferUpdate();
   const res = await channelLockManager.postBotAnnouncement({
@@ -2950,8 +3076,9 @@ async function handleBotDmInteraction(i) {
   const chObj = session.channels.find(c => c.id === session.channelId);
   session.draftText = '';
   const pubNote = res.published ? ' (đã Xuất bản tới người Theo dõi)' : '';
+  const jumpLink = res.messageId ? ` • [🔗 Xem bài đăng](https://discord.com/channels/${session.guildId}/${session.channelId}/${res.messageId})` : '';
   await i.editReply(
-   buildDmAnnounceStudioPayload(session, `✅ **Đã đăng bài thành công lên #${chObj?.name ?? 'kênh'}!**${pubNote} — Bấm **✍️ Soạn nhiều dòng & Đăng** nếu muốn bắn thêm tin tiếp theo!`),
+   buildDmAnnounceStudioPayload(session, `✅ **Đã đăng bài thành công lên #${chObj?.name ?? 'kênh'}!**${pubNote}${jumpLink}`),
   );
   return;
  }
@@ -2959,7 +3086,7 @@ async function handleBotDmInteraction(i) {
  if (i.isButton() && (i.customId.startsWith('dm_ann_lock:') || i.customId.startsWith('dm_ann_unlock:'))) {
   const wantLock = i.customId.startsWith('dm_ann_lock:');
   const token = i.customId.split(':')[1];
-  const session = channelLockManager.getDmStudioSession(token, i.user.id);
+  const session = await loadSession(token);
   await i.deferUpdate();
   const chObj = session.channels.find(c => c.id === session.channelId);
   if (wantLock) {

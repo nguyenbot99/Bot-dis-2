@@ -139,13 +139,17 @@ export function buildDmAnnounceStudioPayload(session, statusNotice = null) {
 
  const components = [];
 
- // Hàng 1: Menu chọn Kênh trên Server (ưu tiên kênh 📢 Thông báo lên đầu)
- if (session.channels.length > 0) {
+ // Hàng 1: Menu chọn Kênh trên Server (ưu tiên kênh 📢 Thông báo lên đầu, hỗ trợ phân trang tối đa 75 kênh nếu Server nhiều kênh)
+ const totalChPages = Math.max(1, Math.ceil(session.channels.length / 25));
+ const safePage = Math.min(Math.max(0, Number(session.channelPage) || 0), totalChPages - 1);
+ const pageChannels = session.channels.slice(safePage * 25, (safePage + 1) * 25);
+ if (pageChannels.length > 0) {
+  const pageHint = totalChPages > 1 ? ` (Trang ${safePage + 1}/${totalChPages})` : '';
   const chSelect = new StringSelectMenuBuilder()
    .setCustomId(`dm_ann_ch:${session.token}`)
-   .setPlaceholder(`📍 Đang chọn: ${chIcon}${cleanText(selCh?.name ?? 'Chọn kênh', 35)}`)
+   .setPlaceholder(`📍 Đang chọn: ${chIcon}${cleanText(selCh?.name ?? 'Chọn kênh', 30)}${pageHint}`)
    .addOptions(
-    session.channels.slice(0, 25).map(ch =>
+    pageChannels.map(ch =>
      new StringSelectMenuOptionBuilder()
       .setLabel(`${ch.type === ChannelType.GuildAnnouncement ? '📢' : '#'} ${cleanText(ch.name, 85)}`)
       .setDescription(ch.type === ChannelType.GuildAnnouncement ? 'Kênh Thông Báo (hỗ trợ nút Theo dõi)' : 'Kênh văn bản trong máy chủ')
@@ -214,25 +218,33 @@ export function buildDmAnnounceStudioPayload(session, statusNotice = null) {
  );
  components.push(new ActionRowBuilder().addComponents(postBtns));
 
- // Hàng 4: Khóa / Mở khóa nhanh kênh đang chọn ngay từ trong DM!
- components.push(
-  new ActionRowBuilder().addComponents(
+ // Hàng 4: Khóa / Mở khóa nhanh kênh đang chọn ngay từ trong DM (+ Đổi trang kênh nếu Server > 25 kênh chữ)
+ const lockRowBtns = [
+  new ButtonBuilder()
+   .setCustomId(`dm_ann_lock:${session.token}`)
+   .setStyle(ButtonStyle.Danger)
+   .setLabel('Khóa kênh này (📢 Theo dõi)')
+   .setEmoji('🔒'),
+  new ButtonBuilder()
+   .setCustomId(`dm_ann_unlock:${session.token}`)
+   .setStyle(ButtonStyle.Success)
+   .setLabel('Mở khóa kênh này')
+   .setEmoji('🔓'),
+ ];
+ if (totalChPages > 1) {
+  lockRowBtns.push(
    new ButtonBuilder()
-    .setCustomId(`dm_ann_lock:${session.token}`)
-    .setStyle(ButtonStyle.Danger)
-    .setLabel('Khóa kênh này (📢 Theo dõi)')
-    .setEmoji('🔒'),
-   new ButtonBuilder()
-    .setCustomId(`dm_ann_unlock:${session.token}`)
-    .setStyle(ButtonStyle.Success)
-    .setLabel('Mở khóa kênh này')
-    .setEmoji('🔓'),
-  ),
- );
+    .setCustomId(`dm_ann_chpage:${session.token}`)
+    .setStyle(ButtonStyle.Secondary)
+    .setLabel(`Trang kênh ${safePage + 1}/${totalChPages}`)
+    .setEmoji('📄'),
+  );
+ }
+ components.push(new ActionRowBuilder().addComponents(lockRowBtns));
 
  return {
-  embeds: [embed],
-  components,
+  embeds: [embed.toJSON()],
+  components: components.map(r => r.toJSON()),
   allowedMentions: { parse: [] },
  };
 }
@@ -241,9 +253,9 @@ export function buildDmAnnounceStudioPayload(session, statusNotice = null) {
 export function createChannelLockManager({ rest, env = process.env } = {}) {
  // Lưu nhẹ bản chụp quyền gốc của kênh trước khi khóa để lúc /unlock trả lại chính xác (tối đa 30 kênh ~ 2 KB RAM).
  const savedSnapshots = new Map();
- // Phiên soạn thảo thông báo qua DM của Chủ Bot (tối đa 8 phiên, tự hết hạn sau 30 phút ~ 2 KB RAM).
+ // Phiên soạn thảo thông báo qua DM của Chủ Bot (tối đa 8 phiên, giữ 24 giờ + tự khôi phục khi restart ~ 4 KB RAM).
  const dmSessions = new Map();
- const DM_SESSION_TTL_MS = 30 * 60 * 1000;
+ const DM_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 
  async function openDmStudioSession({
   guildId,
@@ -252,6 +264,7 @@ export function createChannelLockManager({ rest, env = process.env } = {}) {
   initialMessage = '',
   style = 'text',
   autoReact = true,
+  preferredToken = null,
  } = {}) {
   assertOwner(requesterId);
   const gId = String(guildId ?? '').trim();
@@ -272,7 +285,7 @@ export function createChannelLockManager({ rest, env = process.env } = {}) {
     if (bAnn !== aAnn) return bAnn - aAnn;
     return (Number(a.position) || 0) - (Number(b.position) || 0);
    })
-   .slice(0, 25)
+   .slice(0, 75)
    .map(ch => ({ id: String(ch.id), name: String(ch.name ?? 'channel'), type: ch.type }));
 
   if (textChannels.length === 0) {
@@ -289,12 +302,14 @@ export function createChannelLockManager({ rest, env = process.env } = {}) {
   for (const [k, v] of dmSessions) {
    if (now > v.expiresAt) dmSessions.delete(k);
   }
-  if (dmSessions.size >= 8) {
+  if (dmSessions.size >= 8 && (!preferredToken || !dmSessions.has(preferredToken))) {
    const oldest = dmSessions.keys().next().value;
    if (oldest) dmSessions.delete(oldest);
   }
 
-  const token = randomBytes(6).toString('hex');
+  const token = preferredToken && /^[a-f0-9]{6,24}$/i.test(String(preferredToken))
+   ? String(preferredToken)
+   : randomBytes(6).toString('hex');
   const session = {
    token,
    guildId: gId,
@@ -302,10 +317,13 @@ export function createChannelLockManager({ rest, env = process.env } = {}) {
    channels: textChannels,
    roles,
    channelId: textChannels[0].id,
+   channelPage: 0,
    pingMode: 'none', // 'none' | 'everyone' | roleId
    style: style === 'embed' ? 'embed' : 'text',
    autoReact: Boolean(autoReact),
    draftText: String(initialMessage ?? '').replace(/\\n/g, '\n').trim(),
+   lastDmChannelId: null,
+   lastDmMessageId: null,
    expiresAt: now + DM_SESSION_TTL_MS,
   };
   dmSessions.set(token, session);
@@ -317,10 +335,59 @@ export function createChannelLockManager({ rest, env = process.env } = {}) {
   const s = dmSessions.get(String(token ?? ''));
   if (!s || Date.now() > s.expiresAt) {
    dmSessions.delete(String(token ?? ''));
-   throw new Error('Bảng điều khiển DM này đã hết hạn (30 phút) — hãy gõ lại `/announce` ngay trong DM để mở bảng mới nhé!');
+   throw new Error('Bảng điều khiển DM này đã hết hạn — hãy nhắn `/announce` ngay trong DM để mở bảng mới nhé!');
   }
   s.expiresAt = Date.now() + DM_SESSION_TTL_MS;
   return s;
+ }
+
+ // Tự khôi phục mượt mà bảng điều khiển DM kể cả khi Bot vừa khởi động lại trên host hoặc để qua ngày.
+ async function ensureDmStudioSession(token, { requesterId, guildId, guildName = 'Máy chủ Discord' } = {}) {
+  assertOwner(requesterId);
+  const key = String(token ?? '');
+  const existing = dmSessions.get(key);
+  if (existing && Date.now() <= existing.expiresAt) {
+   existing.expiresAt = Date.now() + DM_SESSION_TTL_MS;
+   return existing;
+  }
+  dmSessions.delete(key);
+  return openDmStudioSession({
+   guildId,
+   guildName,
+   requesterId,
+   preferredToken: key,
+  });
+ }
+
+ // Khi Chủ Bot nhắn tin trực tiếp trong hộp thư riêng (DM) với Bot: giữ nguyên kênh & tag đã chọn trên bảng gần nhất, nạp nội dung mới làm bản nháp tức thì!
+ async function openOrReuseOwnerDmDraft({
+  guildId,
+  guildName = 'Máy chủ Discord',
+  requesterId,
+  draftText = '',
+  forceFresh = false,
+ } = {}) {
+  assertOwner(requesterId);
+  const cleanedDraft = String(draftText ?? '').replace(/\\n/g, '\n').trim().slice(0, 1900);
+  if (!forceFresh) {
+   let latest = null;
+   for (const s of dmSessions.values()) {
+    if (s.guildId === String(guildId) && Date.now() <= s.expiresAt) {
+     latest = s;
+    }
+   }
+   if (latest) {
+    latest.draftText = cleanedDraft;
+    latest.expiresAt = Date.now() + DM_SESSION_TTL_MS;
+    return latest;
+   }
+  }
+  return openDmStudioSession({
+   guildId,
+   guildName,
+   requesterId,
+   initialMessage: cleanedDraft,
+  });
  }
 
  function assertOwner(userId) {
@@ -660,5 +727,7 @@ export function createChannelLockManager({ rest, env = process.env } = {}) {
   postBotAnnouncement,
   openDmStudioSession,
   getDmStudioSession,
+  ensureDmStudioSession,
+  openOrReuseOwnerDmDraft,
  };
 }

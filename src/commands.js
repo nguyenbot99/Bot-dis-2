@@ -10,7 +10,9 @@ import {
  StringSelectMenuOptionBuilder,
 } from 'discord.js';
 import { resolveNowPlayingWebUrl } from './playerGui.js';
+import { CONTEXT_GIF_NAME } from './videoToGif.js';
 
+export { CONTEXT_GIF_NAME };
 export const CONTEXT_PLAY_NAME = '▶️ Phát / Thêm nhạc';
 export const CONTEXT_AVATAR_NAME = '🖼️ Soi Avatar 4K';
 
@@ -38,6 +40,7 @@ const definitions = [
  ['savequeue', 'Đóng gói bài đang phát & toàn bộ hàng đợi thành Thẻ Phiên Nhạc để hôm sau mở lại 1 chạm'],
  ['webkey', 'Lấy mã PIN 6 số để điều khiển nhạc 2 chiều trực tiếp từ trên Website'],
  ['avatar', 'Soi ảnh đại diện gốc / Server / Banner 4K chống tự xóa & tự đăng lại nếu bị xóa'],
+ ['gif', 'Chuyển đổi Video sang ảnh động GIF nét cao (cắt giây, tốc độ, chèn chữ Meme)'],
  ['spamtag', 'Réo tên (@tag) gọi bạn bè liên tục kèm nút Dừng ngay & Xóa sạch dấu vết (chỉ Chủ Bot)'],
  ['lock', 'Khóa kênh chat (hỗ trợ chế độ 📢 Kênh Thông Báo hiện nút Theo dõi y hệt mẫu, chỉ Chủ Bot)'],
  ['unlock', 'Mở khóa lại kênh chat đã khóa về trạng thái bình thường (chỉ Chủ Bot)'],
@@ -154,6 +157,7 @@ export const HELP_CATEGORIES = Object.freeze([
   description: 'Xem các lệnh thuộc danh mục Tra cứu & Tiện ích',
   color: 0x34d399,
   items: [
+   ['`/gif` `[video]` `[url]` `[caption]` `[speed]`', 'Đổi Video sang ảnh động **GIF nét cao** (cắt giây, tốc độ `0.25x–3x`, chèn chữ Meme — dùng cả trong DM!)'],
    ['`/avatar` `[user]` `[type]`', 'Soi Avatar gốc / Avatar Server / Banner **4K** đóng băng file thật & **chống xóa tự động**'],
    ['`/nowplaying`', 'Xem thẻ thông tin chi tiết bài hát đang phát hiện tại'],
    ['`/lyrics` `[query]`', 'Tìm lời bài hát đang phát hoặc tra lời theo tên bài bất kỳ'],
@@ -163,7 +167,7 @@ export const HELP_CATEGORIES = Object.freeze([
    ['`/ping`', 'Kiểm tra độ trễ mạng Discord và mức tiêu thụ RAM hiện tại của bot'],
    ['`/help` `[category]`', 'Mở bảng danh mục lệnh rút gọn này'],
   ],
-  extraNote: '🖼️ **Mẹo cực nhanh:** Chạm giữ (hoặc chuột phải) vào bất kỳ thành viên nào -> **Ứng dụng (Apps) -> 🖼️ Soi Avatar 4K** để soi ngay không cần gõ lệnh!',
+  extraNote: '🎞️ **Mẹo cực nhanh:** Chạm giữ (hoặc chuột phải) vào tin nhắn có video -> **Ứng dụng (Apps) -> 🎞️ Đổi video sang GIF** (hoặc chọn thành viên -> **🖼️ Soi Avatar 4K**) không cần gõ lệnh!',
  },
  {
   key: 'owner_tools',
@@ -318,6 +322,7 @@ export function buildHelpEmbed(botUser) {
    {
     name: '📋 Tiện ích, Quản trị Kênh & Bảng Vàng',
     value: [
+     '`/gif` `[video]` `[caption]` — Chuyển Video sang **GIF nét cao** + chèn chữ Meme (Server & DM)',
      '`/avatar` `[user]` `[type]` — Soi Avatar/Banner 4K (đóng băng ảnh & chống xóa tự động)',
      '`/lock` • `/unlock` • `/announce` — Khóa kênh kiểu 📢 Theo dõi & Đăng bài bằng Bot *(Chủ Bot)*',
      '`/spamtag` `[user]` `[action]` — Réo tên `@tag` (1–100 lần) kèm nút Dừng & Xóa sạch *(Chủ Bot)*',
@@ -811,13 +816,80 @@ export const slashCommands = definitions.map(([name, description]) => {
    .setDescription('Tự gắn sẵn biểu cảm ❤️ 🔥 bên dưới bài vừa đăng (mặc định: True)')
    .setRequired(false));
  }
+ if (name === 'gif') {
+  applyGifCommandOptions(c, { includePrivate: true });
+ }
  return c.toJSON();
 });
 
-// Hai lệnh Menu ngữ cảnh (Chạm giữ trên Điện thoại / Chuột phải trên PC -> Ứng dụng) — tốn 0 MB RAM.
+function applyGifCommandOptions(c, { includePrivate = true } = {}) {
+ c.addAttachmentOption(o => o
+  .setName('video')
+  .setDescription('Tải file video lên (.mp4, .mov, .webm, .mkv...) — tối đa 42MB')
+  .setRequired(false));
+ c.addStringOption(o => o
+  .setName('url')
+  .setDescription('Hoặc dán link trực tiếp tới file video (.mp4, .webm, .mov, Discord CDN)')
+  .setRequired(false)
+  .setMaxLength(600));
+ c.addStringOption(o => o
+  .setName('caption')
+  .setDescription('Chèn chữ Meme tiếng Việt lên GIF (dùng dấu | nếu muốn chia Trên | Dưới)')
+  .setRequired(false)
+  .setMaxLength(140));
+ c.addStringOption(o => o
+  .setName('caption_style')
+  .setDescription('Kiểu hiển thị chữ Meme trên ảnh GIF (mặc định: Thanh trắng Meme đầu ảnh)')
+  .setRequired(false)
+  .addChoices(
+   { name: '⬜ Thanh trắng Meme đầu ảnh (Chuẩn Meme Facebook/Discord)', value: 'bar' },
+   { name: '💬 Phụ đề chữ trắng viền đen ở đáy ảnh', value: 'bottom' },
+   { name: '🔝 Chữ trắng viền đen ở đỉnh ảnh', value: 'top' },
+  ));
+ c.addStringOption(o => o
+  .setName('start')
+  .setDescription('Mốc thời gian bắt đầu cắt (ví dụ: 0, 3.5 hoặc 01:15)')
+  .setRequired(false)
+  .setMaxLength(20));
+ c.addNumberOption(o => o
+  .setName('duration')
+  .setDescription('Độ dài đoạn video lấy làm GIF tính bằng giây (0.5–15s, mặc định: 6s)')
+  .setRequired(false)
+  .setMinValue(0.5)
+  .setMaxValue(15));
+ c.addNumberOption(o => o
+  .setName('speed')
+  .setDescription('Tốc độ chạy GIF (VD: 0.5 quay chậm, 1.0 chuẩn, 1.5 hoặc 2.0 tua nhanh)')
+  .setRequired(false)
+  .setMinValue(0.25)
+  .setMaxValue(3));
+ c.addStringOption(o => o
+  .setName('quality')
+  .setDescription('Chất lượng & độ phân giải ảnh GIF xuất ra (tự căn vừa chuẩn <8MB)')
+  .setRequired(false)
+  .addChoices(
+   { name: '✨ Rõ nét cân bằng — 380p • 12 FPS (Khuyên dùng)', value: 'balanced' },
+   { name: '💎 Siêu nét HD — 480p • 15 FPS (Hợp đoạn ngắn 1–6s)', value: 'hd' },
+   { name: '🪶 Siêu nhẹ mượt — 300p • 10 FPS (Hợp đoạn dài 8–15s)', value: 'compact' },
+  ));
+ if (includePrivate) {
+  c.addBooleanOption(o => o
+   .setName('private')
+   .setDescription('Đặt True nếu chỉ muốn một mình bạn nhìn thấy ảnh GIF vừa tạo')
+   .setRequired(false));
+ }
+ return c;
+}
+
+// Ba lệnh Menu ngữ cảnh (Chạm giữ trên Điện thoại / Chuột phải trên PC -> Ứng dụng) — tốn 0 MB RAM.
 export const contextCommands = [
  new ContextMenuCommandBuilder()
   .setName(CONTEXT_PLAY_NAME)
+  .setType(ApplicationCommandType.Message)
+  .setDMPermission(false)
+  .toJSON(),
+ new ContextMenuCommandBuilder()
+  .setName(CONTEXT_GIF_NAME)
   .setType(ApplicationCommandType.Message)
   .setDMPermission(false)
   .toJSON(),
@@ -830,7 +902,7 @@ export const contextCommands = [
 
 export const commands = [...slashCommands, ...contextCommands];
 
-// Lệnh riêng chỉ hiện trong hộp thư Tin nhắn riêng (DM) với Bot (contexts: [BotDM] -> KHÔNG bao giờ bị trùng lệnh ngoài Server, không ép integration_types để tương thích 100% cả app cũ lẫn mới!).
+// Các lệnh riêng trong hộp thư Tin nhắn riêng (DM) với Bot (contexts: [BotDM] -> KHÔNG bao giờ bị trùng lệnh ngoài Server, không ép integration_types để tương thích 100% cả app cũ lẫn mới!).
 export const dmCommands = [
  new SlashCommandBuilder()
   .setName('announce')
@@ -871,5 +943,17 @@ export const dmCommands = [
    .setName('auto_react')
    .setDescription('Tự gắn sẵn biểu cảm ❤️ 🔥 bên dưới bài vừa đăng (mặc định: True)')
    .setRequired(false))
+  .toJSON(),
+ applyGifCommandOptions(
+  new SlashCommandBuilder()
+   .setName('gif')
+   .setDescription('Chuyển đổi Video sang ảnh động GIF nét cao ngay trong DM (cắt giây, tốc độ, chữ Meme)')
+   .setContexts(InteractionContextType.BotDM),
+  { includePrivate: false },
+ ).toJSON(),
+ new ContextMenuCommandBuilder()
+  .setName(CONTEXT_GIF_NAME)
+  .setType(ApplicationCommandType.Message)
+  .setContexts(InteractionContextType.BotDM)
   .toJSON(),
 ];

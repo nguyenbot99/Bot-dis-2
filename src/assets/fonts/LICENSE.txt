@@ -1,0 +1,4 @@
+DejaVu Sans Bold (subset MemeSans-Bold.ttf)
+Copyright (c) 2003 by Bitstream, Inc. All Rights Reserved. Bitstream Vera is a trademark of Bitstream, Inc.
+DejaVu changes are in public domain. Glyphs imported from Arev fonts are Copyright (c) 2006 by Tavmjong Bah.
+Licensed under the Bitstream Vera / DejaVu Fonts Free License (redistribution and modification permitted with copyright notice).

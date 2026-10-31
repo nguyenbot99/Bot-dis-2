@@ -27,17 +27,13 @@ import { createSpamTagManager, MAX_SPAM_COUNT } from '../src/spamTag.js';
 import { createWebRemoteManager, normalizeRemoteCommandInput } from '../src/webRemote.js';
 import workerDefault, { NowPlayingRoom } from '../cloudflare-worker/worker.js';
 
-test('Feature #1: Context Menu Commands (Message Play & User 4K Avatar) + Smart Message Extraction', () => {
- assert.equal(contextCommands.length, 2);
- const msgMenu = contextCommands.find(c => c.type === ApplicationCommandType.Message);
+test('Feature #1: Context Menu Commands (Message Play, Message GIF & User 4K Avatar) + Smart Message Extraction', () => {
+ assert.equal(contextCommands.length, 3);
+ const msgMenu = contextCommands.find(c => c.type === ApplicationCommandType.Message && c.name === CONTEXT_PLAY_NAME);
  const usrMenu = contextCommands.find(c => c.type === ApplicationCommandType.User);
  assert.ok(msgMenu);
  assert.ok(usrMenu);
- assert.equal(msgMenu.name, CONTEXT_PLAY_NAME);
- assert.equal(usrMenu.name, CONTEXT_AVATAR_NAME);
- assert.ok(msgMenu.name.length <= 32 && usrMenu.name.length <= 32);
- assert.equal(msgMenu.dm_permission, false);
- assert.equal(usrMenu.dm_permission, false);
+ assert.ok(contextCommands.every(c => c.name.length <= 32 && c.dm_permission === false));
 
  // Bắt link nhạc từ tin nhắn chat kèm chữ thừa & dấu câu
  const fromLink = extractPlayableFromMessage({
@@ -513,11 +509,12 @@ test('Feature #7: /lock, /unlock & /announce (Owner-Only Announcement Follow Mod
  const restoredMemberOv = currentOverwrites.find(o => o.id === '777777777777777777');
  assert.ok((BigInt(restoredMemberOv.allow) & PermissionFlagsBits.SendMessages) !== 0n);
 
- // 5. Kiểm tra lệnh /announce trong hộp thư riêng (BotDM): contexts=[1] (không trùng lệnh ngoài Server, không ép integration_types để tương thích app cũ) + Trạm chọn Kênh/Role/Khóa kênh từ xa & tự hồi phục sau restart
- assert.equal(dmCommands.length, 1);
+ // 5. Kiểm tra bộ lệnh hộp thư riêng (BotDM: /announce, /gif & Đổi sang GIF): contexts=[1] (không trùng lệnh ngoài Server, không ép integration_types để tương thích app cũ) + Trạm chọn Kênh/Role/Khóa kênh từ xa & tự hồi phục sau restart
+ assert.equal(dmCommands.length, 3);
  assert.equal(dmCommands[0].name, 'announce');
- assert.deepEqual(dmCommands[0].contexts, [InteractionContextType.BotDM]);
- assert.equal(dmCommands[0].integration_types, undefined);
+ assert.equal(dmCommands[1].name, 'gif');
+ assert.ok(dmCommands.every(cmd => JSON.stringify(cmd.contexts) === JSON.stringify([InteractionContextType.BotDM])));
+ assert.ok(dmCommands.every(cmd => cmd.integration_types === undefined));
 
  const manyTextChannels = Array.from({ length: 30 }, (_, idx) => ({
   id: String(100000000000000100n + BigInt(idx)),

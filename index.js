@@ -53,8 +53,17 @@ import {
  getNextAnnounceFont,
 } from './src/channelLock.js';
 import { buildSpamControlRow, createSpamTagManager } from './src/spamTag.js';
+import {
+ buildGifActionComponents,
+ buildGifTuneModal,
+ createVideoToGifManager,
+ extractVideoFromMessage,
+ formatGifSummaryLine,
+ MAX_VIDEO_DOWNLOAD_BYTES,
+ parseGifTimingRange,
+} from './src/videoToGif.js';
 import { buildVoiceGuardEmbed, evaluateBotVoiceTransition } from './src/voiceGuard.js';
-import { buildHelpPayload, commands, CONTEXT_AVATAR_NAME, CONTEXT_PLAY_NAME, dmCommands } from './src/commands.js';
+import { buildHelpPayload, commands, CONTEXT_AVATAR_NAME, CONTEXT_GIF_NAME, CONTEXT_PLAY_NAME, dmCommands } from './src/commands.js';
 import {
  buildAddSongModal,
  buildEndedPayload,
@@ -295,6 +304,9 @@ const statsStore = createStatsStore();
 // Tủ nhạc chung theo chủ đề của cả máy chủ (/mixtape, tối đa 5 tủ * 20 bài, sao lưu đám mây Cloudflare).
 const mixtapeStore = createMixtapeStore();
 
+// Bộ chuyển đổi Video -> GIF nét cao 2-pass trên ổ tạm (an toàn tuyệt đối cho mốc 512MB RAM, hỗ trợ cả Server & DM).
+const videoToGifManager = createVideoToGifManager({ ffmpegPath: ffmpeg });
+
 // Bộ bảo vệ chống xóa cho tin nhắn /avatar: nếu bị xóa trên kênh chat sẽ tự động khôi phục lại ngay lập tức.
 const avatarGuard = createAvatarGuardManager({
  rest: client.rest,
@@ -302,7 +314,7 @@ const avatarGuard = createAvatarGuardManager({
 });
 client.on(Events.Raw, packet => {
  avatarGuard.handleRawGatewayPacket(packet);
- void handleOwnerDmRawPacket(packet);
+ void handleDmRawPacket(packet);
 });
 
 // Bộ réo tên (@tag liên tục) siêu nhẹ (~0 MB RAM) chỉ dành riêng cho Chủ Bot, hỗ trợ Dừng tức thì & Xóa sạch hàng loạt.
@@ -373,7 +385,7 @@ const channelLastSweepAt = new Map();
 const KICK_SNAPSHOT_TTL_MS = 30 * 60 * 1000; // Giữ trạng thái bài đang phát & hàng đợi trong 30 phút sau khi bị kick để khôi phục khi /join.
 const PROGRESS_TICK_MS = 5000; // Chu kỳ cập nhật thanh tiến trình (5 giây/lần: chuẩn mượt, không bao giờ chạm giới hạn rate-limit Discord).
 const CHANNEL_SWEEP_COOLDOWN_MS = 180000; // Quét dọn tin nhắn mồ côi tối đa 3 phút/lần mỗi kênh.
-const KNOWN_ERROR_RE = /^(Hãy|Bạn|Bot|Chờ|Chỉ|Hàng|Không|Chưa|Tên|URL|Lệnh|Bản|Link|Thời|Số|Định|Vị|Mức|Âm|Nội|Tủ|Hẹn|Hiệu|Đài|Người|Máy|Phiên|Bài|Tin|Mã|Hiện|Thao|Kênh|Bảng)/;
+const KNOWN_ERROR_RE = /^(Hãy|Bạn|Bot|Chờ|Chỉ|Hàng|Không|Chưa|Tên|URL|Lệnh|Bản|Link|Thời|Số|Định|Vị|Mức|Âm|Nội|Tủ|Hẹn|Hiệu|Đài|Người|Máy|Phiên|Bài|Tin|Mã|Hiện|Thao|Kênh|Bảng|Video|Tệp|Ảnh|Quá)/;
 const ttsController = createGuildTtsController();
 
 function syncSleepTimerLabel(player) {
@@ -2144,9 +2156,9 @@ client.once(Events.ClientReady, async c => {
  }
  if (!autoRegister) return;
  try {
-  // Đăng ký riêng lệnh BotDM (/announce trong hộp thư riêng của Bot, contexts=[BotDM] nên không bao giờ hiện trùng ngoài Server) & dọn sạch lệnh global cũ.
+  // Đăng ký riêng bộ lệnh BotDM (/announce, /gif & Đổi video sang GIF trong hộp thư riêng của Bot, contexts=[BotDM] nên không trùng ngoài Server).
   await client.rest.put(Routes.applicationCommands(c.application.id), { body: dmCommands });
-  console.log(`[đồng-bộ-dm] ✅ Đã đăng ký ${dmCommands.length} lệnh /announce cho hộp thư riêng (BotDM).`);
+  console.log(`[đồng-bộ-dm] ✅ Đã đăng ký ${dmCommands.length} lệnh cho hộp thư riêng (BotDM: /announce, /gif & Đổi sang GIF).`);
  } catch (e) {
   console.error('[đồng-bộ-dm-lỗi]', e?.code ?? e?.name ?? 'Error', e?.message ?? '');
  }
@@ -2195,8 +2207,212 @@ async function replyInteractionError(i, e) {
  }
 }
 
+// Xử lý chung lệnh /gif và Menu chuột phải "🎞️ Đổi video sang GIF" (chạy mượt cả trên Server lẫn trong hộp chat riêng DM).
+async function handleGifCommandOrContext(i) {
+ const inDm = !i.guild;
+ const isPrivate = !inDm && Boolean(i.isChatInputCommand() && i.options.getBoolean('private'));
+ await i.deferReply(isPrivate ? { flags: MessageFlags.Ephemeral } : undefined);
+
+ let sourceUrl = '';
+ let options = {};
+
+ if (i.isMessageContextMenuCommand?.()) {
+  const found = extractVideoFromMessage(i.targetMessage);
+  if (found.sizeBytes > MAX_VIDEO_DOWNLOAD_BYTES) {
+   throw new Error('Video quá lớn (vượt mức an toàn 42MB) — hãy cắt ngắn hoặc gửi clip nhẹ hơn nhé!');
+  }
+  sourceUrl = found.url;
+ } else {
+  const att = i.options.getAttachment('video');
+  const rawUrl = i.options.getString('url')?.trim() ?? '';
+  if (!att && !rawUrl) {
+   throw new Error('Hãy tải file video lên ở mục `video` hoặc dán link video (.mp4, .mov, .webm) vào mục `url` nhé! *(Mẹo: Chuột phải vào tin nhắn có video -> Ứng dụng -> 🎞️ Đổi video sang GIF cũng được luôn!)*');
+  }
+  if (att) {
+   if (Number(att.size) > MAX_VIDEO_DOWNLOAD_BYTES) {
+    throw new Error('Video quá lớn (vượt mức an toàn 42MB) — hãy cắt ngắn hoặc gửi clip nhẹ hơn nhé!');
+   }
+   sourceUrl = att.url || att.proxyURL;
+  } else {
+   sourceUrl = rawUrl;
+  }
+  options = {
+   caption: i.options.getString('caption') ?? '',
+   captionStyle: i.options.getString('caption_style') || 'bar',
+   start: i.options.getString('start') ?? '',
+   duration: i.options.getNumber('duration'),
+   speed: i.options.getNumber('speed'),
+   quality: i.options.getString('quality') || 'balanced',
+  };
+ }
+
+ await i.editReply({
+  content: '🎞️ Đang tách khung hình & tối ưu bảng màu GIF nét cao...',
+  allowedMentions: { parse: [] },
+ }).catch(() => {});
+
+ const res = await videoToGifManager.convertVideoToGif({
+  sourceUrl,
+  requesterId: i.user.id,
+  options,
+  onQueued: pos => i.editReply({
+   content: `⏳ Đang xếp hàng tạo GIF (vị trí **#${pos}** — chống tràn RAM 512MB), vui lòng đợi vài giây...`,
+   allowedMentions: { parse: [] },
+  }),
+ });
+
+ const components = buildGifActionComponents({
+  token: res.session.token,
+  requesterId: i.user.id,
+  includeDmSave: !inDm && !isPrivate,
+  includeDelete: !isPrivate,
+ });
+
+ await i.editReply({
+  content: formatGifSummaryLine(res.meta),
+  files: [res.attachment],
+  components,
+  allowedMentions: { parse: [] },
+ });
+}
+
+// Xử lý các nút bấm & hộp thoại chỉnh sửa nhanh bên dưới ảnh GIF (Chèn chữ Meme, Cắt giây, Tốc độ, Lưu về DM, Xóa).
+async function handleGifComponent(i) {
+ if (i.isButton() && i.customId.startsWith('gif_tune:')) {
+  const token = i.customId.slice('gif_tune:'.length);
+  const session = videoToGifManager.getTuneSession(token);
+  if (!session) {
+   throw new Error('Phiên chỉnh sửa nhanh của ảnh GIF này đã hết hạn (20 phút) — hãy chuột phải vào video gốc chọn 🎞️ Đổi video sang GIF hoặc gõ lại `/gif` nhé!');
+  }
+  await i.showModal(buildGifTuneModal(session.token, session));
+  return true;
+ }
+
+ if (i.isModalSubmit() && i.customId.startsWith('gif_tune_modal:')) {
+  const token = i.customId.slice('gif_tune_modal:'.length);
+  const session = videoToGifManager.getTuneSession(token);
+  if (!session) {
+   throw new Error('Phiên chỉnh sửa nhanh của ảnh GIF này đã hết hạn (20 phút) — hãy gõ lại `/gif` nhé!');
+  }
+  const caption = i.fields.getTextInputValue('gif_caption') ?? '';
+  const rawStyle = String(i.fields.getTextInputValue('gif_caption_style') ?? '').trim().toLowerCase();
+  const captionStyle = ['bar', 'bottom', 'top'].includes(rawStyle) ? rawStyle : session.captionStyle;
+  const { startSec, durationSec } = parseGifTimingRange(
+   i.fields.getTextInputValue('gif_timing'),
+   session.startSec,
+   session.durationSec,
+  );
+  const rawSpeed = String(i.fields.getTextInputValue('gif_speed') ?? '').trim();
+  const speed = rawSpeed ? rawSpeed : session.speed;
+
+  const inDm = !i.guild;
+  const wasEphemeral = Boolean(i.message?.flags?.has?.(MessageFlags.Ephemeral));
+  const canEditInPlace = Boolean(i.message) && (i.user.id === session.requesterId || isBotOwner(i.user.id));
+
+  if (canEditInPlace) {
+   await i.deferUpdate();
+   const res = await videoToGifManager.convertVideoToGif({
+    sourceUrl: session.sourceUrl,
+    requesterId: session.requesterId,
+    existingToken: session.token,
+    skipCooldown: true,
+    options: {
+     startSec,
+     duration: durationSec,
+     speed,
+     caption,
+     captionStyle,
+     quality: session.quality,
+    },
+   });
+   await i.editReply({
+    content: formatGifSummaryLine(res.meta),
+    attachments: [],
+    files: [res.attachment],
+    components: buildGifActionComponents({
+     token: res.session.token,
+     requesterId: session.requesterId,
+     includeDmSave: !inDm && !wasEphemeral,
+     includeDelete: !wasEphemeral,
+    }),
+    allowedMentions: { parse: [] },
+   });
+  } else {
+   await i.deferReply({ flags: MessageFlags.Ephemeral });
+   const res = await videoToGifManager.convertVideoToGif({
+    sourceUrl: session.sourceUrl,
+    requesterId: i.user.id,
+    options: {
+     startSec,
+     duration: durationSec,
+     speed,
+     caption,
+     captionStyle,
+     quality: session.quality,
+    },
+   });
+   await i.editReply({
+    content: formatGifSummaryLine(res.meta),
+    files: [res.attachment],
+    components: buildGifActionComponents({
+     token: res.session.token,
+     requesterId: i.user.id,
+     includeDmSave: false,
+     includeDelete: false,
+    }),
+    allowedMentions: { parse: [] },
+   });
+  }
+  return true;
+ }
+
+ if (i.isButton() && i.customId === 'gif_dm') {
+  const att = i.message?.attachments?.first?.();
+  if (!att?.url) {
+   throw new Error('Không tìm thấy tệp ảnh GIF trên tin nhắn này để gửi về DM.');
+  }
+  await i.deferReply({ flags: MessageFlags.Ephemeral });
+  const buf = await videoToGifManager.downloadSmallGifBuffer(att.url);
+  try {
+   await i.user.send({
+    content: '🎞️ **Bản lưu ảnh GIF của bạn đây!** *(Chạm biểu tượng ⭐ ở góc trên ảnh để lưu vào kho GIF yêu thích của Discord nhé)*',
+    files: [{ attachment: buf, name: 'bat-don.gif' }],
+    allowedMentions: { parse: [] },
+   });
+  } catch (err) {
+   if (err?.code === 50007) {
+    throw new Error('Không thể gửi tin nhắn riêng (DM) cho bạn — hãy bật **"Cho phép tin nhắn trực tiếp từ thành viên máy chủ"** trong Cài đặt quyền riêng tư Discord nhé!');
+   }
+   throw new Error('Không thể gửi ảnh GIF về hộp thư riêng lúc này.');
+  }
+  await i.editReply({
+   content: '📩 Đã gửi bản sao ảnh **GIF** về **Tin nhắn riêng (DM)** của bạn!',
+   allowedMentions: { parse: [] },
+  });
+  return true;
+ }
+
+ if (i.isButton() && i.customId.startsWith('gif_del:')) {
+  const ownerOfGif = i.customId.slice('gif_del:'.length);
+  if (i.user.id !== ownerOfGif && !isBotOwner(i.user.id)) {
+   await i.reply({
+    content: '🔒 Chỉ người tạo ảnh GIF này hoặc **Chủ Bot** mới có thể xóa!',
+    flags: MessageFlags.Ephemeral,
+   });
+   return true;
+  }
+  await i.deferUpdate().catch(() => {});
+  await deleteDiscordMessage(client.rest, i.message, i.channelId);
+  return true;
+ }
+
+ return false;
+}
+
 // Xử lý tương tác trên khung Music Player (Nút bấm, Menu thả xuống và Hộp thoại thêm nhạc).
 async function handlePlayerComponent(i) {
+ if (await handleGifComponent(i)) return;
+
  // Menu chuyển đổi danh mục lệnh trong /help (nhảy trang tức thì, không khóa hàng đợi hay kênh thoại).
  if (i.isStringSelectMenu() && i.customId === 'help_category') {
   const picked = i.values[0] || 'overview';
@@ -2906,17 +3122,19 @@ function formatUserResolveBanner(res) {
  return parts.join('\n> ') || '🎯 Đã cập nhật danh sách Tag người dùng.';
 }
 
-// Cho phép Chủ Bot gõ thẳng `/announce`, `tag <tên/ID>` hoặc dán thẳng bài thông báo nhiều dòng trong khung chat riêng (DM) với Bot — chạy tức thì 0.1s!
-async function handleOwnerDmRawPacket(packet) {
+// Hỗ trợ nhắn trực tiếp trong hộp chat riêng (DM) với Bot:
+// - Mọi thành viên: gõ `gif [chữ meme]` kèm video (hoặc thành viên thả thẳng video vào DM) để đổi sang GIF tức thì!
+// - Chủ Bot: giữ nguyên gõ thẳng `/announce`, `tag <tên/ID>`, `font <kiểu>` hoặc dán bài nháp thông báo chạy 0.1s!
+async function handleDmRawPacket(packet) {
  if (packet?.t !== 'MESSAGE_CREATE') return;
  const d = packet.d;
  if (!d || d.guild_id || d.author?.bot) return;
  const authorId = String(d.author?.id ?? '');
- if (!isBotOwner(authorId)) return;
+ if (!authorId) return;
 
  const msgId = String(d.id ?? '');
  if (!msgId || seenOwnerDmIds.has(msgId)) return;
- if (seenOwnerDmIds.size >= 12) {
+ if (seenOwnerDmIds.size >= 16) {
   const oldest = seenOwnerDmIds.values().next().value;
   if (oldest) seenOwnerDmIds.delete(oldest);
  }
@@ -2925,10 +3143,83 @@ async function handleOwnerDmRawPacket(packet) {
  const dmChannelId = String(d.channel_id ?? '');
  if (!dmChannelId) return;
 
+ const plainContent = String(d.content ?? '').trim();
+ const explicitGifMatch = plainContent.match(/^\/?gif(?:\s+([\s\S]*))?$/i);
+ const hasDirectAttachments = Array.isArray(d.attachments) && d.attachments.length > 0;
+ const ownerCheck = isBotOwner(authorId);
+
+ // Nhánh 1: Đổi Video -> GIF trực tiếp trong DM (ai gõ `gif ...` hoặc thành viên gửi thẳng video cho Bot trong DM).
+ if (explicitGifMatch || (!ownerCheck && hasDirectAttachments)) {
+  let progressMsgId = null;
+  try {
+   const found = extractVideoFromMessage(d);
+   if (found.sizeBytes > MAX_VIDEO_DOWNLOAD_BYTES) {
+    throw new Error('Video quá lớn (vượt mức an toàn 42MB) — hãy cắt ngắn hoặc gửi clip nhẹ hơn nhé!');
+   }
+   const rawCaptionArg = explicitGifMatch ? String(explicitGifMatch[1] ?? '').trim() : plainContent;
+   const caption = rawCaptionArg.replace(/https?:\/\/[^\s<>()]+/gi, '').trim();
+
+   const waitSent = await client.rest.post(Routes.channelMessages(dmChannelId), {
+    body: {
+     content: '🎞️ Đang tách khung hình & tối ưu bảng màu GIF nét cao...',
+     allowed_mentions: { parse: [] },
+    },
+   }).catch(() => null);
+   progressMsgId = waitSent?.id ?? null;
+
+   const res = await videoToGifManager.convertVideoToGif({
+    sourceUrl: found.url,
+    requesterId: authorId,
+    options: { caption },
+   });
+   if (progressMsgId) {
+    await client.rest.delete(Routes.channelMessage(dmChannelId, progressMsgId)).catch(() => {});
+    progressMsgId = null;
+   }
+   await client.rest.post(Routes.channelMessages(dmChannelId), {
+    body: {
+     content: formatGifSummaryLine(res.meta),
+     components: buildGifActionComponents({
+      token: res.session.token,
+      requesterId: authorId,
+      includeDmSave: false,
+      includeDelete: true,
+     }),
+     allowed_mentions: { parse: [] },
+    },
+    files: [{
+     name: res.filename,
+     data: res.gifBuffer,
+     contentType: 'image/gif',
+    }],
+   });
+  } catch (e) {
+   if (progressMsgId) {
+    await client.rest.delete(Routes.channelMessage(dmChannelId, progressMsgId)).catch(() => {});
+   }
+   // Nếu thành viên chỉ nhắn chữ thường (không gõ `gif`) mà gửi ảnh tĩnh không phải video thì bỏ qua êm ái, chỉ báo lỗi khi có gõ `gif` hoặc lỗi rõ ràng.
+   if (!explicitGifMatch && /Tin nhắn này không có file video/.test(e?.message ?? '')) return;
+   const msg = KNOWN_ERROR_RE.test(e?.message ?? '') ? e.message : 'Không thể chuyển đổi video sang GIF lúc này.';
+   const errSent = await client.rest.post(Routes.channelMessages(dmChannelId), {
+    body: { content: `⚠️ ${msg}`, allowed_mentions: { parse: [] } },
+   }).catch(() => null);
+   if (errSent?.id) {
+    const t = setTimeout(() => {
+     client.rest.delete(Routes.channelMessage(dmChannelId, errSent.id)).catch(() => {});
+    }, 30000);
+    t.unref?.();
+   }
+  }
+  return;
+ }
+
+ // Nhánh 2: Trạm Đăng Thông Báo & Khóa Kênh từ xa trong DM dành riêng cho Chủ Bot.
+ if (!ownerCheck) return;
+
  const attachmentUrls = Array.isArray(d.attachments)
   ? d.attachments.map(a => a?.url).filter(Boolean)
   : [];
- const rawText = [String(d.content ?? '').trim(), ...attachmentUrls].filter(Boolean).join('\n').trim();
+ const rawText = [plainContent, ...attachmentUrls].filter(Boolean).join('\n').trim();
  if (!rawText) return;
 
  try {
@@ -3030,8 +3321,19 @@ async function handleOwnerDmRawPacket(packet) {
  }
 }
 
-// Xử lý riêng Trạm Đăng Thông Báo & Khóa Kênh từ xa ngay trong hộp thư Tin nhắn riêng (DM) với Bot (chỉ Chủ Bot sử dụng).
+// Xử lý tương tác trong hộp thư Tin nhắn riêng (DM) với Bot:
+// - /gif & Chuột phải "🎞️ Đổi video sang GIF" + nút chỉnh GIF: mở cho mọi người.
+// - /announce & Trạm Đăng Thông Báo / Khóa Kênh từ xa: chỉ Chủ Bot sử dụng.
 async function handleBotDmInteraction(i) {
+ if (await handleGifComponent(i)) return;
+ if (
+  (i.isChatInputCommand() && i.commandName === 'gif')
+  || (i.isMessageContextMenuCommand?.() && i.commandName === CONTEXT_GIF_NAME)
+ ) {
+  await handleGifCommandOrContext(i);
+  return;
+ }
+
  if (i.isChatInputCommand() && i.commandName === 'announce') {
   channelLockManager.assertOwner(i.user.id);
   await i.deferReply();
@@ -3388,6 +3690,12 @@ client.on(Events.InteractionCreate, async i => {
   return;
  }
 
+ // Lệnh Menu ngữ cảnh trên Tin nhắn: "🎞️ Đổi video sang GIF" (ai trong Server cũng dùng được, không khóa hàng đợi nhạc).
+ if (i.isMessageContextMenuCommand?.() && i.commandName === CONTEXT_GIF_NAME) {
+  try { await handleGifCommandOrContext(i); } catch (e) { await replyInteractionError(i, e); }
+  return;
+ }
+
  // Lệnh Menu ngữ cảnh trên Thành viên (Chạm giữ / Chuột phải người dùng -> Ứng dụng -> "🖼️ Soi Avatar 4K").
  if (i.isUserContextMenuCommand?.() && i.commandName === CONTEXT_AVATAR_NAME) {
   try {
@@ -3419,7 +3727,13 @@ client.on(Events.InteractionCreate, async i => {
  const reply = content => i.editReply({ content, allowedMentions: { parse: [] } });
  let ownsLock = false;
  try {
-  // Lệnh /avatar đăng CÔNG KHAI ra kênh chat (không Ephemeral, không tự xóa, chống xóa tự động theo yêu cầu).
+  // Lệnh /gif chuyển Video sang ảnh động GIF nét cao (ai trong Server cũng dùng được, có hàng đợi riêng bảo vệ RAM 512MB).
+ if (i.commandName === 'gif') {
+  await handleGifCommandOrContext(i);
+  return;
+ }
+
+ // Lệnh /avatar đăng CÔNG KHAI ra kênh chat (không Ephemeral, không tự xóa, chống xóa tự động theo yêu cầu).
   if (i.commandName === 'avatar') {
    await i.deferReply();
    const targetOptUser = i.options.getUser('user') ?? i.user;

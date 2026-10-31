@@ -396,12 +396,12 @@ test('Feature #5 (/mixtape Shared Server Mixtapes) & Feature #6 (/similar): CRUD
  assert.doesNotThrow(() => assertMusicAccess('similar', '1243061570247069696', activePlayer));
 });
 
-test('Feature #7 (Website Vinyl Turntable + Poster Card Generator) & 44 Slash + 2 Context Commands Registry', () => {
- assert.equal(slashCommands.length, 44);
- assert.equal(contextCommands.length, 2);
- assert.equal(commands.length, 46);
+test('Feature #7 (Website Vinyl Turntable + Poster Card Generator) & 45 Slash + 3 Context Commands Registry', () => {
+ assert.equal(slashCommands.length, 45);
+ assert.equal(contextCommands.length, 3);
+ assert.equal(commands.length, 48);
  const names = new Set(slashCommands.map(c => c.name));
- for (const expected of ['avatar', 'lock', 'unlock', 'announce', 'spamtag', 'ambient', 'search', 'dedicate', 'mixtape', 'similar', 'tts', 'savequeue', 'webkey']) {
+ for (const expected of ['gif', 'avatar', 'lock', 'unlock', 'announce', 'spamtag', 'ambient', 'search', 'dedicate', 'mixtape', 'similar', 'tts', 'savequeue', 'webkey']) {
   assert.ok(names.has(expected), `Command /${expected} must be registered`);
  }
  const helpEmbed = buildHelpEmbed({ username: 'Bắt_Don', displayAvatarURL: () => 'https://example.com/a.png' }).toJSON();
@@ -439,8 +439,8 @@ test('Feature #7 (Website Vinyl Turntable + Poster Card Generator) & 44 Slash + 
    categorizedCmds.push(m[1]);
   }
  }
- assert.equal(categorizedCmds.length, 44);
- assert.equal(new Set(categorizedCmds).size, 44);
+ assert.equal(categorizedCmds.length, 45);
+ assert.equal(new Set(categorizedCmds).size, 45);
  for (const cmd of slashCommands) {
   assert.ok(categorizedCmds.includes(cmd.name), `Missing /${cmd.name} from HELP_CATEGORIES`);
  }

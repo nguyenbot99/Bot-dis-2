@@ -42,10 +42,16 @@ import { createGuildTtsController, synthesizeGoogleTtsBuffer, TTS_VOICES } from 
 import { resolveTrackWebAudio, WEB_AUDIO_REFRESH_MS } from './src/webAudio.js';
 import { createWebRemoteManager } from './src/webRemote.js';
 import { buildSaveQueuePayload, extractPlayableFromMessage, extractSaveQueueUrls } from './src/saveQueue.js';
-import { buildAnnounceModal, buildChannelLockButtons, createChannelLockManager } from './src/channelLock.js';
+import {
+ buildAnnounceModal,
+ buildChannelLockButtons,
+ buildDmAnnounceModal,
+ buildDmAnnounceStudioPayload,
+ createChannelLockManager,
+} from './src/channelLock.js';
 import { buildSpamControlRow, createSpamTagManager } from './src/spamTag.js';
 import { buildVoiceGuardEmbed, evaluateBotVoiceTransition } from './src/voiceGuard.js';
-import { buildHelpPayload, commands, CONTEXT_AVATAR_NAME, CONTEXT_PLAY_NAME } from './src/commands.js';
+import { buildHelpPayload, commands, CONTEXT_AVATAR_NAME, CONTEXT_PLAY_NAME, dmCommands } from './src/commands.js';
 import {
  buildAddSongModal,
  buildEndedPayload,
@@ -355,7 +361,7 @@ const channelLastSweepAt = new Map();
 const KICK_SNAPSHOT_TTL_MS = 30 * 60 * 1000; // Giữ trạng thái bài đang phát & hàng đợi trong 30 phút sau khi bị kick để khôi phục khi /join.
 const PROGRESS_TICK_MS = 5000; // Chu kỳ cập nhật thanh tiến trình (5 giây/lần: chuẩn mượt, không bao giờ chạm giới hạn rate-limit Discord).
 const CHANNEL_SWEEP_COOLDOWN_MS = 180000; // Quét dọn tin nhắn mồ côi tối đa 3 phút/lần mỗi kênh.
-const KNOWN_ERROR_RE = /^(Hãy|Bạn|Bot|Chờ|Chỉ|Hàng|Không|Chưa|Tên|URL|Lệnh|Bản|Link|Thời|Số|Định|Vị|Mức|Âm|Nội|Tủ|Hẹn|Hiệu|Đài|Người|Máy|Phiên|Bài|Tin|Mã|Hiện|Thao)/;
+const KNOWN_ERROR_RE = /^(Hãy|Bạn|Bot|Chờ|Chỉ|Hàng|Không|Chưa|Tên|URL|Lệnh|Bản|Link|Thời|Số|Định|Vị|Mức|Âm|Nội|Tủ|Hẹn|Hiệu|Đài|Người|Máy|Phiên|Bài|Tin|Mã|Hiện|Thao|Kênh|Bảng)/;
 const ttsController = createGuildTtsController();
 
 function syncSleepTimerLabel(player) {
@@ -2126,11 +2132,11 @@ client.once(Events.ClientReady, async c => {
  }
  if (!autoRegister) return;
  try {
-  // Xóa các lệnh global tiếng Anh cũ còn sót lại (ví dụ từ BMH) để tránh bị trùng lệnh trên Discord.
-  await client.rest.put(Routes.applicationCommands(c.application.id), { body: [] });
+  // Đăng ký duy nhất lệnh BotDM (/announce trong hộp thư riêng của Bot, contexts=[BotDM] nên không bao giờ hiện trùng ngoài Server) & dọn sạch lệnh global cũ.
+  await client.rest.put(Routes.applicationCommands(c.application.id), { body: dmCommands });
   const targets = GUILD_ID ? [GUILD_ID] : [...c.guilds.cache.keys()].slice(0, 5);
   await Promise.all(targets.map(gid => syncGuildCommands(c.application.id, gid)));
-  console.log(`[đồng-bộ] Đã cập nhật ${commands.length} lệnh (chú thích tiếng Việt) cho ${targets.length} máy chủ.`);
+  console.log(`[đồng-bộ] Đã cập nhật ${commands.length} lệnh máy chủ + ${dmCommands.length} lệnh DM cho ${targets.length} máy chủ.`);
  } catch (e) {
   console.error('[đồng-bộ-lỗi]', e?.name ?? 'Error', e?.message ?? '');
  }
@@ -2841,9 +2847,154 @@ async function handlePlayerComponent(i) {
  }
 }
 
-// Xử lý toàn bộ tương tác từ Discord (Lệnh slash + Nút bấm + Menu + Modal trên khung Music Player).
+// Xử lý riêng Trạm Đăng Thông Báo & Khóa Kênh từ xa ngay trong hộp thư Tin nhắn riêng (DM) với Bot (chỉ Chủ Bot sử dụng).
+async function handleBotDmInteraction(i) {
+ if (i.isChatInputCommand() && i.commandName === 'announce') {
+  channelLockManager.assertOwner(i.user.id);
+  await i.deferReply();
+  const targetGuild = (GUILD_ID ? client.guilds.cache.get(GUILD_ID) : null) ?? client.guilds.cache.first() ?? null;
+  const targetGuildId = targetGuild?.id ?? GUILD_ID;
+  if (!targetGuildId) {
+   throw new Error('Bot hiện chưa tham gia máy chủ nào để đăng thông báo.');
+  }
+  const session = await channelLockManager.openDmStudioSession({
+   guildId: targetGuildId,
+   guildName: targetGuild?.name ?? 'Máy chủ Discord',
+   requesterId: i.user.id,
+   initialMessage: i.options.getString('message') ?? '',
+   style: i.options.getString('style') || 'text',
+   autoReact: i.options.getBoolean('auto_react') ?? true,
+  });
+  await i.editReply(buildDmAnnounceStudioPayload(session));
+  return;
+ }
+
+ if (i.isStringSelectMenu() && i.customId.startsWith('dm_ann_ch:')) {
+  const token = i.customId.slice('dm_ann_ch:'.length);
+  const session = channelLockManager.getDmStudioSession(token, i.user.id);
+  session.channelId = i.values[0];
+  await i.update(buildDmAnnounceStudioPayload(session));
+  return;
+ }
+
+ if (i.isStringSelectMenu() && i.customId.startsWith('dm_ann_ping:')) {
+  const token = i.customId.slice('dm_ann_ping:'.length);
+  const session = channelLockManager.getDmStudioSession(token, i.user.id);
+  session.pingMode = i.values[0] || 'none';
+  await i.update(buildDmAnnounceStudioPayload(session));
+  return;
+ }
+
+ if (i.isButton() && i.customId.startsWith('dm_ann_style:')) {
+  const token = i.customId.slice('dm_ann_style:'.length);
+  const session = channelLockManager.getDmStudioSession(token, i.user.id);
+  session.style = session.style === 'embed' ? 'text' : 'embed';
+  await i.update(buildDmAnnounceStudioPayload(session));
+  return;
+ }
+
+ if (i.isButton() && i.customId.startsWith('dm_ann_react:')) {
+  const token = i.customId.slice('dm_ann_react:'.length);
+  const session = channelLockManager.getDmStudioSession(token, i.user.id);
+  session.autoReact = !session.autoReact;
+  await i.update(buildDmAnnounceStudioPayload(session));
+  return;
+ }
+
+ if (i.isButton() && i.customId.startsWith('dm_ann_compose:')) {
+  const token = i.customId.slice('dm_ann_compose:'.length);
+  const session = channelLockManager.getDmStudioSession(token, i.user.id);
+  await i.showModal(buildDmAnnounceModal(session.token, session.draftText));
+  return;
+ }
+
+ if (i.isButton() && i.customId.startsWith('dm_ann_send:')) {
+  const token = i.customId.slice('dm_ann_send:'.length);
+  const session = channelLockManager.getDmStudioSession(token, i.user.id);
+  if (!session.draftText) {
+   throw new Error('Chưa có nội dung nháp — hãy bấm nút **✍️ Soạn nhiều dòng & Đăng** nhé!');
+  }
+  await i.deferUpdate();
+  const res = await channelLockManager.postBotAnnouncement({
+   channelId: session.channelId,
+   requesterId: i.user.id,
+   rawContent: session.draftText,
+   pingRoleId: session.pingMode !== 'none' && session.pingMode !== 'everyone' ? session.pingMode : null,
+   pingEveryone: session.pingMode === 'everyone',
+   style: session.style,
+   autoReact: session.autoReact,
+  });
+  const chObj = session.channels.find(c => c.id === session.channelId);
+  session.draftText = '';
+  const pubNote = res.published ? ' (đã Xuất bản tới người Theo dõi)' : '';
+  await i.editReply(
+   buildDmAnnounceStudioPayload(session, `✅ **Đã đăng bài thành công lên #${chObj?.name ?? 'kênh'}!**${pubNote} — Bạn có thể bấm **✍️ Soạn nhiều dòng & Đăng** nếu muốn đăng tiếp câu thứ 2.`),
+  );
+  return;
+ }
+
+ if (i.isModalSubmit() && i.customId.startsWith('dm_ann_modal:')) {
+  const token = i.customId.slice('dm_ann_modal:'.length);
+  const session = channelLockManager.getDmStudioSession(token, i.user.id);
+  const rawContent = i.fields.getTextInputValue('announce_content');
+  await i.deferUpdate();
+  const res = await channelLockManager.postBotAnnouncement({
+   channelId: session.channelId,
+   requesterId: i.user.id,
+   rawContent,
+   pingRoleId: session.pingMode !== 'none' && session.pingMode !== 'everyone' ? session.pingMode : null,
+   pingEveryone: session.pingMode === 'everyone',
+   style: session.style,
+   autoReact: session.autoReact,
+  });
+  const chObj = session.channels.find(c => c.id === session.channelId);
+  session.draftText = '';
+  const pubNote = res.published ? ' (đã Xuất bản tới người Theo dõi)' : '';
+  await i.editReply(
+   buildDmAnnounceStudioPayload(session, `✅ **Đã đăng bài thành công lên #${chObj?.name ?? 'kênh'}!**${pubNote} — Bấm **✍️ Soạn nhiều dòng & Đăng** nếu muốn bắn thêm tin tiếp theo!`),
+  );
+  return;
+ }
+
+ if (i.isButton() && (i.customId.startsWith('dm_ann_lock:') || i.customId.startsWith('dm_ann_unlock:'))) {
+  const wantLock = i.customId.startsWith('dm_ann_lock:');
+  const token = i.customId.split(':')[1];
+  const session = channelLockManager.getDmStudioSession(token, i.user.id);
+  await i.deferUpdate();
+  const chObj = session.channels.find(c => c.id === session.channelId);
+  if (wantLock) {
+   const res = await channelLockManager.lockChannel({
+    guildId: session.guildId,
+    channelId: session.channelId,
+    requesterId: i.user.id,
+    botUserId: client.user?.id,
+    mode: 'announcement',
+    allowReactions: true,
+   });
+   if (res.announcementStatus === 'converted_announcement' && chObj) {
+    chObj.type = 5;
+   }
+   const badge = res.announcementStatus === 'community_needed'
+    ? `🔒 Đã khóa ô chat **#${chObj?.name ?? 'kênh'}**! *(Bật Cộng đồng trên Server nếu muốn hiện nút xanh Theo dõi)*`
+    : `🔒📢 Đã khóa **#${chObj?.name ?? 'kênh'}** ở chế độ **Kênh Thông Báo (hiện nút xanh Theo dõi)**!`;
+   await i.editReply(buildDmAnnounceStudioPayload(session, badge));
+  } else {
+   await channelLockManager.unlockChannel({
+    guildId: session.guildId,
+    channelId: session.channelId,
+    requesterId: i.user.id,
+   });
+   await i.editReply(buildDmAnnounceStudioPayload(session, `🔓 Đã **mở khóa** lại kênh **#${chObj?.name ?? 'kênh'}** trên máy chủ!`));
+  }
+ }
+}
+
+// Xử lý toàn bộ tương tác từ Discord (Lệnh slash + Nút bấm + Menu + Modal trên khung Music Player & Trạm DM).
 client.on(Events.InteractionCreate, async i => {
- if (!i.guild) return;
+ if (!i.guild) {
+  try { await handleBotDmInteraction(i); } catch (e) { await replyInteractionError(i, e); }
+  return;
+ }
  if (GUILD_ID && i.guildId !== GUILD_ID) {
   return void i.reply({ content: 'Bot chỉ phục vụ máy chủ đã cấu hình.', flags: MessageFlags.Ephemeral }).catch(() => {});
  }

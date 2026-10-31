@@ -1,9 +1,11 @@
 import {
  ActionRowBuilder,
  ApplicationCommandType,
+ ApplicationIntegrationType,
  ChannelType,
  ContextMenuCommandBuilder,
  EmbedBuilder,
+ InteractionContextType,
  SlashCommandBuilder,
  StringSelectMenuBuilder,
  StringSelectMenuOptionBuilder,
@@ -815,3 +817,30 @@ export const contextCommands = [
 ];
 
 export const commands = [...slashCommands, ...contextCommands];
+
+// Lệnh riêng chỉ hiện trong hộp thư Tin nhắn riêng (DM) với Bot (contexts: [BotDM] -> KHÔNG bao giờ bị trùng lệnh ngoài Server!).
+export const dmCommands = [
+ new SlashCommandBuilder()
+  .setName('announce')
+  .setDescription('Mở Trạm Đăng Thông Báo & Khóa Kênh từ xa lên Server ngay trong DM (chỉ Chủ Bot)')
+  .setIntegrationTypes(ApplicationIntegrationType.GuildInstall)
+  .setContexts(InteractionContextType.BotDM)
+  .addStringOption(o => o
+   .setName('message')
+   .setDescription('Nội dung nháp (bỏ trống để chọn Kênh & Tag trên menu rồi mở bảng gõ nhiều dòng!)')
+   .setRequired(false)
+   .setMaxLength(1900))
+  .addStringOption(o => o
+   .setName('style')
+   .setDescription('Kiểu hiển thị bài đăng (mặc định: Tin nhắn chữ tự nhiên giống Meow Bot)')
+   .setRequired(false)
+   .addChoices(
+    { name: '💬 Tin nhắn chữ tự nhiên (Giống hệt Meow Bot)', value: 'text' },
+    { name: '📋 Khung thẻ Embed đóng viền màu nổi bật', value: 'embed' },
+   ))
+  .addBooleanOption(o => o
+   .setName('auto_react')
+   .setDescription('Tự gắn sẵn biểu cảm ❤️ 🔥 bên dưới bài vừa đăng (mặc định: True)')
+   .setRequired(false))
+  .toJSON(),
+];

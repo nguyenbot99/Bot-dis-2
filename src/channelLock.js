@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import {
  ActionRowBuilder,
  ButtonBuilder,
@@ -8,10 +9,13 @@ import {
  OverwriteType,
  PermissionFlagsBits,
  Routes,
+ StringSelectMenuBuilder,
+ StringSelectMenuOptionBuilder,
  TextInputBuilder,
  TextInputStyle,
 } from 'discord.js';
 import { isBotOwner } from './access.js';
+import { cleanText } from './playerGui.js';
 
 export const CHAT_LOCK_BITS =
  PermissionFlagsBits.SendMessages |
@@ -74,10 +78,250 @@ export function buildAnnounceModal({ channelId, pingRoleId = '', pingEveryone = 
  return modal;
 }
 
+export function buildDmAnnounceModal(token, defaultText = '') {
+ const modal = new ModalBuilder()
+  .setCustomId(`dm_ann_modal:${token}`)
+  .setTitle('📢 Soạn Bài Đăng Lên Server (Từ DM)');
+
+ const contentInput = new TextInputBuilder()
+  .setCustomId('announce_content')
+  .setLabel('Nội dung thông báo (Enter xuống dòng tự do)')
+  .setPlaceholder('Ví dụ:\nMấy nay nhiều việc quá\nHẹn mn cuối tuần sau nhé!\n\nFree')
+  .setStyle(TextInputStyle.Paragraph)
+  .setRequired(true)
+  .setMaxLength(1900);
+
+ if (defaultText && defaultText.trim()) {
+  contentInput.setValue(defaultText.slice(0, 1900));
+ }
+
+ modal.addComponents(new ActionRowBuilder().addComponents(contentInput));
+ return modal;
+}
+
+// Dựng Trạm Đăng Thông Báo & Khóa Kênh từ xa ngay trong Tin nhắn riêng (DM) với Bot cho Chủ Bot.
+export function buildDmAnnounceStudioPayload(session, statusNotice = null) {
+ const selCh = session.channels.find(c => c.id === session.channelId) ?? session.channels[0];
+ const chIcon = selCh?.type === ChannelType.GuildAnnouncement ? '📢' : '#';
+ const chTypeLabel = selCh?.type === ChannelType.GuildAnnouncement ? 'Kênh Thông Báo (có nút Theo dõi)' : 'Kênh Văn Bản thường';
+
+ let pingLabel = '🔕 Không tag ai';
+ if (session.pingMode === 'everyone') {
+  pingLabel = '🌐 Tag `@everyone`';
+ } else if (session.pingMode && session.pingMode !== 'none') {
+  const foundRole = session.roles.find(r => r.id === session.pingMode);
+  pingLabel = foundRole ? `🏷️ Tag Role \`@${foundRole.name}\`` : '🔕 Không tag ai';
+ }
+
+ const descLines = [
+  statusNotice ? `> ${statusNotice}\n` : null,
+  `🏠 **Máy chủ đích :** **${cleanText(session.guildName, 55)}**`,
+  `📍 **Kênh đang chọn :** **${chIcon}${cleanText(selCh?.name ?? 'kênh', 45)}** *(${chTypeLabel})*`,
+  `🏷️ **Chế độ Tag :** ${pingLabel}`,
+  `🎨 **Định dạng :** ${session.style === 'embed' ? '📋 Khung thẻ Embed' : '💬 Chữ tự nhiên (giống Meow Bot)'} • ${session.autoReact ? '❤️ 🔥 Tự thả tim: **Bật**' : '🤍 Tự thả tim: **Tắt**'}`,
+ ].filter(Boolean);
+
+ if (session.draftText) {
+  const preview = session.draftText.length > 350
+   ? `${session.draftText.slice(0, 350)}…`
+   : session.draftText;
+  descLines.push('', '📝 **Nội dung nháp sẵn sàng đăng:**', `\`\`\`\n${preview.replace(/```/g, "'''")}\n\`\`\``);
+ } else {
+  descLines.push('', '💡 *Chọn kênh & chế độ tag bên dưới, rồi bấm **✍️ Soạn nhiều dòng & Đăng** để viết bài thoải mái!*');
+ }
+
+ const embed = new EmbedBuilder()
+  .setColor(0x8b5cf6)
+  .setTitle('📢 Trạm Đăng Thông Báo & Quản Trị Kênh Từ Xa (DM)')
+  .setDescription(descLines.join('\n'))
+  .setFooter({ text: 'Chỉ Chủ Bot mới mở được bảng điều khiển ngầm này • 0 MB RAM' })
+  .setTimestamp();
+
+ const components = [];
+
+ // Hàng 1: Menu chọn Kênh trên Server (ưu tiên kênh 📢 Thông báo lên đầu)
+ if (session.channels.length > 0) {
+  const chSelect = new StringSelectMenuBuilder()
+   .setCustomId(`dm_ann_ch:${session.token}`)
+   .setPlaceholder(`📍 Đang chọn: ${chIcon}${cleanText(selCh?.name ?? 'Chọn kênh', 35)}`)
+   .addOptions(
+    session.channels.slice(0, 25).map(ch =>
+     new StringSelectMenuOptionBuilder()
+      .setLabel(`${ch.type === ChannelType.GuildAnnouncement ? '📢' : '#'} ${cleanText(ch.name, 85)}`)
+      .setDescription(ch.type === ChannelType.GuildAnnouncement ? 'Kênh Thông Báo (hỗ trợ nút Theo dõi)' : 'Kênh văn bản trong máy chủ')
+      .setValue(ch.id)
+      .setDefault(ch.id === session.channelId),
+    ),
+   );
+  components.push(new ActionRowBuilder().addComponents(chSelect));
+ }
+
+ // Hàng 2: Menu chọn Tag (@everyone hoặc Role như @Member)
+ const pingOpts = [
+  new StringSelectMenuOptionBuilder()
+   .setLabel('🔕 Không tag (Đăng im lặng)')
+   .setDescription('Chỉ đăng nội dung bài viết, không réo chuông ai')
+   .setValue('none')
+   .setDefault(!session.pingMode || session.pingMode === 'none'),
+  new StringSelectMenuOptionBuilder()
+   .setLabel('🌐 Tag @everyone (Thông báo toàn máy chủ)')
+   .setDescription('Đính kèm @everyone ở đầu bài thông báo')
+   .setValue('everyone')
+   .setDefault(session.pingMode === 'everyone'),
+  ...session.roles.slice(0, 23).map(r =>
+   new StringSelectMenuOptionBuilder()
+    .setLabel(`🏷️ Tag @${cleanText(r.name, 75)}`)
+    .setDescription(`Đính kèm tag vai trò @${cleanText(r.name, 60)} ở đầu bài`)
+    .setValue(r.id)
+    .setDefault(session.pingMode === r.id),
+  ),
+ ];
+ components.push(
+  new ActionRowBuilder().addComponents(
+   new StringSelectMenuBuilder()
+    .setCustomId(`dm_ann_ping:${session.token}`)
+    .setPlaceholder('🏷️ Chọn chế độ Tag ở đầu bài đăng')
+    .addOptions(pingOpts),
+  ),
+ );
+
+ // Hàng 3: Nút Đăng ngay / Mở bảng gõ nhiều dòng + Đổi kiểu & Tự thả tim
+ const postBtns = [];
+ if (session.draftText) {
+  postBtns.push(
+   new ButtonBuilder()
+    .setCustomId(`dm_ann_send:${session.token}`)
+    .setStyle(ButtonStyle.Success)
+    .setLabel('Đăng ngay nội dung nháp')
+    .setEmoji('🚀'),
+  );
+ }
+ postBtns.push(
+  new ButtonBuilder()
+   .setCustomId(`dm_ann_compose:${session.token}`)
+   .setStyle(ButtonStyle.Primary)
+   .setLabel(session.draftText ? 'Sửa & Đăng' : 'Soạn nhiều dòng & Đăng')
+   .setEmoji('✍️'),
+  new ButtonBuilder()
+   .setCustomId(`dm_ann_style:${session.token}`)
+   .setStyle(ButtonStyle.Secondary)
+   .setLabel(session.style === 'embed' ? 'Kiểu: Embed' : 'Kiểu: Chữ')
+   .setEmoji('🎨'),
+  new ButtonBuilder()
+   .setCustomId(`dm_ann_react:${session.token}`)
+   .setStyle(ButtonStyle.Secondary)
+   .setLabel(session.autoReact ? 'Tim ❤️🔥: Bật' : 'Tim ❤️🔥: Tắt'),
+ );
+ components.push(new ActionRowBuilder().addComponents(postBtns));
+
+ // Hàng 4: Khóa / Mở khóa nhanh kênh đang chọn ngay từ trong DM!
+ components.push(
+  new ActionRowBuilder().addComponents(
+   new ButtonBuilder()
+    .setCustomId(`dm_ann_lock:${session.token}`)
+    .setStyle(ButtonStyle.Danger)
+    .setLabel('Khóa kênh này (📢 Theo dõi)')
+    .setEmoji('🔒'),
+   new ButtonBuilder()
+    .setCustomId(`dm_ann_unlock:${session.token}`)
+    .setStyle(ButtonStyle.Success)
+    .setLabel('Mở khóa kênh này')
+    .setEmoji('🔓'),
+  ),
+ );
+
+ return {
+  embeds: [embed],
+  components,
+  allowedMentions: { parse: [] },
+ };
+}
+
 // Bộ quản lý Khóa / Mở khóa kênh (hỗ trợ cả Kênh Thông Báo 📢 có nút "Theo dõi" y hệt ảnh mẫu) & Đăng bài bằng Bot (~0 MB RAM).
 export function createChannelLockManager({ rest, env = process.env } = {}) {
  // Lưu nhẹ bản chụp quyền gốc của kênh trước khi khóa để lúc /unlock trả lại chính xác (tối đa 30 kênh ~ 2 KB RAM).
  const savedSnapshots = new Map();
+ // Phiên soạn thảo thông báo qua DM của Chủ Bot (tối đa 8 phiên, tự hết hạn sau 30 phút ~ 2 KB RAM).
+ const dmSessions = new Map();
+ const DM_SESSION_TTL_MS = 30 * 60 * 1000;
+
+ async function openDmStudioSession({
+  guildId,
+  guildName = 'Máy chủ Discord',
+  requesterId,
+  initialMessage = '',
+  style = 'text',
+  autoReact = true,
+ } = {}) {
+  assertOwner(requesterId);
+  const gId = String(guildId ?? '').trim();
+  if (!/^\d{15,22}$/.test(gId)) {
+   throw new Error('Bot hiện chưa tham gia máy chủ nào để đăng thông báo.');
+  }
+
+  const [rawChannels, rawRoles] = await Promise.all([
+   rest.get(Routes.guildChannels(gId)).catch(() => []),
+   rest.get(Routes.guildRoles(gId)).catch(() => []),
+  ]);
+
+  const textChannels = (Array.isArray(rawChannels) ? rawChannels : [])
+   .filter(ch => ch && (ch.type === ChannelType.GuildText || ch.type === ChannelType.GuildAnnouncement))
+   .sort((a, b) => {
+    const aAnn = a.type === ChannelType.GuildAnnouncement ? 2 : (/(announc|thong-bao|thông-báo|tin-tuc|update)/i.test(a.name ?? '') ? 1 : 0);
+    const bAnn = b.type === ChannelType.GuildAnnouncement ? 2 : (/(announc|thong-bao|thông-báo|tin-tuc|update)/i.test(b.name ?? '') ? 1 : 0);
+    if (bAnn !== aAnn) return bAnn - aAnn;
+    return (Number(a.position) || 0) - (Number(b.position) || 0);
+   })
+   .slice(0, 25)
+   .map(ch => ({ id: String(ch.id), name: String(ch.name ?? 'channel'), type: ch.type }));
+
+  if (textChannels.length === 0) {
+   throw new Error('Không tìm thấy kênh văn bản hoặc kênh thông báo nào trong máy chủ.');
+  }
+
+  const roles = (Array.isArray(rawRoles) ? rawRoles : [])
+   .filter(r => r && String(r.id) !== gId && !r.managed)
+   .sort((a, b) => (Number(b.position) || 0) - (Number(a.position) || 0))
+   .slice(0, 23)
+   .map(r => ({ id: String(r.id), name: String(r.name ?? 'role') }));
+
+  const now = Date.now();
+  for (const [k, v] of dmSessions) {
+   if (now > v.expiresAt) dmSessions.delete(k);
+  }
+  if (dmSessions.size >= 8) {
+   const oldest = dmSessions.keys().next().value;
+   if (oldest) dmSessions.delete(oldest);
+  }
+
+  const token = randomBytes(6).toString('hex');
+  const session = {
+   token,
+   guildId: gId,
+   guildName,
+   channels: textChannels,
+   roles,
+   channelId: textChannels[0].id,
+   pingMode: 'none', // 'none' | 'everyone' | roleId
+   style: style === 'embed' ? 'embed' : 'text',
+   autoReact: Boolean(autoReact),
+   draftText: String(initialMessage ?? '').replace(/\\n/g, '\n').trim(),
+   expiresAt: now + DM_SESSION_TTL_MS,
+  };
+  dmSessions.set(token, session);
+  return session;
+ }
+
+ function getDmStudioSession(token, requesterId) {
+  assertOwner(requesterId);
+  const s = dmSessions.get(String(token ?? ''));
+  if (!s || Date.now() > s.expiresAt) {
+   dmSessions.delete(String(token ?? ''));
+   throw new Error('Bảng điều khiển DM này đã hết hạn (30 phút) — hãy gõ lại `/announce` ngay trong DM để mở bảng mới nhé!');
+  }
+  s.expiresAt = Date.now() + DM_SESSION_TTL_MS;
+  return s;
+ }
 
  function assertOwner(userId) {
   if (!isBotOwner(userId, env)) {
@@ -414,5 +658,7 @@ export function createChannelLockManager({ rest, env = process.env } = {}) {
   lockChannel,
   unlockChannel,
   postBotAnnouncement,
+  openDmStudioSession,
+  getDmStudioSession,
  };
 }

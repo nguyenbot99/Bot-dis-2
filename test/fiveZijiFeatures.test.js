@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { ApplicationCommandType, ChannelType, PermissionFlagsBits } from 'discord.js';
+import { ApplicationCommandType, ChannelType, InteractionContextType, PermissionFlagsBits } from 'discord.js';
 import ffmpeg from 'ffmpeg-static';
 
 const voiceRequire = createRequire(import.meta.resolve('@discordjs/voice'));
@@ -10,10 +10,15 @@ const prism = voiceRequire('prism-media');
 
 import { assertMusicAccess } from '../src/access.js';
 import { installAudioEnhancer, setAudioEnhancement, triggerSmoothTransitionFade } from '../src/audioEnhancer.js';
-import { CONTEXT_AVATAR_NAME, CONTEXT_PLAY_NAME, contextCommands, slashCommands } from '../src/commands.js';
+import { CONTEXT_AVATAR_NAME, CONTEXT_PLAY_NAME, contextCommands, dmCommands, slashCommands } from '../src/commands.js';
 import { isStaleBotNoticeMessage } from '../src/messageCleaner.js';
 import { buildSaveQueuePayload, extractPlayableFromMessage, extractSaveQueueUrls } from '../src/saveQueue.js';
-import { buildAnnounceModal, createChannelLockManager } from '../src/channelLock.js';
+import {
+ buildAnnounceModal,
+ buildDmAnnounceModal,
+ buildDmAnnounceStudioPayload,
+ createChannelLockManager,
+} from '../src/channelLock.js';
 import { createSpamTagManager, MAX_SPAM_COUNT } from '../src/spamTag.js';
 import { createWebRemoteManager, normalizeRemoteCommandInput } from '../src/webRemote.js';
 import workerDefault, { NowPlayingRoom } from '../cloudflare-worker/worker.js';
@@ -503,4 +508,50 @@ test('Feature #7: /lock, /unlock & /announce (Owner-Only Announcement Follow Mod
  assert.equal(channelType, ChannelType.GuildText);
  const restoredMemberOv = currentOverwrites.find(o => o.id === '777777777777777777');
  assert.ok((BigInt(restoredMemberOv.allow) & PermissionFlagsBits.SendMessages) !== 0n);
+
+ // 5. Kiểm tra lệnh /announce trong hộp thư riêng (BotDM): contexts=[1] (không trùng lệnh ngoài Server) + Trạm chọn Kênh/Role/Khóa kênh từ xa
+ assert.equal(dmCommands.length, 1);
+ assert.equal(dmCommands[0].name, 'announce');
+ assert.deepEqual(dmCommands[0].contexts, [InteractionContextType.BotDM]);
+
+ const dmRest = {
+  get: async route => {
+   const r = String(route);
+   if (r.endsWith('/channels')) {
+    return [
+     { id: '100000000000000001', name: 'chat-chung', type: ChannelType.GuildText, position: 0 },
+     { id: '100000000000000002', name: 'announcement', type: ChannelType.GuildAnnouncement, position: 3 },
+    ];
+   }
+   if (r.endsWith('/roles')) {
+    return [
+     { id: '111111111111111111', name: '@everyone', position: 0, managed: false },
+     { id: '777777777777777777', name: 'Member', position: 2, managed: false },
+     { id: '666666666666666666', name: 'BotRole', position: 5, managed: true },
+    ];
+   }
+   return [];
+  },
+ };
+ const dmMgr = createChannelLockManager({ rest: dmRest });
+ await assert.rejects(
+  () => dmMgr.openDmStudioSession({ guildId: '111111111111111111', requesterId: '999999999999999999' }),
+  /Chỉ Chủ Bot/,
+ );
+
+ const dmSession = await dmMgr.openDmStudioSession({
+  guildId: '111111111111111111',
+  guildName: '⚡ Box Sét ⚡⚡',
+  requesterId: '1243061570247069696',
+  initialMessage: 'Bản tin tối\\nFree',
+ });
+ // Tự động ưu tiên chọn kênh 📢 announcement lên đầu tiên!
+ assert.equal(dmSession.channelId, '100000000000000002');
+ assert.equal(dmSession.roles.length, 1);
+ assert.equal(dmSession.roles[0].name, 'Member');
+
+ const studioPayload = buildDmAnnounceStudioPayload(dmSession);
+ assert.equal(studioPayload.components.length, 4);
+ const dmModalJson = buildDmAnnounceModal(dmSession.token, dmSession.draftText).toJSON();
+ assert.equal(dmModalJson.custom_id, `dm_ann_modal:${dmSession.token}`);
 });

@@ -786,6 +786,19 @@ export const slashCommands = definitions.map(([name, description]) => {
    .setDescription('Đặt True nếu muốn tag @everyone ở đầu bài thông báo')
    .setRequired(false));
   c.addStringOption(o => o
+   .setName('font')
+   .setDescription('Chỉnh cỡ chữ / kiểu chữ bài đăng (VD: # Chữ siêu to, ## To vừa, > Trích dẫn...)')
+   .setRequired(false)
+   .addChoices(
+    { name: '💬 Tự do (Giữ nguyên # , ## , ** bạn tự gõ)', value: 'normal' },
+    { name: '📢 # Dòng đầu Siêu To + Thân bài thường (Chuẩn Thông Báo)', value: 'h1_title' },
+    { name: '🔥 # Chữ Siêu To Đậm toàn bài (# hello)', value: 'h1_all' },
+    { name: '✨ ## Chữ To Vừa toàn bài (## hello)', value: 'h2_all' },
+    { name: '📌 ### Cỡ Tiêu Đề Gọn (### hello)', value: 'h3_bold' },
+    { name: '💎 >>> Thanh Trích Dẫn Dọc + In Đậm', value: 'quote_bold' },
+    { name: '🪶 -# Chữ Nhỏ Chú Thích Tinh Tế', value: 'subtext' },
+   ));
+  c.addStringOption(o => o
    .setName('style')
    .setDescription('Kiểu hiển thị bài đăng của Bot (mặc định: Tin nhắn chữ tự nhiên giống Meow Bot)')
    .setRequired(false)
@@ -833,6 +846,19 @@ export const dmCommands = [
    .setDescription('Tag người dùng theo Tên/Biệt danh Server hoặc ID số (ngăn cách bằng dấu phẩy)')
    .setRequired(false)
    .setMaxLength(400))
+  .addStringOption(o => o
+   .setName('font')
+   .setDescription('Chỉnh cỡ chữ / kiểu chữ bài đăng (VD: # Chữ siêu to, ## To vừa, > Trích dẫn...)')
+   .setRequired(false)
+   .addChoices(
+    { name: '💬 Tự do (Giữ nguyên # , ## , ** bạn tự gõ)', value: 'normal' },
+    { name: '📢 # Dòng đầu Siêu To + Thân bài thường (Chuẩn Thông Báo)', value: 'h1_title' },
+    { name: '🔥 # Chữ Siêu To Đậm toàn bài (# hello)', value: 'h1_all' },
+    { name: '✨ ## Chữ To Vừa toàn bài (## hello)', value: 'h2_all' },
+    { name: '📌 ### Cỡ Tiêu Đề Gọn (### hello)', value: 'h3_bold' },
+    { name: '💎 >>> Thanh Trích Dẫn Dọc + In Đậm', value: 'quote_bold' },
+    { name: '🪶 -# Chữ Nhỏ Chú Thích Tinh Tế', value: 'subtext' },
+   ))
   .addStringOption(o => o
    .setName('style')
    .setDescription('Kiểu hiển thị bài đăng (mặc định: Tin nhắn chữ tự nhiên giống Meow Bot)')

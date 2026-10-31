@@ -14,11 +14,13 @@ import { CONTEXT_AVATAR_NAME, CONTEXT_PLAY_NAME, contextCommands, dmCommands, sl
 import { isStaleBotNoticeMessage } from '../src/messageCleaner.js';
 import { buildSaveQueuePayload, extractPlayableFromMessage, extractSaveQueueUrls } from '../src/saveQueue.js';
 import {
+ applyAnnouncementFont,
  buildAnnounceModal,
  buildDmAnnounceModal,
  buildDmAnnounceStudioPayload,
  buildDmUserTagModal,
  createChannelLockManager,
+ getNextAnnounceFont,
 } from '../src/channelLock.js';
 import { createSpamTagManager, MAX_SPAM_COUNT } from '../src/spamTag.js';
 import { createWebRemoteManager, normalizeRemoteCommandInput } from '../src/webRemote.js';
@@ -606,12 +608,20 @@ test('Feature #7: /lock, /unlock & /announce (Owner-Only Announcement Follow Mod
  assert.deepEqual(dmSession.pingUsers.map(u => u.id), ['333333333333333333', '222222222222222222']);
 
  const studioPayload = buildDmAnnounceStudioPayload(dmSession);
- // Đúng tối đa 5 ActionRow chuẩn Discord, hàng 3 mặc định là UserSelectMenu (type 5), hàng 4 có <= 5 nút, hàng 5 có nút Xóa Tag User + Trang kênh!
+ // Đúng tối đa 5 ActionRow chuẩn Discord, hàng 3 mặc định là UserSelectMenu (type 5), hàng 4 & hàng 5 đều <= 5 nút!
  assert.equal(studioPayload.components.length, 5);
  assert.equal(studioPayload.components[0].components[0].options.length, 25);
  assert.equal(studioPayload.components[2].components[0].type, 5);
  assert.ok(studioPayload.components[3].components.length <= 5);
- assert.equal(studioPayload.components[4].components.length, 4);
+ assert.equal(studioPayload.components[4].components.length, 5);
+
+ // Kiểm tra chỉnh font / cỡ chữ (# hello, # Tiêu đề dòng đầu, ## To vừa, >>> Trích dẫn, -# Chữ nhỏ) & chống lặp kép # # hello
+ assert.equal(applyAnnouncementFont('hello\nanh em', 'h1_title'), '# hello\nanh em');
+ assert.equal(applyAnnouncementFont('# hello\nworld', 'h1_all'), '# hello\n# world');
+ assert.equal(applyAnnouncementFont('hello', 'h2_all'), '## hello');
+ assert.equal(applyAnnouncementFont('hello', 'subtext'), '-# hello');
+ assert.equal(applyAnnouncementFont('hello', 'quote_bold'), '>>> **hello**');
+ assert.equal(getNextAnnounceFont('normal'), 'h1_title');
 
  // Khi gõ từ khóa ngắn trùng nhiều thành viên ("nguyenduc"), hiện danh sách gợi ý ở hàng 3 để chọn đúng người
  const ambigRes = await dmMgr.resolveDmUserTargets(dmSession, 'nguyenduc', {
@@ -633,6 +643,17 @@ test('Feature #7: /lock, /unlock & /announce (Owner-Only Announcement Follow Mod
  assert.equal(dmPosted.length, 1);
  assert.equal(dmPosted[0].content, '<@222222222222222222> Chúc mừng <@333333333333333333> vô địch giải tuần nhé!');
  assert.deepEqual(dmPosted[0].allowed_mentions.users.sort(), ['222222222222222222', '333333333333333333']);
+
+ // Khi kèm @everyone VÀ dùng chữ siêu to (# hello), tự động xuống dòng (\n) sau @everyone để Discord không làm mất cỡ chữ to!
+ await dmMgr.postBotAnnouncement({
+  guildId: '111111111111111111',
+  channelId: '100000000000000002',
+  requesterId: '1243061570247069696',
+  rawContent: 'hello',
+  pingEveryone: true,
+  fontMode: 'h1_all',
+ });
+ assert.equal(dmPosted[1].content, '@everyone\n# hello');
 
  // Tự hồi phục phiên khi token chưa có trong RAM (ví dụ sau khi Bot restart trên host)
  const recovered = await dmMgr.ensureDmStudioSession('deadbeef1234', {

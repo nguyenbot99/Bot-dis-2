@@ -37,6 +37,97 @@ export const POSTER_ALLOW_BITS =
 
 const DEFAULT_ANNOUNCE_REACTIONS = ['❤️', '🔥'];
 
+export const ANNOUNCE_FONT_MODES = {
+ normal: {
+  id: 'normal',
+  shortLabel: 'Tự do (#, **)',
+  fullLabel: '💬 Tự do (gõ `# hello`, `##`, `**` tùy ý)',
+ },
+ h1_title: {
+  id: 'h1_title',
+  shortLabel: '# Tiêu đề Lớn',
+  fullLabel: '📢 `#` Dòng đầu Siêu To + Thân bài thường',
+ },
+ h1_all: {
+  id: 'h1_all',
+  shortLabel: '# Siêu To H1',
+  fullLabel: '🔥 `#` Chữ Siêu To Đậm toàn bài (`# hello`)',
+ },
+ h2_all: {
+  id: 'h2_all',
+  shortLabel: '## To Vừa H2',
+  fullLabel: '✨ `##` Chữ To Vừa toàn bài (`## hello`)',
+ },
+ h3_bold: {
+  id: 'h3_bold',
+  shortLabel: '### Vừa H3',
+  fullLabel: '📌 `###` Cỡ Tiêu Đề Gọn (`### hello`)',
+ },
+ quote_bold: {
+  id: 'quote_bold',
+  shortLabel: '> Trích Dẫn',
+  fullLabel: '💎 `>>>` Thanh Trích Dẫn Dọc + In Đậm',
+ },
+ subtext: {
+  id: 'subtext',
+  shortLabel: '-# Chữ Nhỏ',
+  fullLabel: '🪶 `-#` Chữ Nhỏ Chú Thích Tinh Tế',
+ },
+};
+
+const FONT_MODE_ORDER = ['normal', 'h1_title', 'h1_all', 'h2_all', 'h3_bold', 'quote_bold', 'subtext'];
+
+export function getNextAnnounceFont(current = 'normal') {
+ const idx = FONT_MODE_ORDER.indexOf(String(current || 'normal'));
+ return FONT_MODE_ORDER[(idx + 1) % FONT_MODE_ORDER.length];
+}
+
+function stripLineHeadingPrefix(line) {
+ return String(line ?? '').replace(/^\s*(?:#{1,3}|-#)\s+/, '');
+}
+
+// Áp dụng kiểu/cỡ chữ Markdown chuẩn Discord mà không bao giờ bị lặp kép `# # hello`.
+export function applyAnnouncementFont(rawText, fontMode = 'normal') {
+ const text = String(rawText ?? '').trim();
+ if (!text) return '';
+ const mode = ANNOUNCE_FONT_MODES[fontMode] ? fontMode : 'normal';
+ if (mode === 'normal') return text;
+
+ const lines = text.split('\n');
+ if (mode === 'h1_title') {
+  let doneFirst = false;
+  return lines
+   .map(line => {
+    if (!doneFirst && line.trim()) {
+     doneFirst = true;
+     return `# ${stripLineHeadingPrefix(line.trim())}`;
+    }
+    return line;
+   })
+   .join('\n');
+ }
+
+ if (mode === 'h1_all' || mode === 'h2_all' || mode === 'h3_bold' || mode === 'subtext') {
+  const prefix = mode === 'h1_all' ? '# ' : mode === 'h2_all' ? '## ' : mode === 'h3_bold' ? '### ' : '-# ';
+  return lines
+   .map(line => (line.trim() ? `${prefix}${stripLineHeadingPrefix(line.trim())}` : ''))
+   .join('\n');
+ }
+
+ if (mode === 'quote_bold') {
+  const cleaned = text.replace(/^>>>\s*/, '');
+  const formattedLines = cleaned.split('\n').map(line => {
+   const t = line.replace(/^>\s?/, '').trim();
+   if (!t) return '';
+   if (/^(?:#{1,3}\s|-#\s|\*\*.*\*\*$)/.test(t)) return t;
+   return `**${t}**`;
+  });
+  return `>>> ${formattedLines.join('\n')}`;
+ }
+
+ return text;
+}
+
 export function buildChannelLockButtons(channelId, { locked = true } = {}) {
  const ch = String(channelId);
  return new ActionRowBuilder().addComponents(
@@ -54,13 +145,21 @@ export function buildChannelLockButtons(channelId, { locked = true } = {}) {
  );
 }
 
-export function buildAnnounceModal({ channelId, pingRoleId = '', pingEveryone = false, style = 'text', autoReact = true }) {
+export function buildAnnounceModal({
+ channelId,
+ pingRoleId = '',
+ pingEveryone = false,
+ style = 'text',
+ autoReact = true,
+ fontMode = 'normal',
+}) {
  const meta = [
   channelId,
   pingRoleId || '0',
   pingEveryone ? '1' : '0',
   style === 'embed' ? 'embed' : 'text',
   autoReact ? '1' : '0',
+  ANNOUNCE_FONT_MODES[fontMode] ? fontMode : 'normal',
  ].join(':');
 
  const modal = new ModalBuilder()
@@ -70,7 +169,7 @@ export function buildAnnounceModal({ channelId, pingRoleId = '', pingEveryone = 
  const contentInput = new TextInputBuilder()
   .setCustomId('announce_content')
   .setLabel('Nội dung thông báo (Enter xuống dòng tự do)')
-  .setPlaceholder('Ví dụ:\nMấy nay nhiều việc quá\nHẹn mn cuối tuần sau nhé!\n\nFree')
+  .setPlaceholder('Mẹo cỡ chữ: # Chữ siêu to | ## To vừa | **Đậm** | > Trích dẫn\nEnter xuống dòng tự do!')
   .setStyle(TextInputStyle.Paragraph)
   .setRequired(true)
   .setMaxLength(1900);
@@ -87,7 +186,7 @@ export function buildDmAnnounceModal(token, defaultText = '', currentUsers = [])
  const contentInput = new TextInputBuilder()
   .setCustomId('announce_content')
   .setLabel('Nội dung thông báo (Enter xuống dòng tự do)')
-  .setPlaceholder('VD: Tối nay 20h họp mặt nhé!\n(Có thể gõ thẳng @username hoặc <@ID> trong bài)')
+  .setPlaceholder('Mẹo cỡ chữ: # hello (siêu to) | ## To vừa | **Đậm** | > Trích dẫn | @username')
   .setStyle(TextInputStyle.Paragraph)
   .setRequired(true)
   .setMaxLength(1900);
@@ -155,22 +254,34 @@ export function buildDmAnnounceStudioPayload(session, statusNotice = null) {
   ? pingUsers.map(u => `<@${u.id}> *(${cleanText(u.label || u.id, 28)})*`).join(' • ')
   : '🔕 Chưa chọn ai *(bấm **🎯 Tag Tên / ID** hoặc chọn ở menu dưới)*';
 
+ const fontInfo = ANNOUNCE_FONT_MODES[session.fontMode] ?? ANNOUNCE_FONT_MODES.normal;
  const descLines = [
   statusNotice ? `> ${statusNotice}\n` : null,
   `🏠 **Máy chủ đích :** **${cleanText(session.guildName, 55)}**`,
   `📍 **Kênh đang chọn :** **${chIcon}${cleanText(selCh?.name ?? 'kênh', 45)}** *(${chTypeLabel})*`,
   `🏷️ **Tag Vai trò :** ${pingLabel}`,
   `👤 **Tag Người dùng (${pingUsers.length}) :** ${userTagSummary}`,
+  `🔤 **Cỡ & Kiểu chữ :** ${fontInfo.fullLabel}`,
   `🎨 **Định dạng :** ${session.style === 'embed' ? '📋 Khung thẻ Embed' : '💬 Chữ tự nhiên (giống Meow Bot)'} • ${session.autoReact ? '❤️ 🔥 Tự thả tim: **Bật**' : '🤍 Tự thả tim: **Tắt**'}`,
  ].filter(Boolean);
 
  if (session.draftText) {
-  const preview = session.draftText.length > 350
-   ? `${session.draftText.slice(0, 350)}…`
-   : session.draftText;
-  descLines.push('', '📝 **Nội dung nháp sẵn sàng đăng:**', `\`\`\`\n${preview.replace(/```/g, "'''")}\n\`\`\``);
+  const formattedPreview = applyAnnouncementFont(session.draftText, session.fontMode);
+  const preview = formattedPreview.length > 550
+   ? `${formattedPreview.slice(0, 550)}…`
+   : formattedPreview;
+  descLines.push(
+   '',
+   '📝 **Xem trước cỡ chữ thực tế sẽ đăng lên Server:**',
+   '───────────────',
+   preview,
+   '───────────────',
+  );
  } else {
-  descLines.push('', '💡 *Mẹo: Bấm **🎯 Tag Tên / ID** để tìm tên thành viên trong Server hoặc dán ID số (hoặc gõ thẳng `@username` ngay trong bài viết)!*');
+  descLines.push(
+   '',
+   '💡 *Gõ `# hello` (chữ siêu to), `## hello` (chữ to vừa), `**đậm**`, hoặc bấm nút **🔤 Font** bên dưới để Bot tự phóng to cỡ chữ cho bạn!*',
+  );
  }
 
  const embed = new EmbedBuilder()
@@ -295,17 +406,22 @@ export function buildDmAnnounceStudioPayload(session, statusNotice = null) {
  );
  components.push(new ActionRowBuilder().addComponents(postBtns));
 
- // Hàng 5: Khóa / Mở khóa kênh + Xóa Tag User + Đổi trang kênh nếu Server > 25 kênh chữ
+ // Hàng 5: Đổi cỡ chữ Font + Khóa / Mở khóa kênh + Xóa Tag User + Đổi trang kênh (tối đa đúng 5 nút chuẩn Discord!)
  const lockRowBtns = [
+  new ButtonBuilder()
+   .setCustomId(`dm_ann_font:${session.token}`)
+   .setStyle(fontInfo.id === 'normal' ? ButtonStyle.Secondary : ButtonStyle.Primary)
+   .setLabel(`Font: ${fontInfo.shortLabel}`)
+   .setEmoji('🔤'),
   new ButtonBuilder()
    .setCustomId(`dm_ann_lock:${session.token}`)
    .setStyle(ButtonStyle.Danger)
-   .setLabel('Khóa kênh (📢 Theo dõi)')
+   .setLabel('Khóa kênh')
    .setEmoji('🔒'),
   new ButtonBuilder()
    .setCustomId(`dm_ann_unlock:${session.token}`)
    .setStyle(ButtonStyle.Success)
-   .setLabel('Mở khóa kênh')
+   .setLabel('Mở khóa')
    .setEmoji('🔓'),
  ];
  if (pingUsers.length > 0) {
@@ -313,7 +429,7 @@ export function buildDmAnnounceStudioPayload(session, statusNotice = null) {
    new ButtonBuilder()
     .setCustomId(`dm_ann_clearusers:${session.token}`)
     .setStyle(ButtonStyle.Secondary)
-    .setLabel(`Xóa Tag User (${pingUsers.length})`)
+    .setLabel(`Xóa Tag (${pingUsers.length})`)
     .setEmoji('🧹'),
   );
  }
@@ -322,7 +438,7 @@ export function buildDmAnnounceStudioPayload(session, statusNotice = null) {
    new ButtonBuilder()
     .setCustomId(`dm_ann_chpage:${session.token}`)
     .setStyle(ButtonStyle.Secondary)
-    .setLabel(`Trang kênh ${safePage + 1}/${totalChPages}`)
+    .setLabel(`Kênh ${safePage + 1}/${totalChPages}`)
     .setEmoji('📄'),
   );
  }
@@ -349,6 +465,7 @@ export function createChannelLockManager({ rest, env = process.env } = {}) {
   requesterId,
   initialMessage = '',
   style = 'text',
+  fontMode = 'normal',
   autoReact = true,
   preferredToken = null,
  } = {}) {
@@ -407,6 +524,7 @@ export function createChannelLockManager({ rest, env = process.env } = {}) {
    pingMode: 'none', // 'none' | 'everyone' | roleId
    pingUsers: [], // [{ id, label }]
    pendingUserMatches: [], // [{ id, label, sublabel }] khi tìm tên khớp nhiều người trên Server
+   fontMode: ANNOUNCE_FONT_MODES[fontMode] ? fontMode : 'normal',
    style: style === 'embed' ? 'embed' : 'text',
    autoReact: Boolean(autoReact),
    draftText: String(initialMessage ?? '').replace(/\\n/g, '\n').trim(),
@@ -837,15 +955,17 @@ export function createChannelLockManager({ rest, env = process.env } = {}) {
   pingRoleId = null,
   pingEveryone = false,
   pingUserIds = [],
+  fontMode = 'normal',
   style = 'text',
   autoReact = true,
   crosspost = true,
  } = {}) {
   assertOwner(requesterId);
   const chId = String(channelId ?? '').trim();
-  let normalizedText = String(rawContent ?? '')
-   .replace(/\\n/g, '\n')
-   .trim();
+  let normalizedText = applyAnnouncementFont(
+   String(rawContent ?? '').replace(/\\n/g, '\n').trim(),
+   fontMode,
+  );
   if (!normalizedText) {
    throw new Error('Nội dung thông báo không được để trống.');
   }
@@ -928,8 +1048,12 @@ export function createChannelLockManager({ rest, env = process.env } = {}) {
     allowed_mentions: allowedMentions,
    };
   } else {
+   // Quan trọng: nếu dòng đầu dùng định dạng cỡ chữ Markdown đầu dòng (# hello, ## , ### , -# , > , >>> , danh sách, codeblock)
+   // thì PHẢI xuống dòng (\n) sau thẻ @tag, nếu nối dấu cách cùng dòng Discord sẽ làm mất cỡ chữ to!
+   const needsLineStart = /^(?:#{1,3}\s|-#\s|>|\* |- |\d+\.\s|```)/.test(normalizedText);
+   const sep = needsLineStart ? '\n' : ' ';
    const fullText = prefixParts.length > 0
-    ? `${prefixParts.join(' ')} ${normalizedText}`
+    ? `${prefixParts.join(' ')}${sep}${normalizedText}`
     : normalizedText;
    body = {
     content: fullText.slice(0, 1990),

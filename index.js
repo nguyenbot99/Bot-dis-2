@@ -43,12 +43,14 @@ import { resolveTrackWebAudio, WEB_AUDIO_REFRESH_MS } from './src/webAudio.js';
 import { createWebRemoteManager } from './src/webRemote.js';
 import { buildSaveQueuePayload, extractPlayableFromMessage, extractSaveQueueUrls } from './src/saveQueue.js';
 import {
+ ANNOUNCE_FONT_MODES,
  buildAnnounceModal,
  buildChannelLockButtons,
  buildDmAnnounceModal,
  buildDmAnnounceStudioPayload,
  buildDmUserTagModal,
  createChannelLockManager,
+ getNextAnnounceFont,
 } from './src/channelLock.js';
 import { buildSpamControlRow, createSpamTagManager } from './src/spamTag.js';
 import { buildVoiceGuardEmbed, evaluateBotVoiceTransition } from './src/voiceGuard.js';
@@ -2249,14 +2251,17 @@ async function handlePlayerComponent(i) {
   const pingEveryone = parts[2] === '1';
   const style = parts[3] === 'embed' ? 'embed' : 'text';
   const autoReact = parts[4] !== '0';
+  const fontMode = parts[5] || 'normal';
   const rawContent = i.fields.getTextInputValue('announce_content');
   await i.deferReply({ flags: MessageFlags.Ephemeral });
   const res = await channelLockManager.postBotAnnouncement({
+   guildId: i.guildId,
    channelId: targetChId,
    requesterId: i.user.id,
    rawContent,
    pingRoleId,
    pingEveryone,
+   fontMode,
    style,
    autoReact,
   });
@@ -2918,12 +2923,34 @@ async function handleOwnerDmRawPacket(packet) {
 
  try {
   const { guildId, guildName } = resolveTargetGuildForOwnerDm();
+  const fontCmdMatch = rawText.match(/^\/?font(?:\s+([a-z0-9_-]+))?$/i);
   const tagCmdMatch = rawText.match(/^\/?tag(?:\s+([\s\S]*))?$/i);
   const cmdMatch = rawText.match(/^\/?(?:announce|tb|thongbao|menu|lock|unlock|help)(?:\s+([\s\S]*))?$/i);
   let session;
   let banner = null;
 
-  if (tagCmdMatch) {
+  if (fontCmdMatch) {
+   session = await channelLockManager.openOrReuseOwnerDmDraft({
+    guildId,
+    guildName,
+    requesterId: authorId,
+    draftText: '',
+    forceFresh: false,
+   });
+   const arg = String(fontCmdMatch[1] ?? '').toLowerCase();
+   const aliasMap = {
+    normal: 'normal', thuong: 'normal', off: 'normal',
+    title: 'h1_title', tieude: 'h1_title',
+    h1: 'h1_all', to: 'h1_all', sieuto: 'h1_all',
+    h2: 'h2_all', vua: 'h2_all',
+    h3: 'h3_bold',
+    quote: 'quote_bold', trichdan: 'quote_bold',
+    sub: 'subtext', nho: 'subtext',
+   };
+   session.fontMode = aliasMap[arg] ?? getNextAnnounceFont(session.fontMode);
+   const fi = ANNOUNCE_FONT_MODES[session.fontMode] ?? ANNOUNCE_FONT_MODES.normal;
+   banner = `🔤 **Đã chuyển cỡ chữ sang:** ${fi.fullLabel}`;
+  } else if (tagCmdMatch) {
    session = await channelLockManager.openOrReuseOwnerDmDraft({
     guildId,
     guildName,
@@ -2997,6 +3024,7 @@ async function handleBotDmInteraction(i) {
    guildName,
    requesterId: i.user.id,
    initialMessage: i.options.getString('message') ?? '',
+   fontMode: i.options.getString('font') || 'normal',
    style: i.options.getString('style') || 'text',
    autoReact: i.options.getBoolean('auto_react') ?? true,
   });
@@ -3116,6 +3144,16 @@ async function handleBotDmInteraction(i) {
   return;
  }
 
+ // Nút đổi cỡ chữ / kiểu chữ (🔤 Font: Tự do -> # Tiêu đề Lớn -> # Siêu To H1 -> ## To Vừa H2 -> ### Vừa H3 -> > Trích Dẫn -> -# Chữ Nhỏ)
+ if (i.isButton() && i.customId.startsWith('dm_ann_font:')) {
+  const token = i.customId.slice('dm_ann_font:'.length);
+  const session = await loadSession(token);
+  session.fontMode = getNextAnnounceFont(session.fontMode);
+  const fi = ANNOUNCE_FONT_MODES[session.fontMode] ?? ANNOUNCE_FONT_MODES.normal;
+  await i.update(buildDmAnnounceStudioPayload(session, `🔤 **Đã đổi cỡ chữ sang:** ${fi.fullLabel}`));
+  return;
+ }
+
  if (i.isButton() && i.customId.startsWith('dm_ann_style:')) {
   const token = i.customId.slice('dm_ann_style:'.length);
   const session = await loadSession(token);
@@ -3154,6 +3192,7 @@ async function handleBotDmInteraction(i) {
    pingRoleId: session.pingMode !== 'none' && session.pingMode !== 'everyone' ? session.pingMode : null,
    pingEveryone: session.pingMode === 'everyone',
    pingUserIds: (session.pingUsers ?? []).map(u => u.id),
+   fontMode: session.fontMode,
    style: session.style,
    autoReact: session.autoReact,
   });
@@ -3207,6 +3246,7 @@ async function handleBotDmInteraction(i) {
    pingRoleId: session.pingMode !== 'none' && session.pingMode !== 'everyone' ? session.pingMode : null,
    pingEveryone: session.pingMode === 'everyone',
    pingUserIds: (session.pingUsers ?? []).map(u => u.id),
+   fontMode: session.fontMode,
    style: session.style,
    autoReact: session.autoReact,
   });
@@ -3416,12 +3456,14 @@ client.on(Events.InteractionCreate, async i => {
    const targetCh = i.options.getChannel('channel') ?? i.channel;
    const pingRole = i.options.getRole('ping_role');
    const pingEveryone = i.options.getBoolean('ping_everyone') ?? false;
+   const fontMode = i.options.getString('font') || 'normal';
    const style = i.options.getString('style') || 'text';
    const autoReact = i.options.getBoolean('auto_react') ?? true;
    await i.showModal(buildAnnounceModal({
     channelId: targetCh.id,
     pingRoleId: pingRole?.id ?? '',
     pingEveryone,
+    fontMode,
     style,
     autoReact,
    }));
@@ -3502,14 +3544,17 @@ client.on(Events.InteractionCreate, async i => {
    const rawContent = i.options.getString('message') ?? '';
    const pingRole = i.options.getRole('ping_role');
    const pingEveryone = i.options.getBoolean('ping_everyone') ?? false;
+   const fontMode = i.options.getString('font') || 'normal';
    const style = i.options.getString('style') || 'text';
    const autoReact = i.options.getBoolean('auto_react') ?? true;
    const res = await channelLockManager.postBotAnnouncement({
+    guildId: i.guildId,
     channelId: targetCh.id,
     requesterId: i.user.id,
     rawContent,
     pingRoleId: pingRole?.id ?? null,
     pingEveryone,
+    fontMode,
     style,
     autoReact,
    });

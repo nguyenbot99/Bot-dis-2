@@ -54,13 +54,16 @@ import {
 } from './src/channelLock.js';
 import { buildSpamControlRow, createSpamTagManager } from './src/spamTag.js';
 import {
+ BOOSTED_DISCORD_GIF_BYTES,
  buildGifActionComponents,
  buildGifTuneModal,
  createVideoToGifManager,
  extractVideoFromMessage,
  formatGifSummaryLine,
+ MAX_DISCORD_GIF_BYTES,
  MAX_VIDEO_DOWNLOAD_BYTES,
  parseGifTimingRange,
+ parseQualityAndFpsInput,
 } from './src/videoToGif.js';
 import { buildVoiceGuardEmbed, evaluateBotVoiceTransition } from './src/voiceGuard.js';
 import { buildHelpPayload, commands, CONTEXT_AVATAR_NAME, CONTEXT_GIF_NAME, CONTEXT_PLAY_NAME, dmCommands } from './src/commands.js';
@@ -2207,6 +2210,12 @@ async function replyInteractionError(i, e) {
  }
 }
 
+function resolveGuildGifUploadCap(guild) {
+ return (Number(guild?.premiumTier) || 0) >= 2
+  ? BOOSTED_DISCORD_GIF_BYTES
+  : MAX_DISCORD_GIF_BYTES;
+}
+
 // Xử lý chung lệnh /gif và Menu chuột phải "🎞️ Đổi video sang GIF" (chạy mượt cả trên Server lẫn trong hộp chat riêng DM).
 async function handleGifCommandOrContext(i) {
  const inDm = !i.guild;
@@ -2219,7 +2228,7 @@ async function handleGifCommandOrContext(i) {
  if (i.isMessageContextMenuCommand?.()) {
   const found = extractVideoFromMessage(i.targetMessage);
   if (found.sizeBytes > MAX_VIDEO_DOWNLOAD_BYTES) {
-   throw new Error('Video quá lớn (vượt mức an toàn 42MB) — hãy cắt ngắn hoặc gửi clip nhẹ hơn nhé!');
+   throw new Error('Video quá lớn (vượt mức an toàn 45MB) — hãy cắt ngắn hoặc gửi clip nhẹ hơn nhé!');
   }
   sourceUrl = found.url;
  } else {
@@ -2230,7 +2239,7 @@ async function handleGifCommandOrContext(i) {
   }
   if (att) {
    if (Number(att.size) > MAX_VIDEO_DOWNLOAD_BYTES) {
-    throw new Error('Video quá lớn (vượt mức an toàn 42MB) — hãy cắt ngắn hoặc gửi clip nhẹ hơn nhé!');
+    throw new Error('Video quá lớn (vượt mức an toàn 45MB) — hãy cắt ngắn hoặc gửi clip nhẹ hơn nhé!');
    }
    sourceUrl = att.url || att.proxyURL;
   } else {
@@ -2242,12 +2251,13 @@ async function handleGifCommandOrContext(i) {
    start: i.options.getString('start') ?? '',
    duration: i.options.getNumber('duration'),
    speed: i.options.getNumber('speed'),
-   quality: i.options.getString('quality') || 'balanced',
+   quality: i.options.getString('quality') || undefined,
+   fps: i.options.getInteger('fps'),
   };
  }
 
  await i.editReply({
-  content: '🎞️ Đang tách khung hình & tối ưu bảng màu GIF nét cao...',
+  content: '🎞️ Đang kết xuất ảnh **GIF nét cao & mượt FPS** (khử răng cưa `sierra2_4a` + làm nét cạnh)...',
   allowedMentions: { parse: [] },
  }).catch(() => {});
 
@@ -2255,6 +2265,7 @@ async function handleGifCommandOrContext(i) {
   sourceUrl,
   requesterId: i.user.id,
   options,
+  maxUploadBytes: resolveGuildGifUploadCap(i.guild),
   onQueued: pos => i.editReply({
    content: `⏳ Đang xếp hàng tạo GIF (vị trí **#${pos}** — chống tràn RAM 512MB), vui lòng đợi vài giây...`,
    allowedMentions: { parse: [] },
@@ -2304,6 +2315,15 @@ async function handleGifComponent(i) {
   );
   const rawSpeed = String(i.fields.getTextInputValue('gif_speed') ?? '').trim();
   const speed = rawSpeed ? rawSpeed : session.speed;
+  const rawQFps = i.fields.fields?.has?.('gif_quality_fps')
+   ? i.fields.getTextInputValue('gif_quality_fps')
+   : '';
+  const { quality: nextQuality, fps: nextFps } = parseQualityAndFpsInput(
+   rawQFps,
+   session.quality ?? 'hd',
+   session.fps ?? null,
+  );
+  const uploadCap = resolveGuildGifUploadCap(i.guild);
 
   const inDm = !i.guild;
   const wasEphemeral = Boolean(i.message?.flags?.has?.(MessageFlags.Ephemeral));
@@ -2316,13 +2336,15 @@ async function handleGifComponent(i) {
     requesterId: session.requesterId,
     existingToken: session.token,
     skipCooldown: true,
+    maxUploadBytes: uploadCap,
     options: {
      startSec,
      duration: durationSec,
      speed,
      caption,
      captionStyle,
-     quality: session.quality,
+     quality: nextQuality,
+     fps: nextFps,
     },
    });
    await i.editReply({
@@ -2342,13 +2364,15 @@ async function handleGifComponent(i) {
    const res = await videoToGifManager.convertVideoToGif({
     sourceUrl: session.sourceUrl,
     requesterId: i.user.id,
+    maxUploadBytes: uploadCap,
     options: {
      startSec,
      duration: durationSec,
      speed,
      caption,
      captionStyle,
-     quality: session.quality,
+     quality: nextQuality,
+     fps: nextFps,
     },
    });
    await i.editReply({

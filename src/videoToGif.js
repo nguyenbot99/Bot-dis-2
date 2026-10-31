@@ -21,8 +21,9 @@ import {
 
 export const CONTEXT_GIF_NAME = '🎞️ Đổi video sang GIF';
 
-export const MAX_VIDEO_DOWNLOAD_BYTES = 42 * 1024 * 1024; // 42 MiB đầu vào an toàn cho container 512MB RAM
-export const MAX_DISCORD_GIF_BYTES = 8 * 1024 * 1024; // 8.0 MiB đảm bảo gửi thành công 100% trên mọi Server & DM
+export const MAX_VIDEO_DOWNLOAD_BYTES = 45 * 1024 * 1024; // 45 MiB đầu vào an toàn cho container 512MB RAM
+export const MAX_DISCORD_GIF_BYTES = Math.floor(9.75 * 1024 * 1024); // 9.75 MiB (dưới trần 10 MiB mặc định của Discord & DM)
+export const BOOSTED_DISCORD_GIF_BYTES = 24 * 1024 * 1024; // 24 MiB cho máy chủ có Boost Cấp 2/3 (trần Discord 50–100 MiB)
 export const MIN_DURATION_SEC = 0.5;
 export const MAX_DURATION_SEC = 15;
 export const DEFAULT_DURATION_SEC = 6;
@@ -32,7 +33,7 @@ export const MAX_OUTPUT_SPAN_SEC = 16;
 
 const DOWNLOAD_TIMEOUT_MS = 25_000;
 const FFMPEG_PROBE_TIMEOUT_MS = 8_000;
-const FFMPEG_RENDER_TIMEOUT_MS = 38_000;
+const FFMPEG_RENDER_TIMEOUT_MS = 45_000;
 const USER_COOLDOWN_MS = 3_500;
 const MAX_QUEUED_JOBS = 5;
 const MAX_TUNE_SESSIONS = 30;
@@ -42,44 +43,102 @@ const SAFE_FONT_DIR = path.join(os.tmpdir(), 'batdon-gif-fonts');
 
 const BUNDLED_FONT_SRC = fileURLToPath(new URL('./assets/fonts/MemeSans-Bold.ttf', import.meta.url));
 
+// Các bậc độ nét dùng hệ số FPS ước số nguyên của 100 centi-giây (50, 100/3=33.3, 25, 20, 50/3=16.7, 25/2=12.5)
+// để mọi khung hình GIF có độ trễ chẵn tuyệt đối (20ms/30ms/40ms/50ms), mượt 100% không bao giờ bị khựng nhịp!
 export const GIF_QUALITY_PRESETS = Object.freeze({
- balanced: {
-  key: 'balanced',
-  label: 'Rõ nét cân bằng',
-  maxWidth: 380,
-  maxHeight: 460,
-  fps: 12,
+ ultra: {
+  key: 'ultra',
+  label: 'Siêu Cấp Ultra 720p',
+  maxWidth: 720,
+  maxHeight: 820,
+  fpsExpr: '100/3',
+  fps: 33,
+  sharpen: 0.5,
   maxColors: 256,
-  dither: 'bayer:bayer_scale=5',
+  dither: 'sierra2_4a',
  },
  hd: {
   key: 'hd',
-  label: 'Siêu nét HD',
+  label: 'Chuẩn Nét Cao HD 600p',
+  maxWidth: 600,
+  maxHeight: 700,
+  fpsExpr: '25',
+  fps: 25,
+  sharpen: 0.45,
+  maxColors: 256,
+  dither: 'sierra2_4a',
+ },
+ balanced: {
+  key: 'balanced',
+  label: 'Cân Bằng Mượt 480p',
   maxWidth: 480,
   maxHeight: 560,
-  fps: 15,
+  fpsExpr: '20',
+  fps: 20,
+  sharpen: 0.35,
   maxColors: 256,
   dither: 'sierra2_4a',
  },
  compact: {
   key: 'compact',
-  label: 'Siêu nhẹ mượt',
-  maxWidth: 300,
-  maxHeight: 360,
-  fps: 10,
-  maxColors: 192,
-  dither: 'bayer:bayer_scale=3',
+  label: 'Nén Gọn Nhẹ 360p',
+  maxWidth: 360,
+  maxHeight: 430,
+  fpsExpr: '50/3',
+  fps: 17,
+  sharpen: 0.25,
+  maxColors: 224,
+  dither: 'bayer:bayer_scale=2',
  },
  ultra_compact: {
   key: 'ultra_compact',
-  label: 'Nén gọn tối ưu',
-  maxWidth: 236,
-  maxHeight: 290,
-  fps: 8,
-  maxColors: 128,
+  label: 'Siêu Nén 280p',
+  maxWidth: 280,
+  maxHeight: 340,
+  fpsExpr: '25/2',
+  fps: 12,
+  sharpen: 0.2,
+  maxColors: 160,
   dither: 'bayer:bayer_scale=2',
  },
 });
+
+// Chuẩn hóa FPS tùy chọn về đúng mốc centi-giây chuẩn của định dạng GIF89a (tối đa 50 FPS = 20ms/frame; >50 FPS trình duyệt sẽ ép chậm về 10 FPS).
+export function resolveExactGifFps(rawFps, fallbackPreset = GIF_QUALITY_PRESETS.hd) {
+ if (rawFps === undefined || rawFps === null || rawFps === '') {
+  return {
+   fpsExpr: fallbackPreset?.fpsExpr ?? '25',
+   fpsLabel: fallbackPreset?.fps ?? 25,
+   customFps: null,
+  };
+ }
+ const n = Number(String(rawFps).trim().replace(/fps$/i, '').trim());
+ if (!Number.isFinite(n) || n < 8 || n > 60) {
+  throw new Error('Số khung hình FPS phải nằm trong khoảng từ 8 đến 50 FPS (VD: 20, 25, 33, 50).');
+ }
+ if (n >= 42) return { fpsExpr: '50', fpsLabel: 50, customFps: 50 };
+ if (n >= 29) return { fpsExpr: '100/3', fpsLabel: 33, customFps: 33 };
+ if (n >= 23) return { fpsExpr: '25', fpsLabel: 25, customFps: 25 };
+ if (n >= 18) return { fpsExpr: '20', fpsLabel: 20, customFps: 20 };
+ if (n >= 15) return { fpsExpr: '50/3', fpsLabel: 17, customFps: 17 };
+ return { fpsExpr: '25/2', fpsLabel: 12, customFps: 12 };
+}
+
+export function parseQualityAndFpsInput(raw, fallbackQuality = 'hd', fallbackFps = null) {
+ const txt = String(raw ?? '').trim().toLowerCase();
+ if (!txt) return { quality: fallbackQuality, fps: fallbackFps };
+
+ let quality = fallbackQuality;
+ if (/\b(ultra|720p?|max|sieucap)\b/.test(txt)) quality = 'ultra';
+ else if (/\b(hd|600p?|cao)\b/.test(txt)) quality = 'hd';
+ else if (/\b(balanced|480p?|vua)\b/.test(txt)) quality = 'balanced';
+ else if (/\b(compact|360p?|nhe|nho)\b/.test(txt)) quality = 'compact';
+
+ const cleanedForFps = txt.replace(/\b(720p|600p|480p|360p|280p)\b/g, ' ');
+ const fpsMatch = cleanedForFps.match(/\b(\d{1,2})(?:\s*fps)?\b/);
+ const fps = fpsMatch ? resolveExactGifFps(Number(fpsMatch[1])).customFps : fallbackFps;
+ return { quality, fps };
+}
 
 export const GIF_CAPTION_STYLES = Object.freeze({
  bar: { key: 'bar', label: '⬜ Thanh trắng Meme đầu ảnh' },
@@ -267,7 +326,9 @@ export function normalizeGifOptions(raw = {}) {
   cappedBySlowMo = true;
  }
 
- const qualityKey = GIF_QUALITY_PRESETS[raw.quality] ? raw.quality : 'balanced';
+ const qualityKey = GIF_QUALITY_PRESETS[raw.quality] ? raw.quality : 'hd';
+ const presetObj = GIF_QUALITY_PRESETS[qualityKey];
+ const { fpsExpr, fpsLabel, customFps } = resolveExactGifFps(raw.fps, presetObj);
  const captionStyle = GIF_CAPTION_STYLES[raw.captionStyle] ? raw.captionStyle : 'bar';
  const caption = String(raw.caption ?? '')
   .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
@@ -279,6 +340,9 @@ export function normalizeGifOptions(raw = {}) {
   durationSec,
   speed,
   quality: qualityKey,
+  fps: customFps,
+  fpsExpr,
+  fpsLabel,
   caption,
   captionStyle,
   cappedBySlowMo,
@@ -418,7 +482,7 @@ export function buildMemeAssConfig({ width, height, caption, captionStyle = 'bar
   topRaw = trimmed;
  }
 
- const maxChars = Math.max(16, Math.min(32, Math.round(width / 13.2)));
+ const maxChars = width < height ? 23 : 27;
  const topLines = topRaw ? wrapCaptionLines(topRaw, maxChars, 3) : [];
  const bottomLines = bottomRaw ? wrapCaptionLines(bottomRaw, maxChars, 3) : [];
  if (topLines.length === 0 && bottomLines.length === 0) {
@@ -426,8 +490,8 @@ export function buildMemeAssConfig({ width, height, caption, captionStyle = 'bar
  }
 
  const useWhiteBar = topLines.length > 0 && captionStyle === 'bar';
- const barFontSize = Math.max(15, Math.min(27, Math.round(width * 0.062)));
- const subFontSize = Math.max(16, Math.min(28, Math.round(width * 0.066)));
+ const barFontSize = Math.max(15, Math.min(44, Math.round(width * 0.056)));
+ const subFontSize = Math.max(16, Math.min(46, Math.round(width * 0.06)));
  const lineStep = Math.round(barFontSize * 1.28);
  const padTop = useWhiteBar
   ? Math.round((topLines.length * lineStep + Math.max(18, Math.round(barFontSize * 0.85))) / 2) * 2
@@ -553,9 +617,11 @@ function runFfmpegProcess(ffmpegPath, args, timeoutMs) {
 
 export function buildGifTuneModal(token, session = {}) {
  const timingDefault = `${session.startSec ?? 0} - ${session.durationSec ?? DEFAULT_DURATION_SEC}`;
+ const qKey = session.quality ?? 'hd';
+ const qFpsDefault = `${qKey} ${session.fps ?? GIF_QUALITY_PRESETS[qKey]?.fps ?? 25}`;
  return new ModalBuilder()
   .setCustomId(`gif_tune_modal:${token}`)
-  .setTitle('🎞️ Chỉnh ảnh GIF & Chữ Meme')
+  .setTitle('🎞️ Chỉnh ảnh GIF, Độ nét & FPS')
   .addComponents(
    new ActionRowBuilder().addComponents(
     new TextInputBuilder()
@@ -597,6 +663,16 @@ export function buildGifTuneModal(token, session = {}) {
      .setValue(String(session.speed ?? 1))
      .setPlaceholder('VD: 1.0 (chuẩn), 0.5 (quay chậm), 1.8 (tua nhanh)'),
    ),
+   new ActionRowBuilder().addComponents(
+    new TextInputBuilder()
+     .setCustomId('gif_quality_fps')
+     .setLabel('Độ nét & FPS (ultra / hd + 20–50 FPS)')
+     .setStyle(TextInputStyle.Short)
+     .setRequired(false)
+     .setMaxLength(24)
+     .setValue(qFpsDefault)
+     .setPlaceholder('VD: ultra 50 (720p 50FPS), ultra 33, hd 25, balanced 20'),
+   ),
   );
 }
 
@@ -606,7 +682,7 @@ export function buildGifActionComponents({ token, requesterId, includeDmSave = t
   buttons.push(
    new ButtonBuilder()
     .setCustomId(`gif_tune:${token}`)
-    .setLabel('Chèn chữ / Cắt & Tốc độ')
+    .setLabel('Chữ Meme / Độ nét & FPS')
     .setEmoji('✍️')
     .setStyle(ButtonStyle.Primary),
   );
@@ -638,8 +714,8 @@ export function formatGifSummaryLine(meta = {}) {
  const speedTag = meta.speed && meta.speed !== 1 ? ` • ⚡ ${meta.speed}x` : '';
  const cutTag = meta.startSec > 0 ? ` • ✂️ từ ${meta.startSec}s` : '';
  const capTag = meta.caption ? ' • 💬 Meme' : '';
- const autoCompressed = meta.autoSteppedDown ? ' *(đã tự tối ưu vừa chuẩn <8MB)*' : '';
- return `🎞️ **Đã tạo ảnh GIF hoàn tất!** *(${meta.width}×${meta.height} • ${meta.fps} FPS • ${meta.outputDurationSec}s${speedTag}${cutTag}${capTag} • ${sizeMb} MB)*${autoCompressed}`;
+ const autoCompressed = meta.autoSteppedDown ? ' *(đã tự căn nét cao nhất vừa trần dung lượng Discord)*' : '';
+ return `🎞️ **Đã tạo ảnh GIF nét cao!** *(${meta.width}×${meta.height} • ${meta.fps} FPS • ${meta.outputDurationSec}s${speedTag}${cutTag}${capTag} • ${sizeMb} MB)*${autoCompressed}`;
 }
 
 export function createVideoToGifManager({ ffmpegPath, lookupFn = dns.lookup, fetchFn = globalThis.fetch } = {}) {
@@ -744,7 +820,7 @@ export function createVideoToGifManager({ ffmpegPath, lookupFn = dns.lookup, fet
    const contentLength = Number(res.headers.get('content-length') || 0);
    if (contentLength > maxBytes) {
     try { await res.body?.cancel?.(); } catch {}
-    throw new Error('Video quá lớn (vượt mức an toàn 42MB) — hãy cắt ngắn hoặc gửi clip nhẹ hơn nhé!');
+    throw new Error('Video quá lớn (vượt mức an toàn 45MB) — hãy cắt ngắn hoặc gửi clip nhẹ hơn nhé!');
    }
 
    const contentType = String(res.headers.get('content-type') ?? '').toLowerCase();
@@ -787,7 +863,7 @@ export function createVideoToGifManager({ ffmpegPath, lookupFn = dns.lookup, fet
    transform(chunk, _enc, cb) {
     total += chunk.length;
     if (total > maxBytes) {
-     cb(new Error('Video quá lớn (vượt mức an toàn 42MB) — hãy cắt ngắn hoặc gửi clip nhẹ hơn nhé!'));
+     cb(new Error('Video quá lớn (vượt mức an toàn 45MB) — hãy cắt ngắn hoặc gửi clip nhẹ hơn nhé!'));
      return;
     }
     cb(null, chunk);
@@ -800,7 +876,7 @@ export function createVideoToGifManager({ ffmpegPath, lookupFn = dns.lookup, fet
   return total;
  }
 
- async function downloadSmallGifBuffer(rawUrl, maxBytes = 10 * 1024 * 1024) {
+ async function downloadSmallGifBuffer(rawUrl, maxBytes = 25 * 1024 * 1024) {
   const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), TEMP_PREFIX));
   const tmpPath = path.join(tmpDir, 'copy.gif');
   try {
@@ -817,6 +893,8 @@ export function createVideoToGifManager({ ffmpegPath, lookupFn = dns.lookup, fet
   probe,
   opts,
   preset,
+  fpsExprOverride = null,
+  fpsLabelOverride = null,
   fontsDir,
   tierIndex,
  }) {
@@ -828,10 +906,15 @@ export function createVideoToGifManager({ ffmpegPath, lookupFn = dns.lookup, fet
    captionStyle: opts.captionStyle,
   });
 
+  const activeFpsExpr = fpsExprOverride || preset.fpsExpr || String(preset.fps);
+  const activeFpsLabel = fpsLabelOverride || preset.fps;
+  const sharpenAmt = preset.sharpen ?? 0.35;
+
   const filterSteps = [
    `setpts=(PTS-STARTPTS)/${opts.speed}`,
-   `fps=${preset.fps}`,
-   `scale=${width}:${height}:flags=lanczos`,
+   `fps=${activeFpsExpr}`,
+   `scale=${width}:${height}:flags=lanczos+accurate_rnd+full_chroma_int`,
+   `unsharp=3:3:${sharpenAmt}:3:3:0.0`,
   ];
   if (padTop > 0) {
    filterSteps.push(`pad=${width}:${height + padTop}:0:${padTop}:white`);
@@ -852,7 +935,7 @@ export function createVideoToGifManager({ ffmpegPath, lookupFn = dns.lookup, fet
   const palettePath = path.join(workDir, `pal-${tierIndex}.png`);
   const outputPath = path.join(workDir, `out-${tierIndex}.gif`);
 
-  // Lượt 1: Tạo bảng màu tối ưu 256 màu riêng cho đoạn clip (chỉ tốn ~15–20MB RAM nhờ 2-pass trên ổ tạm).
+  // Lượt 1: Tạo bảng màu tối ưu 256 màu riêng cho đoạn clip (chỉ tốn ~20–60MB RAM nhờ 2-pass tuần tự trên ổ tạm).
   const pass1 = await runFfmpegProcess(
    ffmpegPath,
    [
@@ -874,7 +957,7 @@ export function createVideoToGifManager({ ffmpegPath, lookupFn = dns.lookup, fet
    throw new Error('Không thể trích xuất khung hình tại mốc thời gian này — hãy thử giảm mốc bắt đầu (start) nhé!');
   }
 
-  // Lượt 2: Kết xuất từng khung hình ra file GIF với khử răng cưa màu mượt mà.
+  // Lượt 2: Kết xuất từng khung hình ra file GIF với khử răng cưa sierra2_4a siêu mịn & nén khung vi sai.
   const pass2 = await runFfmpegProcess(
    ffmpegPath,
    [
@@ -902,7 +985,7 @@ export function createVideoToGifManager({ ffmpegPath, lookupFn = dns.lookup, fet
    bytes: outStat.size,
    width,
    height: height + padTop,
-   fps: preset.fps,
+   fps: activeFpsLabel,
   };
  }
 
@@ -932,6 +1015,7 @@ export function createVideoToGifManager({ ffmpegPath, lookupFn = dns.lookup, fet
   sourceUrl,
   requesterId,
   options = {},
+  maxUploadBytes = MAX_DISCORD_GIF_BYTES,
   existingToken = null,
   skipCooldown = false,
   onQueued = null,
@@ -947,6 +1031,7 @@ export function createVideoToGifManager({ ffmpegPath, lookupFn = dns.lookup, fet
   }
 
   const opts = normalizeGifOptions(options);
+  const uploadCap = Math.max(2 * 1024 * 1024, Number(maxUploadBytes) || MAX_DISCORD_GIF_BYTES);
   if (activeWorkers >= 1 && typeof onQueued === 'function') {
    await onQueued(waitQueue.length + 1).catch(() => {});
   }
@@ -974,34 +1059,43 @@ export function createVideoToGifManager({ ffmpegPath, lookupFn = dns.lookup, fet
     ? Math.max(0.2, Math.min(opts.durationSec, probe.durationSec - opts.startSec))
     : opts.durationSec;
 
-   const effectiveOpts = { ...opts, durationSec: effectiveInputSpan };
+   // Tự động kích lên 720p Ultra • 33 FPS cho các clip ngắn (<= 4s) khi người dùng để mặc định!
+   const autoPromoteUltra = !options.quality && (effectiveInputSpan / opts.speed <= 4.0);
+   const startQuality = autoPromoteUltra ? 'ultra' : opts.quality;
+
+   const effectiveOpts = { ...opts, quality: startQuality, durationSec: effectiveInputSpan };
    const fontsDir = effectiveOpts.caption ? await ensureSafeFontDir() : SAFE_FONT_DIR;
-   const tierOrder = effectiveOpts.quality === 'hd'
-    ? ['hd', 'balanced', 'compact', 'ultra_compact']
-    : (effectiveOpts.quality === 'compact' ? ['compact', 'ultra_compact'] : ['balanced', 'compact', 'ultra_compact']);
+   const fullLadder = ['ultra', 'hd', 'balanced', 'compact', 'ultra_compact'];
+   const startIdx = Math.max(0, fullLadder.indexOf(startQuality));
+   const tierOrder = fullLadder.slice(startIdx);
 
    let rendered = null;
    let usedTierIdx = 0;
    for (let idx = 0; idx < tierOrder.length; idx++) {
     const preset = GIF_QUALITY_PRESETS[tierOrder[idx]];
+    // Áp dụng FPS tùy chọn của người dùng ở bậc đầu tiên; nếu vượt dung lượng Discord thì các bậc hạ nén tự giảm cả FPS để vừa trần tải lên.
+    const useCustomFps = idx === 0 && opts.fps !== null;
     rendered = await renderSingleTier({
      inputPath,
      workDir,
      probe,
      opts: effectiveOpts,
      preset,
+     fpsExprOverride: useCustomFps ? opts.fpsExpr : null,
+     fpsLabelOverride: useCustomFps ? opts.fpsLabel : null,
      fontsDir,
      tierIndex: idx,
     });
     usedTierIdx = idx;
-    if (rendered.bytes <= MAX_DISCORD_GIF_BYTES) break;
+    if (rendered.bytes <= uploadCap) break;
    }
 
-   if (!rendered || rendered.bytes > MAX_DISCORD_GIF_BYTES) {
-    throw new Error('Ảnh GIF tạo ra vẫn vượt giới hạn 8MB của Discord — hãy giảm độ dài (duration) xuống khoảng 4–6 giây nhé!');
+   if (!rendered || rendered.bytes > uploadCap) {
+    throw new Error('Ảnh GIF tạo ra vẫn vượt giới hạn dung lượng của Discord — hãy giảm độ dài (duration) xuống khoảng 4–6 giây nhé!');
    }
 
    const gifBuffer = await fsp.readFile(rendered.outputPath);
+   const finalQualityKey = tierOrder[usedTierIdx] ?? startQuality;
    const session = saveTuneSession({
     token: existingToken,
     sourceUrl: normalizeCandidateVideoUrl(sourceUrl),
@@ -1011,7 +1105,8 @@ export function createVideoToGifManager({ ffmpegPath, lookupFn = dns.lookup, fet
     speed: opts.speed,
     caption: opts.caption,
     captionStyle: opts.captionStyle,
-    quality: opts.quality,
+    quality: finalQualityKey,
+    fps: rendered.fps,
    });
 
    const outputDurationSec = Number(Math.max(0.2, effectiveInputSpan / opts.speed).toFixed(1));
@@ -1026,8 +1121,9 @@ export function createVideoToGifManager({ ffmpegPath, lookupFn = dns.lookup, fet
     speed: opts.speed,
     caption: opts.caption,
     captionStyle: opts.captionStyle,
-    quality: opts.quality,
-    autoSteppedDown: usedTierIdx > 0,
+    quality: finalQualityKey,
+    // Nếu chỉ tự kích từ mặc định HD lên thử Ultra rồi về lại HD thì không hiện cảnh báo hạ bậc thừa
+    autoSteppedDown: autoPromoteUltra ? usedTierIdx > 1 : usedTierIdx > 0,
    };
 
    return {

@@ -825,7 +825,7 @@ export const slashCommands = definitions.map(([name, description]) => {
 function applyGifCommandOptions(c, { includePrivate = true } = {}) {
  c.addAttachmentOption(o => o
   .setName('video')
-  .setDescription('Tải file video lên (.mp4, .mov, .webm, .mkv...) — tối đa 42MB')
+  .setDescription('Tải file video lên (.mp4, .mov, .webm, .mkv...) — tối đa 45MB')
   .setRequired(false));
  c.addStringOption(o => o
   .setName('url')
@@ -865,12 +865,24 @@ function applyGifCommandOptions(c, { includePrivate = true } = {}) {
   .setMaxValue(3));
  c.addStringOption(o => o
   .setName('quality')
-  .setDescription('Chất lượng & độ phân giải ảnh GIF xuất ra (tự căn vừa chuẩn <8MB)')
+  .setDescription('Độ nét ảnh GIF (mặc định tự kích 720p/600p HD cao nhất vừa trần Discord)')
   .setRequired(false)
   .addChoices(
-   { name: '✨ Rõ nét cân bằng — 380p • 12 FPS (Khuyên dùng)', value: 'balanced' },
-   { name: '💎 Siêu nét HD — 480p • 15 FPS (Hợp đoạn ngắn 1–6s)', value: 'hd' },
-   { name: '🪶 Siêu nhẹ mượt — 300p • 10 FPS (Hợp đoạn dài 8–15s)', value: 'compact' },
+   { name: '🔥 Siêu Cấp Ultra — 720p • 33 FPS (Nét căng như video gốc)', value: 'ultra' },
+   { name: '💎 Chuẩn Nét Cao HD — 600p • 25 FPS (Mặc định khuyên dùng)', value: 'hd' },
+   { name: '✨ Cân Bằng Mượt — 480p • 20 FPS (Hợp clip vừa 6–10s)', value: 'balanced' },
+   { name: '🪶 Nén Gọn Nhẹ — 360p • 17 FPS (Hợp clip dài 10–15s)', value: 'compact' },
+  ));
+ c.addIntegerOption(o => o
+  .setName('fps')
+  .setDescription('Tốc độ khung hình FPS (mặc định theo Độ nét, tối đa 50 FPS kịch trần GIF)')
+  .setRequired(false)
+  .addChoices(
+   { name: '⚡ 50 FPS — Siêu mượt kịch trần chuẩn GIF (20ms/khung)', value: 50 },
+   { name: '🔥 33 FPS — Mượt cao cấp như video (30ms/khung)', value: 33 },
+   { name: '💎 25 FPS — Mượt chuẩn HD không khựng (40ms/khung)', value: 25 },
+   { name: '✨ 20 FPS — Mượt cân bằng, nhẹ file (50ms/khung)', value: 20 },
+   { name: '🪶 12 FPS — Cổ điển siêu tiết kiệm dung lượng', value: 12 },
   ));
  if (includePrivate) {
   c.addBooleanOption(o => o

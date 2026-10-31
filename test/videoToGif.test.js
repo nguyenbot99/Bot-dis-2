@@ -23,6 +23,8 @@ import {
  parseFfmpegProbeOutput,
  parseGifTimestamp,
  parseGifTimingRange,
+ parseQualityAndFpsInput,
+ resolveExactGifFps,
 } from '../src/videoToGif.js';
 
 test('Video-to-GIF Discord command schemas obey strict Guild & BotDM constraints', () => {
@@ -164,27 +166,35 @@ test('Timestamp, timing range, option normalization, message video extraction & 
   speed: 1.5,
   caption: 'Xin chào',
   captionStyle: 'bar',
+  quality: 'ultra',
+  fps: 50,
  }).toJSON();
  assert.ok(modalJson.title.length <= 45);
+ assert.equal(modalJson.components.length, 5);
  for (const row of modalJson.components) {
   const input = row.components[0];
   assert.ok(input.label.length <= 45, `Modal label too long: ${input.label}`);
   assert.ok((input.placeholder ?? '').length <= 100);
  }
 
+ assert.deepEqual(parseQualityAndFpsInput('ultra 50'), { quality: 'ultra', fps: 50 });
+ assert.deepEqual(parseQualityAndFpsInput('720p 30fps'), { quality: 'ultra', fps: 33 });
+ assert.equal(resolveExactGifFps(50).fpsExpr, '50');
+ assert.equal(resolveExactGifFps(30).fpsExpr, '100/3');
+
  const comps = buildGifActionComponents({ token: 'abc123', requesterId: '1243061570247069696' });
  assert.equal(comps.length, 1);
  assert.equal(comps[0].components.length, 3);
 });
 
-test('End-to-end FFmpeg two-pass Video-to-GIF conversion with Vietnamese Meme caption, HTML og:video hop, concurrency queue & /tmp cleanup', async () => {
+test('End-to-end FFmpeg two-pass 720p Ultra & 50 FPS Video-to-GIF conversion with Vietnamese Meme caption, HTML og:video hop, concurrency queue & /tmp cleanup', async () => {
  const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gif-test-src-'));
  const sampleMp4Path = path.join(fixtureDir, 'sample.mp4');
  try {
   execFileSync(ffmpegPath, [
    '-y',
    '-f', 'lavfi',
-   '-i', 'testsrc=duration=2.2:size=480x270:rate=15',
+   '-i', 'testsrc=duration=1.6:size=1280x720:rate=50',
    '-c:v', 'libx264',
    '-pix_fmt', 'yuv420p',
    sampleMp4Path,
@@ -215,25 +225,28 @@ test('End-to-end FFmpeg two-pass Video-to-GIF conversion with Vietnamese Meme ca
    fetchFn: mockFetch,
   });
 
-  // Chạy đồng thời 2 yêu cầu để kiểm tra hàng đợi tuần tự (chống quá tải RAM 512MB) + tự bóc og:video từ HTML
+  // Chạy đồng thời 2 yêu cầu:
+  // - res1: 720p Ultra + 50 FPS kịch trần chuẩn GIF + chữ Meme Tiếng Việt
+  // - res2: để mặc định trên clip ngắn <=4s -> tự kích lên 720p Ultra • 33 FPS!
   let queuedCalled = false;
   const [res1, res2] = await Promise.all([
    gifMgr.convertVideoToGif({
     sourceUrl: 'https://cdn.example.com/share-page',
     requesterId: '111111111111111111',
     options: {
-     start: '0.2',
-     duration: 1.2,
-     speed: 1.5,
-     caption: 'Khi Bot Discord đổi GIF | Tiếng Việt 100% ăâđêôơư!',
+     start: '0.1',
+     duration: 1.0,
+     speed: 1.0,
+     caption: 'Khi Bot Discord đổi GIF | Nét căng 720p • 50 FPS!',
      captionStyle: 'bar',
-     quality: 'balanced',
+     quality: 'ultra',
+     fps: 50,
     },
    }),
    gifMgr.convertVideoToGif({
     sourceUrl: 'https://cdn.example.com/real-clip.mp4',
     requesterId: '222222222222222222',
-    options: { duration: 1.0, quality: 'compact' },
+    options: { duration: 1.0 },
     onQueued: async pos => {
      if (pos >= 1) queuedCalled = true;
     },
@@ -243,9 +256,12 @@ test('End-to-end FFmpeg two-pass Video-to-GIF conversion with Vietnamese Meme ca
   assert.equal(queuedCalled, true, 'Second concurrent job should wait in FIFO queue');
   assert.equal(res1.gifBuffer.subarray(0, 6).toString('ascii'), 'GIF89a');
   assert.equal(res2.gifBuffer.subarray(0, 6).toString('ascii'), 'GIF89a');
-  assert.equal(res1.meta.width, 380);
-  assert.ok(res1.meta.height > 214, 'Meme white top bar should increase GIF height');
-  assert.ok(formatGifSummaryLine(res1.meta).includes('380×'));
+  assert.equal(res1.meta.width, 720);
+  assert.equal(res1.meta.fps, 50);
+  assert.ok(res1.meta.height > 404, 'Meme white top bar should increase 720p GIF height');
+  assert.equal(res2.meta.width, 720, 'Short <=4s clip without explicit quality auto-promotes to 720p Ultra');
+  assert.equal(res2.meta.fps, 33);
+  assert.ok(formatGifSummaryLine(res1.meta).includes('720×'));
   assert.ok(gifMgr.getTuneSession(res1.session.token));
 
   // Đảm bảo không còn thư mục tạm batdon-gif-* nào sót lại trên /tmp sau khi kết xuất xong

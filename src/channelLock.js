@@ -36,6 +36,7 @@ export const POSTER_ALLOW_BITS =
  PermissionFlagsBits.ReadMessageHistory;
 
 const DEFAULT_ANNOUNCE_REACTIONS = ['❤️', '🔥'];
+export const DM_STUDIO_AUTO_DELETE_MS = 270 * 1000; // 4 phút 30 giây (đúng khoảng 4–5 phút tự động dọn sạch khung chat DM)
 
 export const ANNOUNCE_FONT_MODES = {
  normal: {
@@ -288,7 +289,7 @@ export function buildDmAnnounceStudioPayload(session, statusNotice = null) {
   .setColor(0x8b5cf6)
   .setTitle('📢 Trạm Đăng Thông Báo & Quản Trị Kênh Từ Xa (DM)')
   .setDescription(descLines.join('\n'))
-  .setFooter({ text: 'Chỉ Chủ Bot mới mở được bảng điều khiển ngầm này • 0 MB RAM' })
+  .setFooter({ text: 'Chỉ Chủ Bot • Khung này tự động xóa sau 4p30s không thao tác' })
   .setTimestamp();
 
  const components = [];
@@ -445,6 +446,7 @@ export function buildDmAnnounceStudioPayload(session, statusNotice = null) {
  components.push(new ActionRowBuilder().addComponents(lockRowBtns));
 
  return {
+  content: '',
   embeds: [embed.toJSON()],
   components: components.map(r => r.toJSON()),
   allowedMentions: { parse: [] },
@@ -452,12 +454,92 @@ export function buildDmAnnounceStudioPayload(session, statusNotice = null) {
 }
 
 // Bộ quản lý Khóa / Mở khóa kênh (hỗ trợ cả Kênh Thông Báo 📢 có nút "Theo dõi" y hệt ảnh mẫu) & Đăng bài bằng Bot (~0 MB RAM).
-export function createChannelLockManager({ rest, env = process.env } = {}) {
+export function createChannelLockManager({
+ rest,
+ env = process.env,
+ dmAutoDeleteMs = DM_STUDIO_AUTO_DELETE_MS,
+} = {}) {
  // Lưu nhẹ bản chụp quyền gốc của kênh trước khi khóa để lúc /unlock trả lại chính xác (tối đa 30 kênh ~ 2 KB RAM).
  const savedSnapshots = new Map();
- // Phiên soạn thảo thông báo qua DM của Chủ Bot (tối đa 8 phiên, giữ 24 giờ + tự khôi phục khi restart ~ 4 KB RAM).
+ // Phiên soạn thảo thông báo qua DM của Chủ Bot (tối đa 8 phiên, tự xóa khung chat sau 4p30s không thao tác).
  const dmSessions = new Map();
  const DM_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+ let activeDmPanel = null; // { channelId, messageId, token, timer, webhookDelete }
+
+ async function deleteDmPanelRecord(rec) {
+  if (!rec) return;
+  if (rec.timer) {
+   clearTimeout(rec.timer);
+   rec.timer = null;
+  }
+  let deleted = false;
+  if (rec.channelId && rec.messageId && typeof rest?.delete === 'function') {
+   try {
+    await rest.delete(Routes.channelMessage(String(rec.channelId), String(rec.messageId)));
+    deleted = true;
+   } catch {}
+  }
+  if (!deleted && typeof rec.webhookDelete === 'function') {
+   try {
+    await rec.webhookDelete();
+   } catch {}
+  }
+ }
+
+ // Gắn & làm mới bộ đếm ngược 4 phút 30 giây tự động xóa khung điều khiển DM (đồng thời dọn luôn khung DM cũ nếu mở bảng mới!).
+ function bindDmStudioMessage(session, { channelId = null, messageId = null, webhookDelete = null } = {}) {
+  if (!session) return;
+  const chId = channelId ? String(channelId) : session.lastDmChannelId;
+  const msgId = messageId ? String(messageId) : session.lastDmMessageId;
+  const hookDel = webhookDelete ?? session.webhookDelete ?? null;
+
+  session.lastDmChannelId = chId || null;
+  session.lastDmMessageId = msgId || null;
+  session.webhookDelete = hookDel;
+
+  // Nếu trước đó đang có một khung DM khác cũ hơn -> xóa khung cũ ngay để hộp thư riêng luôn sạch gọn chỉ 1 khung!
+  if (
+   activeDmPanel &&
+   ((activeDmPanel.messageId && msgId && activeDmPanel.messageId !== msgId) ||
+    (activeDmPanel.token && activeDmPanel.token !== session.token && !msgId))
+  ) {
+   const prev = activeDmPanel;
+   activeDmPanel = null;
+   void deleteDmPanelRecord(prev);
+  }
+
+  if (activeDmPanel?.timer) {
+   clearTimeout(activeDmPanel.timer);
+   activeDmPanel.timer = null;
+  }
+
+  if (!chId && !hookDel) return;
+  const panelRec = {
+   channelId: chId,
+   messageId: msgId,
+   token: session.token,
+   webhookDelete: hookDel,
+   timer: null,
+  };
+  if (dmAutoDeleteMs > 0) {
+   const t = setTimeout(() => {
+    if (activeDmPanel === panelRec) activeDmPanel = null;
+    dmSessions.delete(session.token);
+    void deleteDmPanelRecord(panelRec);
+   }, dmAutoDeleteMs);
+   t.unref?.();
+   panelRec.timer = t;
+  }
+  activeDmPanel = panelRec;
+ }
+
+ function clearAllDmTimers() {
+  if (activeDmPanel?.timer) {
+   clearTimeout(activeDmPanel.timer);
+   activeDmPanel.timer = null;
+  }
+  activeDmPanel = null;
+ }
 
  async function openDmStudioSession({
   guildId,
@@ -1065,10 +1147,25 @@ export function createChannelLockManager({ rest, env = process.env } = {}) {
   try {
    sent = await rest.post(Routes.channelMessages(chId), { body });
   } catch (err) {
-   if (err?.status === 403 || err?.code === 50013) {
-    throw new Error('Bot chưa có quyền gửi tin nhắn vào kênh này — hãy cấp quyền `Gửi tin nhắn` hoặc `Quản lý Kênh` cho Bot nhé!');
+   // Nếu chọn kiểu Embed mà kênh đó tắt quyền Nhúng liên kết (Embed Links), tự động hạ xuống tin nhắn chữ thường để vẫn đăng thành công!
+   if ((err?.status === 403 || err?.code === 50013) && style === 'embed') {
+    const needsLineStart = /^(?:#{1,3}\s|-#\s|>|\* |- |\d+\.\s|```)/.test(normalizedText);
+    const sep = needsLineStart ? '\n' : ' ';
+    const fallbackText = prefixParts.length > 0
+     ? `${prefixParts.join(' ')}${sep}${normalizedText}`
+     : normalizedText;
+    try {
+     sent = await rest.post(Routes.channelMessages(chId), {
+      body: { content: fallbackText.slice(0, 1990), allowed_mentions: allowedMentions },
+     });
+    } catch {}
    }
-   throw new Error('Không thể đăng thông báo vào kênh này lúc này.');
+   if (!sent) {
+    if (err?.status === 403 || err?.code === 50013) {
+     throw new Error('Bot chưa có quyền gửi tin nhắn vào kênh này — hãy cấp quyền `Xem Kênh` & `Gửi tin nhắn` cho Bot nhé!');
+    }
+    throw new Error('Không thể đăng thông báo vào kênh này lúc này.');
+   }
   }
 
   // Tự động gắn sẵn biểu cảm ❤️ 🔥 bên dưới bài viết giống hệt ảnh mẫu để thành viên chỉ việc bấm thả tim!
@@ -1106,5 +1203,7 @@ export function createChannelLockManager({ rest, env = process.env } = {}) {
   ensureDmStudioSession,
   openOrReuseOwnerDmDraft,
   resolveDmUserTargets,
+  bindDmStudioMessage,
+  clearAllDmTimers,
  };
 }

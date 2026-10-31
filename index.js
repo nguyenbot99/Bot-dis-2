@@ -2178,8 +2178,18 @@ async function replyInteractionError(i, e) {
  }
  console.error('[lỗi-tương-tác]', i.commandName ?? i.customId, e?.name ?? 'Error', '-', String(e?.message ?? '').slice(0, 160));
  const content = KNOWN_ERROR_RE.test(e?.message ?? '') ? e.message : 'Nguồn nhạc hoặc kết nối gặp lỗi. Vui lòng thử lại sau.';
+ if (!i.guild && (i.deferred || i.replied) && !i.isChatInputCommand()) {
+  await i.followUp({ content: `⚠️ ${content}`, flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } }).catch(() => {});
+  return;
+ }
  if (i.deferred || i.replied) {
-  await i.editReply({ content, allowedMentions: { parse: [] } }).catch(() => {});
+  const errMsg = await i.editReply({ content, allowedMentions: { parse: [] } }).catch(() => null);
+  if (!i.guild && errMsg?.id && i.channelId) {
+   const t = setTimeout(() => {
+    client.rest.delete(Routes.channelMessage(i.channelId, errMsg.id)).catch(() => {});
+   }, 30000);
+   t.unref?.();
+  }
  } else {
   await i.reply({ content, flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } }).catch(() => {});
  }
@@ -2988,7 +2998,7 @@ async function handleOwnerDmRawPacket(packet) {
    banner = '✍️ **Đã nhận tin nhắn làm bản nháp sẵn sàng!** Chọn kênh / tag (hoặc bấm **🎯 Tag Tên / ID**) rồi bấm **🚀 Đăng ngay**!';
   }
 
-  // Dọn bảng cũ trong DM (nếu có) để hộp thư riêng luôn gọn gàng chỉ 1 bảng điều khiển mới nhất ở dưới cùng.
+  // Dọn bảng cũ trong DM (nếu có) & hẹn giờ 4 phút 30 giây không thao tác sẽ tự động xóa sạch khung điều khiển!
   const prevMsgId = session.lastDmMessageId;
   const prevChId = session.lastDmChannelId;
   const payload = buildDmAnnounceStudioPayload(session, banner);
@@ -2999,17 +3009,24 @@ async function handleOwnerDmRawPacket(packet) {
     allowed_mentions: { parse: [] },
    },
   });
-  session.lastDmChannelId = dmChannelId;
-  session.lastDmMessageId = sent?.id ?? null;
-
   if (prevMsgId && prevChId === dmChannelId && prevMsgId !== sent?.id) {
    await client.rest.delete(Routes.channelMessage(prevChId, prevMsgId)).catch(() => {});
   }
+  channelLockManager.bindDmStudioMessage(session, {
+   channelId: dmChannelId,
+   messageId: sent?.id ?? null,
+  });
  } catch (e) {
   const msg = KNOWN_ERROR_RE.test(e?.message ?? '') ? e.message : 'Không thể mở bảng điều khiển DM lúc này.';
-  await client.rest.post(Routes.channelMessages(dmChannelId), {
+  const errSent = await client.rest.post(Routes.channelMessages(dmChannelId), {
    body: { content: `⚠️ ${msg}`, allowed_mentions: { parse: [] } },
-  }).catch(() => {});
+  }).catch(() => null);
+  if (errSent?.id) {
+   const t = setTimeout(() => {
+    client.rest.delete(Routes.channelMessage(dmChannelId, errSent.id)).catch(() => {});
+   }, 30000);
+   t.unref?.();
+  }
  }
 }
 
@@ -3035,18 +3052,31 @@ async function handleBotDmInteraction(i) {
    banner = formatUserResolveBanner(r);
   }
   const replyMsg = await i.editReply(buildDmAnnounceStudioPayload(session, banner));
-  session.lastDmChannelId = i.channelId ?? null;
-  session.lastDmMessageId = replyMsg?.id ?? null;
+  const resolvedDmChId = i.channelId ?? replyMsg?.channel_id ?? replyMsg?.channelId ?? null;
+  const appId = i.applicationId ?? client.application?.id;
+  const intToken = i.token;
+  channelLockManager.bindDmStudioMessage(session, {
+   channelId: resolvedDmChId,
+   messageId: replyMsg?.id ?? null,
+   webhookDelete: appId && intToken
+    ? () => client.rest.delete(Routes.webhookMessage(appId, intToken, '@original'))
+    : null,
+  });
   return;
  }
 
  const loadSession = async token => {
   const { guildId, guildName } = resolveTargetGuildForOwnerDm();
-  return channelLockManager.ensureDmStudioSession(token, {
+  const s = await channelLockManager.ensureDmStudioSession(token, {
    requesterId: i.user.id,
    guildId,
    guildName,
   });
+  channelLockManager.bindDmStudioMessage(s, {
+   channelId: i.channelId ?? s.lastDmChannelId,
+   messageId: i.message?.id ?? s.lastDmMessageId,
+  });
+  return s;
  };
 
  if (i.isStringSelectMenu() && i.customId.startsWith('dm_ann_ch:')) {
@@ -4349,6 +4379,7 @@ async function shutdown(code = 0) {
    }
    pendingAutoDeletes.clear();
   }
+  channelLockManager.clearAllDmTimers();
 
   const preExitTasks = [voiceRoomStatus.clearAllNow().catch(() => {})];
   if (activePlayers.length > 0) {

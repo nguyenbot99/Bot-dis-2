@@ -20,6 +20,7 @@ import {
  buildDmAnnounceStudioPayload,
  buildDmUserTagModal,
  createChannelLockManager,
+ DM_STUDIO_AUTO_DELETE_MS,
  getNextAnnounceFont,
 } from '../src/channelLock.js';
 import { createSpamTagManager, MAX_SPAM_COUNT } from '../src/spamTag.js';
@@ -525,6 +526,7 @@ test('Feature #7: /lock, /unlock & /announce (Owner-Only Announcement Follow Mod
   position: idx + 5,
  }));
  const dmPosted = [];
+ const dmDeleted = [];
  const dmRest = {
   get: async (route, opts) => {
    const r = String(route);
@@ -568,8 +570,12 @@ test('Feature #7: /lock, /unlock & /announce (Owner-Only Announcement Follow Mod
    return {};
   },
   put: async () => ({}),
+  delete: async route => {
+   dmDeleted.push(String(route));
+   return {};
+  },
  };
- const dmMgr = createChannelLockManager({ rest: dmRest });
+ const dmMgr = createChannelLockManager({ rest: dmRest, dmAutoDeleteMs: 40 });
  await assert.rejects(
   () => dmMgr.openDmStudioSession({ guildId: '111111111111111111', requesterId: '999999999999999999' }),
   /Chỉ Chủ Bot/,
@@ -673,4 +679,13 @@ test('Feature #7: /lock, /unlock & /announce (Owner-Only Announcement Follow Mod
  const userTagModalJson = buildDmUserTagModal(dmSession.token, dmSession.pingUsers).toJSON();
  assert.equal(userTagModalJson.custom_id, `dm_ann_usertag_modal:${dmSession.token}`);
  assert.ok(userTagModalJson.components[0].components[0].label.length <= 45);
+
+ // Kiểm tra tự động xóa khung điều khiển DM sau 4p30s (270.000ms) + xóa ngay khung cũ khi mở khung mới + content: '' chống dính chữ lỗi cũ!
+ assert.equal(DM_STUDIO_AUTO_DELETE_MS, 270000);
+ assert.equal(studioPayload.content, '');
+ dmMgr.bindDmStudioMessage(dmSession, { channelId: '707070707070707070', messageId: '808080808080808081' });
+ dmMgr.bindDmStudioMessage(recovered, { channelId: '707070707070707070', messageId: '808080808080808082' });
+ await new Promise(r => setTimeout(r, 75));
+ assert.ok(dmDeleted.some(r => r.endsWith('/channels/707070707070707070/messages/808080808080808081')));
+ assert.ok(dmDeleted.some(r => r.endsWith('/channels/707070707070707070/messages/808080808080808082')));
 });

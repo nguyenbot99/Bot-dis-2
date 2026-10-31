@@ -47,6 +47,7 @@ import {
  buildChannelLockButtons,
  buildDmAnnounceModal,
  buildDmAnnounceStudioPayload,
+ buildDmUserTagModal,
  createChannelLockManager,
 } from './src/channelLock.js';
 import { buildSpamControlRow, createSpamTagManager } from './src/spamTag.js';
@@ -2873,7 +2874,24 @@ function resolveTargetGuildForOwnerDm() {
 // Chống lặp gói tin Gateway DM (giữ tối đa 12 ID gần nhất ~ 0 KB RAM).
 const seenOwnerDmIds = new Set();
 
-// Cho phép Chủ Bot gõ thẳng `/announce` (hoặc dán thẳng bài thông báo nhiều dòng) trong khung chat riêng (DM) với Bot — chạy tức thì 0.1s không cần đợi Discord Mobile đồng bộ menu `/`!
+function formatUserResolveBanner(res) {
+ if (res.cleared) {
+  return '🧹 **Đã xóa sạch danh sách Tag người dùng.**';
+ }
+ const parts = [];
+ if (res.resolved.length > 0) {
+  parts.push(`🎯 **Đã gắn Tag (${res.resolved.length}) :** ${res.resolved.map(u => `<@${u.id}> *(${cleanText(u.label, 25)})*`).join(', ')}`);
+ }
+ if (res.ambiguous.length > 0) {
+  parts.push(`🔎 **Có ${res.ambiguous.length} thành viên trùng tên** — hãy bấm vào thanh **Có ${res.ambiguous.length} thành viên khớp tên** ngay bên dưới để tích chọn đúng người!`);
+ }
+ if (res.notFound.length > 0) {
+  parts.push(`⚠️ Không tìm thấy trong Server: \`${res.notFound.join(', ')}\` *(hãy gõ chữ cái đầu của username/biệt danh hoặc dán ID số)*`);
+ }
+ return parts.join('\n> ') || '🎯 Đã cập nhật danh sách Tag người dùng.';
+}
+
+// Cho phép Chủ Bot gõ thẳng `/announce`, `tag <tên/ID>` hoặc dán thẳng bài thông báo nhiều dòng trong khung chat riêng (DM) với Bot — chạy tức thì 0.1s!
 async function handleOwnerDmRawPacket(packet) {
  if (packet?.t !== 'MESSAGE_CREATE') return;
  const d = packet.d;
@@ -2900,11 +2918,26 @@ async function handleOwnerDmRawPacket(packet) {
 
  try {
   const { guildId, guildName } = resolveTargetGuildForOwnerDm();
+  const tagCmdMatch = rawText.match(/^\/?tag(?:\s+([\s\S]*))?$/i);
   const cmdMatch = rawText.match(/^\/?(?:announce|tb|thongbao|menu|lock|unlock|help)(?:\s+([\s\S]*))?$/i);
   let session;
   let banner = null;
 
-  if (cmdMatch) {
+  if (tagCmdMatch) {
+   session = await channelLockManager.openOrReuseOwnerDmDraft({
+    guildId,
+    guildName,
+    requesterId: authorId,
+    draftText: '',
+    forceFresh: false,
+   });
+   const tagArg = String(tagCmdMatch[1] ?? '').trim();
+   const res = await channelLockManager.resolveDmUserTargets(session, tagArg, {
+    requesterId: authorId,
+    merge: Boolean(tagArg && !/^(?:xoa|xóa|clear|off|none|0)$/i.test(tagArg)),
+   });
+   banner = formatUserResolveBanner(res);
+  } else if (cmdMatch) {
    const inlineDraft = String(cmdMatch[1] ?? '').trim();
    session = await channelLockManager.openOrReuseOwnerDmDraft({
     guildId,
@@ -2914,17 +2947,18 @@ async function handleOwnerDmRawPacket(packet) {
     forceFresh: !inlineDraft,
    });
    if (inlineDraft) {
-    banner = '✍️ **Đã nạp nội dung nháp!** Chọn kênh / tag bên dưới rồi bấm **🚀 Đăng ngay nội dung nháp** để đăng lên Server!';
+    banner = '✍️ **Đã nạp nội dung nháp!** Chọn kênh / tag bên dưới rồi bấm **🚀 Đăng ngay** để đăng lên Server!';
    }
   } else {
-   session = await channelLockManager.openOrReuseOwnerDmDraft({
+   const prevDraftKeep = await channelLockManager.openOrReuseOwnerDmDraft({
     guildId,
     guildName,
     requesterId: authorId,
     draftText: rawText,
     forceFresh: false,
    });
-   banner = '✍️ **Đã nhận tin nhắn làm bản nháp sẵn sàng!** Chọn kênh / tag rồi bấm **🚀 Đăng ngay nội dung nháp** (hoặc **✍️ Sửa & Đăng**)!';
+   session = prevDraftKeep;
+   banner = '✍️ **Đã nhận tin nhắn làm bản nháp sẵn sàng!** Chọn kênh / tag (hoặc bấm **🎯 Tag Tên / ID**) rồi bấm **🚀 Đăng ngay**!';
   }
 
   // Dọn bảng cũ trong DM (nếu có) để hộp thư riêng luôn gọn gàng chỉ 1 bảng điều khiển mới nhất ở dưới cùng.
@@ -2966,7 +3000,13 @@ async function handleBotDmInteraction(i) {
    style: i.options.getString('style') || 'text',
    autoReact: i.options.getBoolean('auto_react') ?? true,
   });
-  const replyMsg = await i.editReply(buildDmAnnounceStudioPayload(session));
+  const initUsers = i.options.getString('ping_users') ?? '';
+  let banner = null;
+  if (initUsers.trim()) {
+   const r = await channelLockManager.resolveDmUserTargets(session, initUsers, { requesterId: i.user.id });
+   banner = formatUserResolveBanner(r);
+  }
+  const replyMsg = await i.editReply(buildDmAnnounceStudioPayload(session, banner));
   session.lastDmChannelId = i.channelId ?? null;
   session.lastDmMessageId = replyMsg?.id ?? null;
   return;
@@ -3010,6 +3050,72 @@ async function handleBotDmInteraction(i) {
   return;
  }
 
+ // Thanh chọn nhanh người dùng Discord gốc (UserSelectMenu ở Hàng 3)
+ if (i.isUserSelectMenu() && i.customId.startsWith('dm_ann_users:')) {
+  const token = i.customId.slice('dm_ann_users:'.length);
+  const session = await loadSession(token);
+  session.pendingUserMatches = [];
+  session.pingUsers = i.values.slice(0, 15).map(uid => {
+   const u = i.users?.get?.(uid);
+   const label = u
+    ? (u.globalName && u.globalName !== u.username ? `${u.globalName} (@${u.username})` : `@${u.username}`)
+    : `ID:${uid}`;
+   return { id: String(uid), label };
+  });
+  await i.update(buildDmAnnounceStudioPayload(session));
+  return;
+ }
+
+ // Khi tìm theo tên khớp nhiều thành viên trên Server -> Chủ Bot tích chọn đúng thành viên từ danh sách gợi ý
+ if (i.isStringSelectMenu() && i.customId.startsWith('dm_ann_pickmatch:')) {
+  const token = i.customId.slice('dm_ann_pickmatch:'.length);
+  const session = await loadSession(token);
+  const pool = new Map((session.pendingUserMatches ?? []).map(m => [m.id, m]));
+  const merged = new Map((session.pingUsers ?? []).map(u => [u.id, u]));
+  for (const uid of i.values) {
+   const found = pool.get(uid);
+   merged.set(String(uid), { id: String(uid), label: found?.label ?? `ID:${uid}` });
+  }
+  session.pingUsers = [...merged.values()].slice(0, 15);
+  session.pendingUserMatches = [];
+  await i.update(
+   buildDmAnnounceStudioPayload(session, `🎯 **Đã thêm ${i.values.length} thành viên vào danh sách Tag!**`),
+  );
+  return;
+ }
+
+ // Nút mở hộp thoại Tìm theo Tên / Biệt danh Server hoặc dán ID người dùng
+ if (i.isButton() && i.customId.startsWith('dm_ann_usertag:')) {
+  const token = i.customId.slice('dm_ann_usertag:'.length);
+  const session = await loadSession(token);
+  await i.showModal(buildDmUserTagModal(session.token, session.pingUsers));
+  return;
+ }
+
+ // Xử lý kết quả nhập Tên / ID người dùng từ hộp thoại 🎯 Tag Tên / ID
+ if (i.isModalSubmit() && i.customId.startsWith('dm_ann_usertag_modal:')) {
+  const token = i.customId.slice('dm_ann_usertag_modal:'.length);
+  const session = await loadSession(token);
+  const rawTargets = i.fields.getTextInputValue('user_targets');
+  await i.deferUpdate();
+  const res = await channelLockManager.resolveDmUserTargets(session, rawTargets, {
+   requesterId: i.user.id,
+   merge: false,
+  });
+  await i.editReply(buildDmAnnounceStudioPayload(session, formatUserResolveBanner(res)));
+  return;
+ }
+
+ // Nút xóa nhanh danh sách người dùng đang được Tag
+ if (i.isButton() && i.customId.startsWith('dm_ann_clearusers:')) {
+  const token = i.customId.slice('dm_ann_clearusers:'.length);
+  const session = await loadSession(token);
+  session.pingUsers = [];
+  session.pendingUserMatches = [];
+  await i.update(buildDmAnnounceStudioPayload(session, '🧹 **Đã xóa sạch danh sách Tag người dùng.**'));
+  return;
+ }
+
  if (i.isButton() && i.customId.startsWith('dm_ann_style:')) {
   const token = i.customId.slice('dm_ann_style:'.length);
   const session = await loadSession(token);
@@ -3029,7 +3135,7 @@ async function handleBotDmInteraction(i) {
  if (i.isButton() && i.customId.startsWith('dm_ann_compose:')) {
   const token = i.customId.slice('dm_ann_compose:'.length);
   const session = await loadSession(token);
-  await i.showModal(buildDmAnnounceModal(session.token, session.draftText));
+  await i.showModal(buildDmAnnounceModal(session.token, session.draftText, session.pingUsers));
   return;
  }
 
@@ -3037,15 +3143,17 @@ async function handleBotDmInteraction(i) {
   const token = i.customId.slice('dm_ann_send:'.length);
   const session = await loadSession(token);
   if (!session.draftText) {
-   throw new Error('Chưa có nội dung nháp — hãy bấm nút **✍️ Soạn nhiều dòng & Đăng** hoặc gõ tin nhắn vào DM nhé!');
+   throw new Error('Chưa có nội dung nháp — hãy bấm nút **✍️ Soạn & Đăng** hoặc gõ tin nhắn vào DM nhé!');
   }
   await i.deferUpdate();
   const res = await channelLockManager.postBotAnnouncement({
+   guildId: session.guildId,
    channelId: session.channelId,
    requesterId: i.user.id,
    rawContent: session.draftText,
    pingRoleId: session.pingMode !== 'none' && session.pingMode !== 'everyone' ? session.pingMode : null,
    pingEveryone: session.pingMode === 'everyone',
+   pingUserIds: (session.pingUsers ?? []).map(u => u.id),
    style: session.style,
    autoReact: session.autoReact,
   });
@@ -3063,13 +3171,42 @@ async function handleBotDmInteraction(i) {
   const token = i.customId.slice('dm_ann_modal:'.length);
   const session = await loadSession(token);
   const rawContent = i.fields.getTextInputValue('announce_content');
+  let rawUserTargets = '';
+  try {
+   rawUserTargets = i.fields.getTextInputValue('announce_user_targets') ?? '';
+  } catch {}
   await i.deferUpdate();
+
+  if (rawUserTargets.trim()) {
+   const resolved = await channelLockManager.resolveDmUserTargets(session, rawUserTargets, {
+    requesterId: i.user.id,
+    merge: false,
+   });
+   // Nếu từ khóa tên khớp nhiều người khác nhau trên Server, dừng lại cho Chủ Bot tích chọn đúng người rồi mới bấm 🚀 Đăng ngay (tránh tag nhầm người trùng tên!)
+   if (resolved.ambiguous.length > 0) {
+    session.draftText = String(rawContent ?? '').trim();
+    await i.editReply(
+     buildDmAnnounceStudioPayload(
+      session,
+      `${formatUserResolveBanner(resolved)}\n> 💡 *Sau khi tích chọn đúng người ở menu bên dưới, chỉ cần bấm **🚀 Đăng ngay** là bài lên Server!*`,
+     ),
+    );
+    return;
+   }
+  } else if ((session.pingUsers ?? []).length > 0) {
+   // Nếu Chủ Bot chủ động xóa trắng ô Tag trong Modal -> gỡ tag người dùng
+   session.pingUsers = [];
+   session.pendingUserMatches = [];
+  }
+
   const res = await channelLockManager.postBotAnnouncement({
+   guildId: session.guildId,
    channelId: session.channelId,
    requesterId: i.user.id,
    rawContent,
    pingRoleId: session.pingMode !== 'none' && session.pingMode !== 'everyone' ? session.pingMode : null,
    pingEveryone: session.pingMode === 'everyone',
+   pingUserIds: (session.pingUsers ?? []).map(u => u.id),
    style: session.style,
    autoReact: session.autoReact,
   });

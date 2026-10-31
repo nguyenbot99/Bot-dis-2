@@ -13,6 +13,7 @@ import {
  StringSelectMenuOptionBuilder,
  TextInputBuilder,
  TextInputStyle,
+ UserSelectMenuBuilder,
 } from 'discord.js';
 import { isBotOwner } from './access.js';
 import { cleanText } from './playerGui.js';
@@ -78,7 +79,7 @@ export function buildAnnounceModal({ channelId, pingRoleId = '', pingEveryone = 
  return modal;
 }
 
-export function buildDmAnnounceModal(token, defaultText = '') {
+export function buildDmAnnounceModal(token, defaultText = '', currentUsers = []) {
  const modal = new ModalBuilder()
   .setCustomId(`dm_ann_modal:${token}`)
   .setTitle('📢 Soạn Bài Đăng Lên Server (Từ DM)');
@@ -86,7 +87,7 @@ export function buildDmAnnounceModal(token, defaultText = '') {
  const contentInput = new TextInputBuilder()
   .setCustomId('announce_content')
   .setLabel('Nội dung thông báo (Enter xuống dòng tự do)')
-  .setPlaceholder('Ví dụ:\nMấy nay nhiều việc quá\nHẹn mn cuối tuần sau nhé!\n\nFree')
+  .setPlaceholder('VD: Tối nay 20h họp mặt nhé!\n(Có thể gõ thẳng @username hoặc <@ID> trong bài)')
   .setStyle(TextInputStyle.Paragraph)
   .setRequired(true)
   .setMaxLength(1900);
@@ -95,7 +96,43 @@ export function buildDmAnnounceModal(token, defaultText = '') {
   contentInput.setValue(defaultText.slice(0, 1900));
  }
 
- modal.addComponents(new ActionRowBuilder().addComponents(contentInput));
+ const userTargetInput = new TextInputBuilder()
+  .setCustomId('announce_user_targets')
+  .setLabel('Tag Tên hoặc ID người dùng (tùy chọn)')
+  .setPlaceholder('VD: egboy, nguyen, 1243061570247069696 (phẩy để tag nhiều)')
+  .setStyle(TextInputStyle.Short)
+  .setRequired(false)
+  .setMaxLength(400);
+
+ if (Array.isArray(currentUsers) && currentUsers.length > 0) {
+  userTargetInput.setValue(currentUsers.map(u => u.id).join(', ').slice(0, 400));
+ }
+
+ modal.addComponents(
+  new ActionRowBuilder().addComponents(contentInput),
+  new ActionRowBuilder().addComponents(userTargetInput),
+ );
+ return modal;
+}
+
+export function buildDmUserTagModal(token, currentUsers = []) {
+ const modal = new ModalBuilder()
+  .setCustomId(`dm_ann_usertag_modal:${token}`)
+  .setTitle('🎯 Tag Theo Tên Hoặc ID Người Dùng');
+
+ const input = new TextInputBuilder()
+  .setCustomId('user_targets')
+  .setLabel('Nhập Tên / Biệt danh Server hoặc ID số')
+  .setPlaceholder('VD: egboy, Minh, 1243061570247069696\n(Phẩy/xuống dòng. Để trống = xóa tag)')
+  .setStyle(TextInputStyle.Paragraph)
+  .setRequired(false)
+  .setMaxLength(500);
+
+ if (Array.isArray(currentUsers) && currentUsers.length > 0) {
+  input.setValue(currentUsers.map(u => u.id).join(', ').slice(0, 500));
+ }
+
+ modal.addComponents(new ActionRowBuilder().addComponents(input));
  return modal;
 }
 
@@ -105,19 +142,25 @@ export function buildDmAnnounceStudioPayload(session, statusNotice = null) {
  const chIcon = selCh?.type === ChannelType.GuildAnnouncement ? '📢' : '#';
  const chTypeLabel = selCh?.type === ChannelType.GuildAnnouncement ? 'Kênh Thông Báo (có nút Theo dõi)' : 'Kênh Văn Bản thường';
 
- let pingLabel = '🔕 Không tag ai';
+ let pingLabel = '🔕 Không tag Role';
  if (session.pingMode === 'everyone') {
   pingLabel = '🌐 Tag `@everyone`';
  } else if (session.pingMode && session.pingMode !== 'none') {
   const foundRole = session.roles.find(r => r.id === session.pingMode);
-  pingLabel = foundRole ? `🏷️ Tag Role \`@${foundRole.name}\`` : '🔕 Không tag ai';
+  pingLabel = foundRole ? `🏷️ Tag Role \`@${foundRole.name}\`` : '🔕 Không tag Role';
  }
+
+ const pingUsers = Array.isArray(session.pingUsers) ? session.pingUsers : [];
+ const userTagSummary = pingUsers.length > 0
+  ? pingUsers.map(u => `<@${u.id}> *(${cleanText(u.label || u.id, 28)})*`).join(' • ')
+  : '🔕 Chưa chọn ai *(bấm **🎯 Tag Tên / ID** hoặc chọn ở menu dưới)*';
 
  const descLines = [
   statusNotice ? `> ${statusNotice}\n` : null,
   `🏠 **Máy chủ đích :** **${cleanText(session.guildName, 55)}**`,
   `📍 **Kênh đang chọn :** **${chIcon}${cleanText(selCh?.name ?? 'kênh', 45)}** *(${chTypeLabel})*`,
-  `🏷️ **Chế độ Tag :** ${pingLabel}`,
+  `🏷️ **Tag Vai trò :** ${pingLabel}`,
+  `👤 **Tag Người dùng (${pingUsers.length}) :** ${userTagSummary}`,
   `🎨 **Định dạng :** ${session.style === 'embed' ? '📋 Khung thẻ Embed' : '💬 Chữ tự nhiên (giống Meow Bot)'} • ${session.autoReact ? '❤️ 🔥 Tự thả tim: **Bật**' : '🤍 Tự thả tim: **Tắt**'}`,
  ].filter(Boolean);
 
@@ -127,7 +170,7 @@ export function buildDmAnnounceStudioPayload(session, statusNotice = null) {
    : session.draftText;
   descLines.push('', '📝 **Nội dung nháp sẵn sàng đăng:**', `\`\`\`\n${preview.replace(/```/g, "'''")}\n\`\`\``);
  } else {
-  descLines.push('', '💡 *Chọn kênh & chế độ tag bên dưới, rồi bấm **✍️ Soạn nhiều dòng & Đăng** để viết bài thoải mái!*');
+  descLines.push('', '💡 *Mẹo: Bấm **🎯 Tag Tên / ID** để tìm tên thành viên trong Server hoặc dán ID số (hoặc gõ thẳng `@username` ngay trong bài viết)!*');
  }
 
  const embed = new EmbedBuilder()
@@ -163,8 +206,8 @@ export function buildDmAnnounceStudioPayload(session, statusNotice = null) {
  // Hàng 2: Menu chọn Tag (@everyone hoặc Role như @Member)
  const pingOpts = [
   new StringSelectMenuOptionBuilder()
-   .setLabel('🔕 Không tag (Đăng im lặng)')
-   .setDescription('Chỉ đăng nội dung bài viết, không réo chuông ai')
+   .setLabel('🔕 Không tag Role / @everyone')
+   .setDescription('Không đính kèm tag vai trò ở đầu bài')
    .setValue('none')
    .setDefault(!session.pingMode || session.pingMode === 'none'),
   new StringSelectMenuOptionBuilder()
@@ -184,19 +227,48 @@ export function buildDmAnnounceStudioPayload(session, statusNotice = null) {
   new ActionRowBuilder().addComponents(
    new StringSelectMenuBuilder()
     .setCustomId(`dm_ann_ping:${session.token}`)
-    .setPlaceholder('🏷️ Chọn chế độ Tag ở đầu bài đăng')
+    .setPlaceholder('🏷️ Chọn chế độ Tag Role / @everyone')
     .addOptions(pingOpts),
   ),
  );
 
- // Hàng 3: Nút Đăng ngay / Mở bảng gõ nhiều dòng + Đổi kiểu & Tự thả tim
+ // Hàng 3: Nếu vừa tìm tên ra nhiều thành viên trùng khớp -> hiện menu tích chọn thành viên Server; mặc định -> hiện UserSelectMenu chọn nhanh bạn bè/người dùng Discord
+ const pendingMatches = Array.isArray(session.pendingUserMatches) ? session.pendingUserMatches.slice(0, 25) : [];
+ if (pendingMatches.length > 0) {
+  const matchMenu = new StringSelectMenuBuilder()
+   .setCustomId(`dm_ann_pickmatch:${session.token}`)
+   .setPlaceholder(`🔎 Có ${pendingMatches.length} thành viên khớp tên — tích chọn để Tag!`)
+   .setMinValues(1)
+   .setMaxValues(Math.min(10, pendingMatches.length))
+   .addOptions(
+    pendingMatches.map(m =>
+     new StringSelectMenuOptionBuilder()
+      .setLabel(`👤 ${cleanText(m.label, 85)}`)
+      .setDescription(`ID: ${m.id}${m.sublabel ? ` • ${cleanText(m.sublabel, 65)}` : ''}`)
+      .setValue(m.id),
+    ),
+   );
+  components.push(new ActionRowBuilder().addComponents(matchMenu));
+ } else {
+  const userSelect = new UserSelectMenuBuilder()
+   .setCustomId(`dm_ann_users:${session.token}`)
+   .setPlaceholder('👤 Chọn nhanh người dùng Discord cần Tag (tối đa 10)')
+   .setMinValues(0)
+   .setMaxValues(10);
+  if (pingUsers.length > 0) {
+   userSelect.setDefaultUsers(pingUsers.slice(0, 10).map(u => u.id));
+  }
+  components.push(new ActionRowBuilder().addComponents(userSelect));
+ }
+
+ // Hàng 4: Nút Đăng ngay / Mở bảng gõ nhiều dòng + Tìm Tên/ID + Đổi kiểu & Tự thả tim (tối đa 5 nút chuẩn Discord)
  const postBtns = [];
  if (session.draftText) {
   postBtns.push(
    new ButtonBuilder()
     .setCustomId(`dm_ann_send:${session.token}`)
     .setStyle(ButtonStyle.Success)
-    .setLabel('Đăng ngay nội dung nháp')
+    .setLabel('Đăng ngay')
     .setEmoji('🚀'),
   );
  }
@@ -204,8 +276,13 @@ export function buildDmAnnounceStudioPayload(session, statusNotice = null) {
   new ButtonBuilder()
    .setCustomId(`dm_ann_compose:${session.token}`)
    .setStyle(ButtonStyle.Primary)
-   .setLabel(session.draftText ? 'Sửa & Đăng' : 'Soạn nhiều dòng & Đăng')
+   .setLabel(session.draftText ? 'Sửa & Đăng' : 'Soạn & Đăng')
    .setEmoji('✍️'),
+  new ButtonBuilder()
+   .setCustomId(`dm_ann_usertag:${session.token}`)
+   .setStyle(ButtonStyle.Primary)
+   .setLabel('Tag Tên / ID')
+   .setEmoji('🎯'),
   new ButtonBuilder()
    .setCustomId(`dm_ann_style:${session.token}`)
    .setStyle(ButtonStyle.Secondary)
@@ -214,23 +291,32 @@ export function buildDmAnnounceStudioPayload(session, statusNotice = null) {
   new ButtonBuilder()
    .setCustomId(`dm_ann_react:${session.token}`)
    .setStyle(ButtonStyle.Secondary)
-   .setLabel(session.autoReact ? 'Tim ❤️🔥: Bật' : 'Tim ❤️🔥: Tắt'),
+   .setLabel(session.autoReact ? 'Tim ❤️🔥: Bật' : 'Tim: Tắt'),
  );
  components.push(new ActionRowBuilder().addComponents(postBtns));
 
- // Hàng 4: Khóa / Mở khóa nhanh kênh đang chọn ngay từ trong DM (+ Đổi trang kênh nếu Server > 25 kênh chữ)
+ // Hàng 5: Khóa / Mở khóa kênh + Xóa Tag User + Đổi trang kênh nếu Server > 25 kênh chữ
  const lockRowBtns = [
   new ButtonBuilder()
    .setCustomId(`dm_ann_lock:${session.token}`)
    .setStyle(ButtonStyle.Danger)
-   .setLabel('Khóa kênh này (📢 Theo dõi)')
+   .setLabel('Khóa kênh (📢 Theo dõi)')
    .setEmoji('🔒'),
   new ButtonBuilder()
    .setCustomId(`dm_ann_unlock:${session.token}`)
    .setStyle(ButtonStyle.Success)
-   .setLabel('Mở khóa kênh này')
+   .setLabel('Mở khóa kênh')
    .setEmoji('🔓'),
  ];
+ if (pingUsers.length > 0) {
+  lockRowBtns.push(
+   new ButtonBuilder()
+    .setCustomId(`dm_ann_clearusers:${session.token}`)
+    .setStyle(ButtonStyle.Secondary)
+    .setLabel(`Xóa Tag User (${pingUsers.length})`)
+    .setEmoji('🧹'),
+  );
+ }
  if (totalChPages > 1) {
   lockRowBtns.push(
    new ButtonBuilder()
@@ -319,6 +405,8 @@ export function createChannelLockManager({ rest, env = process.env } = {}) {
    channelId: textChannels[0].id,
    channelPage: 0,
    pingMode: 'none', // 'none' | 'everyone' | roleId
+   pingUsers: [], // [{ id, label }]
+   pendingUserMatches: [], // [{ id, label, sublabel }] khi tìm tên khớp nhiều người trên Server
    style: style === 'embed' ? 'embed' : 'text',
    autoReact: Boolean(autoReact),
    draftText: String(initialMessage ?? '').replace(/\\n/g, '\n').trim(),
@@ -328,6 +416,113 @@ export function createChannelLockManager({ rest, env = process.env } = {}) {
   };
   dmSessions.set(token, session);
   return session;
+ }
+
+ function formatMemberDisplay(m, fallbackId) {
+  const u = m?.user ?? m ?? {};
+  const username = u.username ? String(u.username) : '';
+  const globalName = u.global_name ?? u.globalName ?? '';
+  const nick = m?.nick ? String(m.nick) : '';
+  if (nick && username) return `${nick} (@${username})`;
+  if (globalName && username && globalName !== username) return `${globalName} (@${username})`;
+  if (username) return `@${username}`;
+  if (globalName) return String(globalName);
+  return `ID:${fallbackId}`;
+ }
+
+ // Tìm & gắn Tag người dùng theo Tên / Biệt danh trong Server hoặc theo ID số (không cần quyền đặc biệt GUILD_MEMBERS!).
+ async function resolveDmUserTargets(session, rawInput, { requesterId = null, merge = false } = {}) {
+  if (requesterId) assertOwner(requesterId);
+  if (!session) throw new Error('Bảng điều khiển DM không hợp lệ.');
+  const trimmed = String(rawInput ?? '').trim();
+  if (!trimmed || /^(?:xoa|xóa|clear|off|none|0)$/i.test(trimmed)) {
+   session.pingUsers = [];
+   session.pendingUserMatches = [];
+   return { cleared: true, resolved: [], ambiguous: [], notFound: [] };
+  }
+
+  const parts = trimmed
+   .split(/[,;\n]+/)
+   .map(s => s.trim())
+   .filter(Boolean)
+   .slice(0, 15);
+
+  const byId = new Map(merge ? (session.pingUsers ?? []).map(u => [u.id, u]) : []);
+  const newlyResolved = [];
+  const ambiguous = [];
+  const notFound = [];
+
+  for (const part of parts) {
+   const idMatch = part.match(/^(?:<@!?)?(\d{15,22})>?$/);
+   if (idMatch) {
+    const uid = idMatch[1];
+    let label = byId.get(uid)?.label ?? '';
+    if (!label) {
+     const mem = await rest.get(Routes.guildMember(session.guildId, uid)).catch(() => null);
+     if (mem) {
+      label = formatMemberDisplay(mem, uid);
+     } else {
+      const usr = await rest.get(Routes.user(uid)).catch(() => null);
+      label = usr ? formatMemberDisplay(usr, uid) : `ID:${uid}`;
+     }
+    }
+    const entry = { id: uid, label };
+    byId.set(uid, entry);
+    newlyResolved.push(entry);
+    continue;
+   }
+
+   const cleanName = part.replace(/^@+/, '').trim();
+   if (!cleanName) continue;
+   const lower = cleanName.toLowerCase();
+
+   const foundList = await rest.get(Routes.guildMembersSearch(session.guildId), {
+    query: new URLSearchParams({ query: cleanName.slice(0, 64), limit: '25' }),
+   }).catch(() => []);
+   const validMembers = (Array.isArray(foundList) ? foundList : []).filter(m => m?.user?.id);
+
+   if (validMembers.length === 0) {
+    notFound.push(cleanName);
+    continue;
+   }
+
+   const exactMatches = validMembers.filter(m => {
+    const u = m.user;
+    return (
+     String(u.username ?? '').toLowerCase() === lower ||
+     String(u.global_name ?? '').toLowerCase() === lower ||
+     String(m.nick ?? '').toLowerCase() === lower
+    );
+   });
+
+   if (exactMatches.length === 1 || validMembers.length === 1) {
+    const chosen = exactMatches[0] ?? validMembers[0];
+    const uid = String(chosen.user.id);
+    const entry = { id: uid, label: formatMemberDisplay(chosen, uid) };
+    byId.set(uid, entry);
+    newlyResolved.push(entry);
+   } else {
+    for (const m of validMembers) {
+     const uid = String(m.user.id);
+     if (!ambiguous.some(a => a.id === uid)) {
+      ambiguous.push({
+       id: uid,
+       label: formatMemberDisplay(m, uid),
+       sublabel: m.nick ? `Username: @${m.user.username}` : '',
+      });
+     }
+    }
+   }
+  }
+
+  session.pingUsers = [...byId.values()].slice(0, 15);
+  session.pendingUserMatches = ambiguous.slice(0, 25);
+  return {
+   cleared: false,
+   resolved: newlyResolved,
+   ambiguous: session.pendingUserMatches,
+   notFound,
+  };
  }
 
  function getDmStudioSession(token, requesterId) {
@@ -633,27 +828,74 @@ export function createChannelLockManager({ rest, env = process.env } = {}) {
   };
  }
 
- // Cho Bot đăng thông báo / bài viết vào kênh đã khóa (giống Meow Bot trong ảnh: hỗ trợ tag @Member / @everyone, tự thả sẵn ❤️ 🔥 & tự Xuất bản cho người bấm "Theo dõi").
+ // Cho Bot đăng thông báo / bài viết vào kênh đã khóa (hỗ trợ tag @Role, @everyone, tag theo Tên @username hoặc ID <@ID>, tự thả ❤️ 🔥 & tự Xuất bản).
  async function postBotAnnouncement({
+  guildId = null,
   channelId,
   requesterId,
   rawContent,
   pingRoleId = null,
   pingEveryone = false,
+  pingUserIds = [],
   style = 'text',
   autoReact = true,
   crosspost = true,
  } = {}) {
   assertOwner(requesterId);
   const chId = String(channelId ?? '').trim();
-  const normalizedText = String(rawContent ?? '')
+  let normalizedText = String(rawContent ?? '')
    .replace(/\\n/g, '\n')
    .trim();
   if (!normalizedText) {
    throw new Error('Nội dung thông báo không được để trống.');
   }
 
+  // Nếu Chủ Bot gõ thẳng @username ngay trong nội dung bài thông báo (từ DM), tự động dò trên Server và biến thành thẻ tag xanh <@ID>!
+  if (guildId && /^\d{15,22}$/.test(String(guildId))) {
+   const handleRegex = /(^|[\s(])@([a-zA-Z0-9._]{2,32})(?=$|[\s,!?:;.)\]])/g;
+   const uniqueHandles = new Set();
+   let m;
+   while ((m = handleRegex.exec(normalizedText)) !== null) {
+    const h = m[2];
+    if (h.toLowerCase() !== 'everyone' && h.toLowerCase() !== 'here' && uniqueHandles.size < 8) {
+     uniqueHandles.add(h);
+    }
+   }
+   if (uniqueHandles.size > 0) {
+    const resolvedMap = new Map();
+    for (const h of uniqueHandles) {
+     const list = await rest.get(Routes.guildMembersSearch(String(guildId)), {
+      query: new URLSearchParams({ query: h, limit: '10' }),
+     }).catch(() => []);
+     const valid = (Array.isArray(list) ? list : []).filter(x => x?.user?.id);
+     const lower = h.toLowerCase();
+     const exact = valid.find(
+      x =>
+       String(x.user.username ?? '').toLowerCase() === lower ||
+       String(x.user.global_name ?? '').toLowerCase() === lower ||
+       String(x.nick ?? '').toLowerCase() === lower,
+     );
+     const picked = exact ?? (valid.length === 1 && h.length >= 3 ? valid[0] : null);
+     if (picked?.user?.id) {
+      resolvedMap.set(lower, String(picked.user.id));
+     }
+    }
+    if (resolvedMap.size > 0) {
+     normalizedText = normalizedText.replace(handleRegex, (full, lead, h) => {
+      const uid = resolvedMap.get(String(h).toLowerCase());
+      return uid ? `${lead}<@${uid}>` : full;
+     });
+    }
+   }
+  }
+
+  const inlineUserIds = new Set();
+  for (const match of normalizedText.matchAll(/<@!?(\d{15,22})>/g)) {
+   inlineUserIds.add(match[1]);
+  }
+
   const prefixParts = [];
+  const allowedUserSet = new Set(inlineUserIds);
   const allowedMentions = { parse: [], roles: [], users: [] };
   if (pingEveryone) {
    prefixParts.push('@everyone');
@@ -663,6 +905,16 @@ export function createChannelLockManager({ rest, env = process.env } = {}) {
    prefixParts.push(`<@&${pingRoleId}>`);
    allowedMentions.roles.push(String(pingRoleId));
   }
+  for (const rawUid of Array.isArray(pingUserIds) ? pingUserIds : []) {
+   const uid = String(rawUid ?? '').trim();
+   if (/^\d{15,22}$/.test(uid)) {
+    allowedUserSet.add(uid);
+    if (!inlineUserIds.has(uid)) {
+     prefixParts.push(`<@${uid}>`);
+    }
+   }
+  }
+  allowedMentions.users = [...allowedUserSet].slice(0, 50);
 
   let body;
   if (style === 'embed') {
@@ -729,5 +981,6 @@ export function createChannelLockManager({ rest, env = process.env } = {}) {
   getDmStudioSession,
   ensureDmStudioSession,
   openOrReuseOwnerDmDraft,
+  resolveDmUserTargets,
  };
 }

@@ -17,6 +17,7 @@ import {
  buildAnnounceModal,
  buildDmAnnounceModal,
  buildDmAnnounceStudioPayload,
+ buildDmUserTagModal,
  createChannelLockManager,
 } from '../src/channelLock.js';
 import { createSpamTagManager, MAX_SPAM_COUNT } from '../src/spamTag.js';
@@ -521,8 +522,9 @@ test('Feature #7: /lock, /unlock & /announce (Owner-Only Announcement Follow Mod
   type: ChannelType.GuildText,
   position: idx + 5,
  }));
+ const dmPosted = [];
  const dmRest = {
-  get: async route => {
+  get: async (route, opts) => {
    const r = String(route);
    if (r.endsWith('/channels')) {
     return [
@@ -538,8 +540,32 @@ test('Feature #7: /lock, /unlock & /announce (Owner-Only Announcement Follow Mod
      { id: '666666666666666666', name: 'BotRole', position: 5, managed: true },
     ];
    }
+   if (r.includes('/members/search')) {
+    const q = String(opts?.query?.get?.('query') ?? '').toLowerCase();
+    const roster = [
+     { user: { id: '333333333333333333', username: 'egboy', global_name: 'EG Boy' }, nick: 'egboy!!' },
+     { user: { id: '444444444444444444', username: 'nguyenduc1', global_name: 'Nguyen Duc A' }, nick: null },
+     { user: { id: '555555555555555555', username: 'nguyenduc2', global_name: 'Nguyen Duc B' }, nick: null },
+    ];
+    return roster.filter(
+     m =>
+      m.user.username.toLowerCase().startsWith(q) ||
+      String(m.nick ?? '').toLowerCase().startsWith(q),
+    );
+   }
+   if (r.endsWith('/members/222222222222222222')) {
+    return { user: { id: '222222222222222222', username: 'proplayer', global_name: 'Pro Player' }, nick: 'VIP Pro' };
+   }
    return [];
   },
+  post: async (route, { body } = {}) => {
+   if (String(route).endsWith('/messages')) {
+    dmPosted.push(body);
+    return { id: '909090909090909090' };
+   }
+   return {};
+  },
+  put: async () => ({}),
  };
  const dmMgr = createChannelLockManager({ rest: dmRest });
  await assert.rejects(
@@ -572,6 +598,42 @@ test('Feature #7: /lock, /unlock & /announce (Owner-Only Announcement Follow Mod
  assert.equal(reused.pingMode, '777777777777777777');
  assert.equal(reused.draftText, 'Tối nay 20h giải đấu bắt đầu!');
 
+ // Tag người dùng theo Tên (egboy) VÀ theo ID số (222222222222222222) ngay trong DM
+ const tagRes = await dmMgr.resolveDmUserTargets(dmSession, 'egboy, 222222222222222222', {
+  requesterId: '1243061570247069696',
+ });
+ assert.equal(tagRes.resolved.length, 2);
+ assert.deepEqual(dmSession.pingUsers.map(u => u.id), ['333333333333333333', '222222222222222222']);
+
+ const studioPayload = buildDmAnnounceStudioPayload(dmSession);
+ // Đúng tối đa 5 ActionRow chuẩn Discord, hàng 3 mặc định là UserSelectMenu (type 5), hàng 4 có <= 5 nút, hàng 5 có nút Xóa Tag User + Trang kênh!
+ assert.equal(studioPayload.components.length, 5);
+ assert.equal(studioPayload.components[0].components[0].options.length, 25);
+ assert.equal(studioPayload.components[2].components[0].type, 5);
+ assert.ok(studioPayload.components[3].components.length <= 5);
+ assert.equal(studioPayload.components[4].components.length, 4);
+
+ // Khi gõ từ khóa ngắn trùng nhiều thành viên ("nguyenduc"), hiện danh sách gợi ý ở hàng 3 để chọn đúng người
+ const ambigRes = await dmMgr.resolveDmUserTargets(dmSession, 'nguyenduc', {
+  requesterId: '1243061570247069696',
+  merge: true,
+ });
+ assert.equal(ambigRes.ambiguous.length, 2);
+ const ambigPayload = buildDmAnnounceStudioPayload(dmSession);
+ assert.equal(ambigPayload.components[2].components[0].custom_id, `dm_ann_pickmatch:${dmSession.token}`);
+
+ // Đăng bài từ DM: tự động chuyển @egboy viết trong câu thành <@333333333333333333> + gắn <@222222222222222222> ở đầu + mở khóa allowed_mentions.users!
+ await dmMgr.postBotAnnouncement({
+  guildId: '111111111111111111',
+  channelId: '100000000000000002',
+  requesterId: '1243061570247069696',
+  rawContent: 'Chúc mừng @egboy vô địch giải tuần nhé!',
+  pingUserIds: ['333333333333333333', '222222222222222222'],
+ });
+ assert.equal(dmPosted.length, 1);
+ assert.equal(dmPosted[0].content, '<@222222222222222222> Chúc mừng <@333333333333333333> vô địch giải tuần nhé!');
+ assert.deepEqual(dmPosted[0].allowed_mentions.users.sort(), ['222222222222222222', '333333333333333333']);
+
  // Tự hồi phục phiên khi token chưa có trong RAM (ví dụ sau khi Bot restart trên host)
  const recovered = await dmMgr.ensureDmStudioSession('deadbeef1234', {
   requesterId: '1243061570247069696',
@@ -581,11 +643,13 @@ test('Feature #7: /lock, /unlock & /announce (Owner-Only Announcement Follow Mod
  assert.equal(recovered.token, 'deadbeef1234');
  assert.equal(recovered.channelId, '100000000000000002');
 
- const studioPayload = buildDmAnnounceStudioPayload(dmSession);
- assert.equal(studioPayload.components.length, 4);
- // Trang kênh 1 chỉ có tối đa 25 mục (đúng chuẩn giới hạn Discord StringSelectMenu <= 25) + có nút chuyển trang kênh ở hàng 4!
- assert.equal(studioPayload.components[0].components[0].options.length, 25);
- assert.equal(studioPayload.components[3].components.length, 3);
- const dmModalJson = buildDmAnnounceModal(dmSession.token, dmSession.draftText).toJSON();
+ const dmModalJson = buildDmAnnounceModal(dmSession.token, dmSession.draftText, dmSession.pingUsers).toJSON();
  assert.equal(dmModalJson.custom_id, `dm_ann_modal:${dmSession.token}`);
+ assert.equal(dmModalJson.components.length, 2);
+ for (const row of dmModalJson.components) {
+  assert.ok(row.components[0].label.length <= 45);
+ }
+ const userTagModalJson = buildDmUserTagModal(dmSession.token, dmSession.pingUsers).toJSON();
+ assert.equal(userTagModalJson.custom_id, `dm_ann_usertag_modal:${dmSession.token}`);
+ assert.ok(userTagModalJson.components[0].components[0].label.length <= 45);
 });

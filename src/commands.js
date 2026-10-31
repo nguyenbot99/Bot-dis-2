@@ -829,6 +829,11 @@ export const dmCommands = [
    .setRequired(false)
    .setMaxLength(1900))
   .addStringOption(o => o
+   .setName('ping_users')
+   .setDescription('Tag người dùng theo Tên/Biệt danh Server hoặc ID số (ngăn cách bằng dấu phẩy)')
+   .setRequired(false)
+   .setMaxLength(400))
+  .addStringOption(o => o
    .setName('style')
    .setDescription('Kiểu hiển thị bài đăng (mặc định: Tin nhắn chữ tự nhiên giống Meow Bot)')
    .setRequired(false)

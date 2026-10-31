@@ -388,7 +388,7 @@ const channelLastSweepAt = new Map();
 const KICK_SNAPSHOT_TTL_MS = 30 * 60 * 1000; // Giữ trạng thái bài đang phát & hàng đợi trong 30 phút sau khi bị kick để khôi phục khi /join.
 const PROGRESS_TICK_MS = 5000; // Chu kỳ cập nhật thanh tiến trình (5 giây/lần: chuẩn mượt, không bao giờ chạm giới hạn rate-limit Discord).
 const CHANNEL_SWEEP_COOLDOWN_MS = 180000; // Quét dọn tin nhắn mồ côi tối đa 3 phút/lần mỗi kênh.
-const KNOWN_ERROR_RE = /^(Hãy|Bạn|Bot|Chờ|Chỉ|Hàng|Không|Chưa|Tên|URL|Lệnh|Bản|Link|Thời|Số|Định|Vị|Mức|Âm|Nội|Tủ|Hẹn|Hiệu|Đài|Người|Máy|Phiên|Bài|Tin|Mã|Hiện|Thao|Kênh|Bảng|Video|Tệp|Ảnh|Quá)/;
+const KNOWN_ERROR_RE = /^(Hãy|Bạn|Bot|Chờ|Chỉ|Hàng|Không|Chưa|Tên|URL|Lệnh|Bản|Link|Thời|Số|Định|Vị|Mức|Âm|Nội|Tủ|Hẹn|Hiệu|Đài|Người|Máy|Phiên|Bài|Tin|Mã|Hiện|Thao|Kênh|Bảng|Video|Tệp|Ảnh|Quá|Ổ|Bậc|Thiếu)/;
 const ttsController = createGuildTtsController();
 
 function syncSleepTimerLabel(player) {
@@ -2257,7 +2257,7 @@ async function handleGifCommandOrContext(i) {
  }
 
  await i.editReply({
-  content: '🎞️ Đang kết xuất ảnh **GIF nét cao & mượt FPS** (khử răng cưa `sierra2_4a` + làm nét cạnh)...',
+  content: '🎞️ Đang **tự nhận diện độ phân giải & FPS tối đa** của video để kết xuất GIF siêu tốc...',
   allowedMentions: { parse: [] },
  }).catch(() => {});
 
@@ -2320,7 +2320,7 @@ async function handleGifComponent(i) {
    : '';
   const { quality: nextQuality, fps: nextFps } = parseQualityAndFpsInput(
    rawQFps,
-   session.quality ?? 'hd',
+   session.quality ?? 'auto',
    session.fps ?? null,
   );
   const uploadCap = resolveGuildGifUploadCap(i.guild);
@@ -3185,14 +3185,14 @@ async function handleDmRawPacket(packet) {
   try {
    const found = extractVideoFromMessage(d);
    if (found.sizeBytes > MAX_VIDEO_DOWNLOAD_BYTES) {
-    throw new Error('Video quá lớn (vượt mức an toàn 42MB) — hãy cắt ngắn hoặc gửi clip nhẹ hơn nhé!');
+    throw new Error('Video quá lớn (vượt mức an toàn 45MB) — hãy cắt ngắn hoặc gửi clip nhẹ hơn nhé!');
    }
    const rawCaptionArg = explicitGifMatch ? String(explicitGifMatch[1] ?? '').trim() : plainContent;
    const caption = rawCaptionArg.replace(/https?:\/\/[^\s<>()]+/gi, '').trim();
 
    const waitSent = await client.rest.post(Routes.channelMessages(dmChannelId), {
     body: {
-     content: '🎞️ Đang tách khung hình & tối ưu bảng màu GIF nét cao...',
+     content: '🎞️ Đang **tự nhận diện độ phân giải & FPS tối đa** của video để kết xuất GIF siêu tốc...',
      allowed_mentions: { parse: [] },
     },
    }).catch(() => null);

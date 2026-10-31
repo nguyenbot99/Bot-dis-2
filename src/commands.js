@@ -865,18 +865,19 @@ function applyGifCommandOptions(c, { includePrivate = true } = {}) {
   .setMaxValue(3));
  c.addStringOption(o => o
   .setName('quality')
-  .setDescription('Độ phân giải GIF (tới 1080p Full HD 1920×1080; tự căn nét cao nhất vừa Discord)')
+  .setDescription('Độ nét GIF (Mặc định: Tự nhận diện Video -> đặt Max Độ Phân Giải & Max FPS gốc)')
   .setRequired(false)
   .addChoices(
-   { name: '👑 Full HD 1080p Gốc — 1920×1080 • 25 FPS (Nét kịch trần 1:1)', value: 'fhd' },
+   { name: '🤖 Tự Động Tối Đa Gốc — Auto Max Độ Nét & Max FPS của Video (Mặc định)', value: 'auto' },
+   { name: '👑 Full HD 1080p Gốc — 1920×1080 (Nét kịch trần 1:1)', value: 'fhd' },
    { name: '🔥 Chuẩn 720p HD Thực — 1280×720 • 33 FPS (Sắc nét & siêu mượt)', value: 'ultra' },
-   { name: '💎 Nét Cao 540p qHD — 960×540 • 25 FPS (Mặc định cân đối)', value: 'hd' },
+   { name: '💎 Nét Cao 540p qHD — 960×540 • 25 FPS (Nhẹ & cân đối)', value: 'hd' },
    { name: '✨ Cân Bằng 432p — 768×432 • 20 FPS (Hợp clip dài 7–12s)', value: 'balanced' },
    { name: '🪶 Nén Gọn 360p — 640×360 • 17 FPS (Hợp clip dài 10–15s)', value: 'compact' },
   ));
  c.addIntegerOption(o => o
   .setName('fps')
-  .setDescription('Tốc độ khung hình FPS (mặc định theo Độ nét, tối đa 50 FPS kịch trần GIF)')
+  .setDescription('Khung hình FPS (bỏ trống để tự lấy Max FPS gốc của video tới 50 FPS)')
   .setRequired(false)
   .addChoices(
    { name: '⚡ 50 FPS — Siêu mượt kịch trần chuẩn GIF (20ms/khung)', value: 50 },

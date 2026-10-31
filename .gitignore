@@ -5,6 +5,7 @@ node_modules/
 *.log
 *.zip
 .ssh/
+.data/
 .runtime-session.json*
 .runtime-favorites.json*
 .runtime-stats.json*

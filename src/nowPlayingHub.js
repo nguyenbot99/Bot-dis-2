@@ -264,6 +264,10 @@ export function createNowPlayingHub({
  const sseClients = new Set();
  let lastOverrides = {};
  let pushTimer = null;
+ let pushInFlight = null;
+ let pushQueued = false;
+ let hasConnectedOnce = false;
+ let consecutiveFailures = 0;
  let lastPushOk = false;
  let lastWarnAt = 0;
  let outboundPushPaused = Boolean(deferInitialPush);
@@ -297,9 +301,9 @@ export function createNowPlayingHub({
  }, 25000);
  heartbeatTimer.unref?.();
 
- function warnThrottled(msg) {
+ function warnThrottled(msg, intervalMs = 180000) {
   const now = Date.now();
-  if (now - lastWarnAt < 60000) return;
+  if (now - lastWarnAt < intervalMs) return;
   lastWarnAt = now;
   logger?.warn?.(msg);
  }
@@ -315,7 +319,7 @@ export function createNowPlayingHub({
   return serializeNowPlayingState({ player: activePlayer, client, overrides: mergedOverrides });
  }
 
- async function executeOutboundPush() {
+ async function performSingleOutboundPush() {
   if (!rawPushUrl || outboundPushPaused) return false;
   const snapshot = getSnapshot();
   const seal = typeof getResumeSeal === 'function' ? getResumeSeal() : undefined;
@@ -345,22 +349,28 @@ export function createNowPlayingHub({
     method: 'POST',
     headers,
     body: JSON.stringify(outboundBody),
-    signal: AbortSignal.timeout(5000),
+    signal: AbortSignal.timeout(8000),
    });
    if (res && res.ok === false) {
     lastPushOk = false;
+    consecutiveFailures++;
     if (res.status === 503) {
-     warnThrottled('[web-now-playing] ⚠️ Cloudflare Worker báo thiếu NOW_PLAYING_PUSH_SECRET (HTTP 503). Hãy thêm biến Secret này trong Settings -> Variables and Secrets trên Cloudflare.');
+     warnThrottled('[web-now-playing] ⚠️ Cloudflare Worker báo thiếu NOW_PLAYING_PUSH_SECRET (HTTP 503). Hãy thêm biến Secret này trong Settings -> Variables and Secrets trên Cloudflare.', 60000);
     } else if (res.status === 401) {
-     warnThrottled('[web-now-playing] ⚠️ Sai mật khẩu NOW_PLAYING_PUSH_SECRET (HTTP 401). Hãy kiểm tra mật khẩu ở botkeep.cloud và Cloudflare khớp nhau.');
-    } else {
+     warnThrottled('[web-now-playing] ⚠️ Sai mật khẩu NOW_PLAYING_PUSH_SECRET (HTTP 401). Hãy kiểm tra mật khẩu ở botkeep.cloud và Cloudflare khớp nhau.', 60000);
+    } else if (consecutiveFailures >= 2) {
      warnThrottled(`[web-now-playing] ⚠️ Không thể đẩy dữ liệu lên Website ngoài (HTTP ${res.status}).`);
     }
     return false;
    }
-   if (!lastPushOk) {
-    lastPushOk = true;
+   const wasProlongedOutage = consecutiveFailures >= 2;
+   consecutiveFailures = 0;
+   lastPushOk = true;
+   if (!hasConnectedOnce) {
+    hasConnectedOnce = true;
     logger?.log?.(`[web-now-playing] ✅ Đã kết nối & đồng bộ trạng thái nhạc lên Website: ${rawPushUrl}`);
+   } else if (wasProlongedOutage) {
+    logger?.log?.(`[web-now-playing] ✅ Đã khôi phục đồng bộ Website sau khi mạng ổn định lại: ${rawPushUrl}`);
    }
    const respJson = await res.json?.().catch(() => null);
    if (Array.isArray(respJson?.commands) && respJson.commands.length > 0) {
@@ -369,9 +379,34 @@ export function createNowPlayingHub({
    return true;
   } catch (err) {
    lastPushOk = false;
-   warnThrottled(`[web-now-playing] ⚠️ Lỗi mạng khi đẩy dữ liệu lên Website ngoài: ${err?.name ?? 'Error'}`);
+   consecutiveFailures++;
+   // Bỏ qua êm ái 1 nhịp trễ mạng lẻ tẻ của VPS dùng chung; chỉ ghi cảnh báo khi nghẽn liên tiếp >= 2 lần (giãn cách 3 phút).
+   if (consecutiveFailures >= 2) {
+    const codeHint = err?.cause?.code ? ` (${err.cause.code})` : '';
+    warnThrottled(`[web-now-playing] ⚠️ Mạng máy chủ tới Website ngoài đang trễ tạm thời: ${err?.name ?? 'Error'}${codeHint}`);
+   }
    return false;
   }
+ }
+
+ // Khóa đơn luồng (Single-Flight): không bao giờ mở chồng nhiều kết nối HTTP song song khi mạng VPS bị trễ!
+ async function executeOutboundPush() {
+  if (!rawPushUrl || outboundPushPaused) return false;
+  if (pushInFlight) {
+   pushQueued = true;
+   return pushInFlight;
+  }
+  pushInFlight = (async () => {
+   let ok = false;
+   do {
+    pushQueued = false;
+    ok = await performSingleOutboundPush();
+   } while (pushQueued && !outboundPushPaused);
+   return ok;
+  })().finally(() => {
+   pushInFlight = null;
+  });
+  return pushInFlight;
  }
 
  function scheduleOutboundPush(immediate = false) {

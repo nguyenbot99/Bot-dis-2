@@ -1,9 +1,11 @@
+import './src/initRuntime.js';
 import 'dotenv/config';
 import express from 'express';
 import { ActivityType, Client, Events, GatewayIntentBits, MessageFlags, Options, PermissionFlagsBits, Routes } from 'discord.js';
 import { PlayerManager } from 'ziplayer';
 import ffmpeg from 'ffmpeg-static';
-import { parseSeekTime, pickBestMatchingTrack, resolveConfig, resolveMusicRequest } from './src/policy.js';
+import { isRecoverableNetworkOrStreamError } from './src/networkShield.js';
+import { parseSeekTime, pickBestMatchingTrack, resolveMusicRequest, resolveConfig } from './src/policy.js';
 import {
  AMBIENT_MODES,
  clampVolumePercent,
@@ -110,6 +112,10 @@ const client = new Client({
   GatewayIntentBits.DirectMessages,
  ],
  allowedMentions: { parse: [] },
+ rest: {
+  retries: 4,
+  timeout: 15_000,
+ },
  makeCache: Options.cacheWithLimits({
   ...Options.DefaultMakeCacheSettings,
   MessageManager: 0,
@@ -2182,8 +2188,18 @@ client.on(Events.GuildCreate, guild => {
   .catch(e => console.error('[đồng-bộ-lỗi]', e?.name ?? 'Error'));
 });
 
-client.on(Events.Error, e => console.error('[discord]', e?.name ?? 'Error'));
-client.on(Events.ShardError, e => console.warn('[discord-shard] Mạng chập chờn, đang tự kết nối lại:', e?.name ?? 'Error'));
+let lastShardNoticeAt = 0;
+client.on(Events.Error, e => console.error('[discord]', e?.name ?? 'Error', e?.code ?? ''));
+client.on(Events.ShardError, e => {
+ const now = Date.now();
+ if (now - lastShardNoticeAt >= 30_000) {
+  lastShardNoticeAt = now;
+  console.warn('[discord-shard] ⚠️ Đường truyền mạng của máy chủ chập chờn, đang tự kết nối lại Discord:', e?.cause?.code ?? e?.code ?? e?.name ?? 'Error');
+ }
+});
+client.on(Events.ShardResume, () => {
+ console.log('[discord-shard] ✅ Đã nối lại phiên Discord Gateway thành công (giữ nguyên phòng thoại & nhạc).');
+});
 
 // Gửi thông báo lỗi tiếng Việt gọn gàng cho mọi loại tương tác (Slash, Nút bấm, Menu, Modal).
 async function replyInteractionError(i, e) {
@@ -4750,46 +4766,32 @@ async function shutdown(code = 0) {
   server.close(() => process.exit(code));
  } catch { process.exit(1); }
 }
-// Danh sách mã lỗi mạng / luồng âm thanh thoáng qua trên VPS dùng chung: ghi nhận cảnh báo và giữ bot chạy xuyên suốt 24/24 thay vì tự thoát tiến trình.
-const RECOVERABLE_RUNTIME_CODES = new Set([
- 'ECONNRESET',
- 'EPIPE',
- 'ETIMEDOUT',
- 'ECONNABORTED',
- 'EHOSTUNREACH',
- 'ENETUNREACH',
- 'EAI_AGAIN',
- 'ERR_STREAM_PREMATURE_CLOSE',
- 'ERR_STREAM_DESTROYED',
- 'ERR_STREAM_WRITE_AFTER_END',
- 'UND_ERR_CONNECT_TIMEOUT',
- 'UND_ERR_HEADERS_TIMEOUT',
- 'UND_ERR_BODY_TIMEOUT',
- 'UND_ERR_SOCKET',
-]);
-
+// Nhận diện đầy đủ cả lỗi mạng bọc bên trong TypeError: fetch failed -> err.cause và AggregateError của Node 22
+// để không bao giờ tự thoát tiến trình oan khi mạng/DNS của VPS (botkeep.cloud) chập chờn tạm thời.
 function isRecoverableRuntimeError(err) {
- if (!err) return true;
- const code = String(err?.code ?? '');
- const name = String(err?.name ?? '');
- if (RECOVERABLE_RUNTIME_CODES.has(code) || RECOVERABLE_RUNTIME_CODES.has(name)) return true;
- if (name === 'AbortError' || name === 'TimeoutError' || name === 'DiscordAPIError' || name === 'HTTPError') {
-  return true;
- }
- return false;
+ return isRecoverableNetworkOrStreamError(err);
 }
 
-function fatal(e) { console.error('[lỗi-nghiêm-trọng]', e?.name ?? 'Error', e?.code ?? ''); void shutdown(1); }
+let lastRuntimeNetWarnAt = 0;
+function fatal(e) { console.error('[lỗi-nghiêm-trọng]', e?.name ?? 'Error', e?.code ?? e?.cause?.code ?? '', e?.message ?? ''); void shutdown(1); }
 process.once('SIGTERM', () => shutdown());
 process.once('SIGINT', () => shutdown());
 process.once('SIGHUP', () => shutdown());
 // Không tắt bot khi gặp Promise bị từ chối ngầm (nghẽn mạng Discord/CDN thoáng qua trên node dùng chung) để tránh bị khởi động lại oan.
 process.on('unhandledRejection', err => {
- console.warn('[bỏ-qua-lỗi-ngầm]', err?.name ?? 'UnhandledRejection', err?.code ?? '');
+ const now = Date.now();
+ if (now - lastRuntimeNetWarnAt >= 30_000) {
+  lastRuntimeNetWarnAt = now;
+  console.warn('[bỏ-qua-lỗi-ngầm]', err?.name ?? 'UnhandledRejection', err?.code ?? err?.cause?.code ?? '');
+ }
 });
 process.on('uncaughtException', err => {
  if (isRecoverableRuntimeError(err)) {
-  console.warn('[bỏ-qua-lỗi-mạng]', err?.name ?? 'Error', err?.code ?? '');
+  const now = Date.now();
+  if (now - lastRuntimeNetWarnAt >= 30_000) {
+   lastRuntimeNetWarnAt = now;
+   console.warn('[bỏ-qua-lỗi-mạng]', err?.name ?? 'Error', err?.code ?? err?.cause?.code ?? '');
+  }
   return;
  }
  fatal(err);

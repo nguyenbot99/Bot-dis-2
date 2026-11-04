@@ -10,3 +10,6 @@ node_modules/
 .runtime-favorites.json*
 .runtime-stats.json*
 .runtime-mixtapes.json*
+cookies.txt
+youtube-cookies.txt
+

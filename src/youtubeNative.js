@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { Readable } from 'node:stream';
@@ -389,6 +390,76 @@ function createPolicyBlockError(message) {
  return err;
 }
 
+/**
+ * Chuẩn hóa chuỗi YOUTUBE_COOKIE (hỗ trợ cả chuỗi Header "SID=...; SAPISID=..." lẫn định dạng file Netscape cookies.txt)
+ * và tự động sinh chữ ký SAPISIDHASH chuẩn xác thực InnerTube cho các bài giới hạn độ tuổi 18+.
+ */
+export function buildYouTubeCookieAuthHeaders(
+ rawInput,
+ origin = 'https://www.youtube.com',
+ nowSec = Math.floor(Date.now() / 1000),
+) {
+ let text = String(rawInput ?? '').trim();
+ if (!text) return {};
+ if ((text.startsWith('"') && text.endsWith('"')) || (text.startsWith("'") && text.endsWith("'"))) {
+  text = text.slice(1, -1).trim();
+ }
+
+ const jar = new Map();
+ const lines = text.split(/\r?\n/);
+ const looksLikeNetscape = lines.some(l => {
+  const clean = l.startsWith('#HttpOnly_') ? l.slice(10) : l;
+  return !clean.startsWith('#') && clean.split('\t').length >= 7;
+ });
+
+ if (looksLikeNetscape) {
+  for (const rawLine of lines) {
+   const trimmed = rawLine.trim();
+   if (!trimmed) continue;
+   const unprefixed = trimmed.startsWith('#HttpOnly_') ? trimmed.slice(10) : trimmed;
+   if (unprefixed.startsWith('#')) continue;
+   const cols = unprefixed.split('\t');
+   if (cols.length < 7) continue;
+   const domain = cols[0].trim().toLowerCase();
+   if (domain !== 'youtube.com' && !domain.endsWith('.youtube.com')) continue;
+   const exp = Number(cols[4]);
+   if (Number.isFinite(exp) && exp > 0 && exp < nowSec) continue;
+   const name = cols[5].trim();
+   const val = cols[6].trim();
+   if (name && !/[\r\n;\x00-\x1f]/.test(name) && !/[\r\n\x00-\x1f]/.test(val)) {
+    jar.set(name, val);
+   }
+  }
+ } else {
+  const singleLine = text.replace(/^cookie\s*:\s*/i, '').replace(/[\r\n]+/g, ' ').trim();
+  for (const part of singleLine.split(';')) {
+   const eq = part.indexOf('=');
+   if (eq <= 0) continue;
+   const name = part.slice(0, eq).trim();
+   const val = part.slice(eq + 1).trim();
+   if (name && !/[\r\n;\x00-\x1f]/.test(name) && !/[\r\n\x00-\x1f]/.test(val)) {
+    jar.set(name, val);
+   }
+  }
+ }
+
+ if (jar.size === 0) return {};
+ const cookieHeader = Array.from(jar.entries())
+  .map(([k, v]) => `${k}=${v}`)
+  .join('; ');
+ const headers = { Cookie: cookieHeader };
+
+ const sapisid =
+  jar.get('SAPISID') || jar.get('__Secure-3PAPISID') || jar.get('__Secure-1PAPISID') || '';
+ if (sapisid) {
+  const digest = createHash('sha1').update(`${nowSec} ${sapisid} ${origin}`).digest('hex');
+  headers.Authorization = `SAPISIDHASH ${nowSec}_${digest}`;
+  headers['X-Origin'] = origin;
+  headers['X-Goog-AuthUser'] = '0';
+ }
+ return headers;
+}
+
 export function createNativeYouTubePlugin({
  ffmpegPath: _ffmpegPath = 'ffmpeg',
  cipherCacheFile = DEFAULT_CIPHER_FILE,
@@ -402,10 +473,31 @@ export function createNativeYouTubePlugin({
  let cachedPoMinter = null; // { minter, expiresAt }
  let inflightMinterPromise = null;
  let sabrModules = null;
+ let cachedDiskCookie = { value: '', checkedAt: 0 };
 
- function readOptionalCookie() {
-  const raw = String(process.env.YOUTUBE_COOKIE ?? '').trim();
-  return raw || '';
+ async function readOptionalCookieRaw() {
+  const envVal = String(process.env.YOUTUBE_COOKIE ?? '').trim();
+  if (envVal) return envVal;
+
+  const now = Date.now();
+  if (now - cachedDiskCookie.checkedAt < 30_000) return cachedDiskCookie.value;
+  cachedDiskCookie.checkedAt = now;
+
+  for (const candidate of [
+   join(PROJECT_ROOT, 'cookies.txt'),
+   join(PROJECT_ROOT, 'youtube-cookies.txt'),
+   join(DEFAULT_DATA_DIR, 'cookies.txt'),
+  ]) {
+   try {
+    const content = (await readFile(candidate, 'utf8')).trim();
+    if (content) {
+     cachedDiskCookie.value = content;
+     return content;
+    }
+   } catch {}
+  }
+  cachedDiskCookie.value = '';
+  return '';
  }
 
  async function ensureCipher({ forceRefresh = false } = {}) {
@@ -620,7 +712,6 @@ export function createNativeYouTubePlugin({
 
  async function resolveVisionOsHlsPlan(videoId, { signal, usePoToken = false } = {}) {
   const session = await ensureYouTubeVisitorSession({ fetchImpl });
-  const cookie = readOptionalCookie();
   let sessionPoToken = '';
   if (usePoToken) {
    sessionPoToken = await mintPoToken(session.visitorData || videoId, signal);
@@ -639,7 +730,6 @@ export function createNativeYouTubePlugin({
    'X-Youtube-Client-Version': '1.02',
   };
   if (session.visitorData) headers['X-Goog-Visitor-Id'] = session.visitorData;
-  if (cookie) headers['Cookie'] = cookie;
 
   const res = await fetchImpl('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
    method: 'POST',
@@ -844,7 +934,9 @@ export function createNativeYouTubePlugin({
    clientCfg.useLiveWebVersion && visitorSession?.webClientVersion
     ? visitorSession.webClientVersion
     : clientCfg.version;
-  const cookie = readOptionalCookie();
+  const cookieRaw = await readOptionalCookieRaw();
+  const cookieAuthHeaders = buildYouTubeCookieAuthHeaders(cookieRaw, clientCfg.origin);
+  const isSignedIn = Boolean(cookieAuthHeaders.Authorization);
   const headers = {
    'Content-Type': 'application/json',
    'Origin': clientCfg.origin,
@@ -852,9 +944,11 @@ export function createNativeYouTubePlugin({
    'X-YouTube-Client-Name': String(clientCfg.id),
    'X-YouTube-Client-Version': clientVersion,
    'User-Agent': CHROME_UA,
+   ...cookieAuthHeaders,
   };
-  if (visitorSession?.visitorData) headers['X-Goog-Visitor-Id'] = visitorSession.visitorData;
-  if (cookie) headers['Cookie'] = cookie;
+  if (!isSignedIn && visitorSession?.visitorData) {
+   headers['X-Goog-Visitor-Id'] = visitorSession.visitorData;
+  }
 
   const res = await fetchImpl(clientCfg.endpoint, {
    method: 'POST',
@@ -866,7 +960,7 @@ export function createNativeYouTubePlugin({
      client: {
       clientName: clientCfg.name,
       clientVersion,
-      ...(visitorSession?.visitorData ? { visitorData: visitorSession.visitorData } : {}),
+      ...(!isSignedIn && visitorSession?.visitorData ? { visitorData: visitorSession.visitorData } : {}),
       hl: 'vi',
       gl: 'VN',
      },

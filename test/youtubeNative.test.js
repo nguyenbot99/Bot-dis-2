@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+ buildYouTubeCookieAuthHeaders,
  createNativeYouTubePlugin,
  findHlsSegmentStartIndex,
  parseYouTubeHlsMasterAudioUrl,
@@ -165,4 +166,24 @@ test('VISIONOS HLS parser selects itag/234 high-bitrate audio, seeks to exact #E
  for await (const c of seekedStream) seekChunks.push(c.toString('utf8'));
  assert.equal(seekChunks.join(''), '[seg1.ts][seg2.ts]');
 });
+
+test('buildYouTubeCookieAuthHeaders parses both raw Cookie header and Netscape cookies.txt with SAPISIDHASH', () => {
+ const raw = '"Cookie: SID=abc123; __Secure-3PAPISID=my_sapisid_val; PREF=hl=vi"';
+ const h1 = buildYouTubeCookieAuthHeaders(raw, 'https://music.youtube.com', 1_760_000_000);
+ assert.equal(h1.Cookie, 'SID=abc123; __Secure-3PAPISID=my_sapisid_val; PREF=hl=vi');
+ assert.match(h1.Authorization, /^SAPISIDHASH 1760000000_[0-9a-f]{40}$/);
+ assert.equal(h1['X-Origin'], 'https://music.youtube.com');
+ assert.equal(h1['X-Goog-AuthUser'], '0');
+
+ const netscape = [
+  '# Netscape HTTP Cookie File',
+  '#HttpOnly_.youtube.com\tTRUE\t/\tTRUE\t1893456000\tSID\tsid_token_99',
+  '.youtube.com\tTRUE\t/\tTRUE\t1893456000\tSAPISID\tsapi_token_88',
+  '.google.com\tTRUE\t/\tTRUE\t1893456000\tNID\tignore_other_domain',
+ ].join('\n');
+ const h2 = buildYouTubeCookieAuthHeaders(netscape, 'https://www.youtube.com', 1_760_000_000);
+ assert.equal(h2.Cookie, 'SID=sid_token_99; SAPISID=sapi_token_88');
+ assert.match(h2.Authorization, /^SAPISIDHASH 1760000000_[0-9a-f]{40}$/);
+});
+
 

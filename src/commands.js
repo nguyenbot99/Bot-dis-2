@@ -333,7 +333,7 @@ export function buildHelpEmbed(botUser) {
    },
    {
     name: '🎧 Nguồn, Chất âm & Vibe',
-    value: 'YT, SC & Playlist Spotify\n**HD • Vocal • Bass • 8D • Nightcore • Slowed**',
+    value: 'Nhạc & Playlist YT / SC / Spotify\n**HD • Vocal • Bass • 8D • Nightcore • Slowed**',
     inline: true,
    },
    {
@@ -363,7 +363,7 @@ export const slashCommands = definitions.map(([name, description]) => {
  if (name === 'play') {
   c.addStringOption(o => o
    .setName('query')
-   .setDescription('Tên bài hát hoặc link HTTPS bài lẻ YouTube / SoundCloud / Spotify')
+   .setDescription('Tên bài hoặc link bài hát / Playlist (List nhạc) YouTube, SoundCloud, Spotify')
    .setRequired(true)
    .setMaxLength(400));
   c.addBooleanOption(o => o

@@ -2,12 +2,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
  cleanYouTubeMetadata,
+ extractYouTubePlaylistId,
  extractYouTubeVideoId,
  parseSeekTime,
  pickBestMatchingTrack,
  resolveConfig,
  resolveMusicQuery,
  resolveMusicRequest,
+ resolveYouTubeCollection,
  validateQuery,
 } from '../src/policy.js';
 import { buildHelpEmbed, commands, contextCommands, slashCommands } from '../src/commands.js';
@@ -121,6 +123,111 @@ test('resolveMusicRequest resolves YouTube links via lightweight oEmbed without 
  assert.equal(resolved.spotifyMeta?.title, 'Never Gonna Give You Up');
  assert.equal(resolved.spotifyMeta?.artist, 'Rick Astley');
  assert.equal(resolved.spotifyMeta?.thumbnail, 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg');
+});
+
+test('resolveMusicRequest resolves YouTube Playlists (PL...), YouTube Mixes (RD...), starting video rotation & private WL fallback', async () => {
+ assert.equal(
+  validateQuery('https://m.youtube.com/playlist?list=PLHNNYen-Kcf6XW_30sNPqDtW04cHd8bM2&si=abc'),
+  'https://www.youtube.com/playlist?list=PLHNNYen-Kcf6XW_30sNPqDtW04cHd8bM2',
+ );
+ assert.equal(
+  validateQuery('https://www.youtube.com/watch?v=xypzmu5mMPY&list=RDxypzmu5mMPY&start_radio=1&pp=abc'),
+  'https://www.youtube.com/watch?v=xypzmu5mMPY&list=RDxypzmu5mMPY',
+ );
+ // watch?v=...&list=WL (Xem sau riêng tư) tự động lột bỏ list=WL để phát bài lẻ bình thường
+ assert.equal(
+  validateQuery('https://www.youtube.com/watch?v=xypzmu5mMPY&list=WL&index=3'),
+  'https://www.youtube.com/watch?v=xypzmu5mMPY',
+ );
+ assert.equal(extractYouTubePlaylistId('https://music.youtube.com/playlist?list=OLAK5uy_AbCdEf12345'), 'OLAK5uy_AbCdEf12345');
+
+ const mockPlaylistFetch = async (url, init) => {
+  assert.ok(String(url).includes('/youtubei/v1/next'));
+  assert.ok(init?.headers?.['X-Goog-FieldMask']);
+  const reqBody = JSON.parse(init.body);
+  assert.equal(reqBody.playlistId, 'PLHNNYen-Kcf6XW_30sNPqDtW04cHd8bM2');
+  assert.equal(reqBody.videoId, 'Llw9Q6akRo4');
+  return {
+   ok: true,
+   json: async () => ({
+    contents: {
+     twoColumnWatchNextResults: {
+      playlist: {
+       playlist: {
+        title: 'List nhạc Sơn Tùng M-TP',
+        totalVideos: 3,
+        contents: [
+         {
+          playlistPanelVideoRenderer: {
+           videoId: 'FN7ALfpGxiI',
+           title: { simpleText: 'NƠI NÀY CÓ ANH | OFFICIAL MUSIC VIDEO | SƠN TÙNG M-TP' },
+           shortBylineText: { runs: [{ text: 'Sơn Tùng M-TP Official' }] },
+           lengthText: { simpleText: '4:39' },
+          },
+         },
+         {
+          playlistPanelVideoRenderer: {
+           videoId: 'dead123',
+           title: { simpleText: '[Deleted video]' },
+          },
+         },
+         {
+          playlistPanelVideoRenderer: {
+           videoId: 'Llw9Q6akRo4',
+           selected: true,
+           title: { simpleText: 'LẠC TRÔI | OFFICIAL MUSIC VIDEO | SƠN TÙNG M-TP' },
+           shortBylineText: { runs: [{ text: 'Sơn Tùng M-TP Official' }] },
+           lengthText: { simpleText: '4:33' },
+          },
+         },
+        ],
+       },
+      },
+     },
+    },
+   }),
+  };
+ };
+
+ const resolvedPl = await resolveMusicRequest(
+  'https://www.youtube.com/watch?v=Llw9Q6akRo4&list=PLHNNYen-Kcf6XW_30sNPqDtW04cHd8bM2',
+  mockPlaylistFetch,
+ );
+ assert.equal(resolvedPl.spotifyCollection?.kind, 'youtube_playlist');
+ assert.equal(resolvedPl.spotifyCollection?.name, 'List nhạc Sơn Tùng M-TP');
+ assert.equal(resolvedPl.spotifyCollection?.items.length, 2, 'Deleted videos should be skipped cleanly');
+ // Bài đang chọn trong URL (Lạc Trôi) phải được xoay lên vị trí đầu tiên (#0) để phát ngay!
+ assert.equal(resolvedPl.spotifyCollection?.items[0].videoId, 'Llw9Q6akRo4');
+ assert.equal(resolvedPl.spotifyCollection?.items[0].title, 'LẠC TRÔI');
+ assert.equal(resolvedPl.spotifyCollection?.items[0].artist, 'Sơn Tùng M-TP');
+ assert.equal(resolvedPl.spotifyCollection?.items[0].durationMs, 273_000);
+ assert.equal(resolvedPl.spotifyCollection?.items[1].videoId, 'FN7ALfpGxiI');
+
+ // Nếu oEmbed bị tắt (401) trên bài lẻ -> tự động nhảy sang dự phòng JSON /next siêu nhẹ (715 byte)
+ const mockEmbedDisabledFetch = async url => {
+  if (String(url).includes('/oembed')) return { ok: false, status: 401 };
+  return {
+   ok: true,
+   json: async () => ({
+    contents: {
+     twoColumnWatchNextResults: {
+      results: {
+       results: {
+        contents: [
+         { videoPrimaryInfoRenderer: { title: { runs: [{ text: 'CHÚNG TA CỦA TƯƠNG LAI | SƠN TÙNG M-TP | OFFICIAL MV' }] } } },
+         { videoSecondaryInfoRenderer: { owner: { videoOwnerRenderer: { title: { runs: [{ text: 'Sơn Tùng M-TP Official' }] } } } } },
+        ],
+       },
+      },
+     },
+    },
+   }),
+  };
+ };
+ const fallbackSingle = await resolveMusicRequest('https://www.youtube.com/watch?v=abPmZCZZrFA', mockEmbedDisabledFetch);
+ assert.equal(fallbackSingle.spotifyMeta?.title, 'CHÚNG TA CỦA TƯƠNG LAI');
+ assert.equal(fallbackSingle.spotifyMeta?.artist, 'Sơn Tùng M-TP');
+ assert.ok(resolveYouTubeCollection);
 });
 
 test('reject dangerous URLs and unsupported collections', () => {

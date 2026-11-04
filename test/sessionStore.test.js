@@ -7,6 +7,7 @@ import {
  captureGatewayFallbackSessions,
  capturePlayerSessionSnapshot,
  createRuntimeSessionStore,
+ healRestoredYouTubeTrack,
  openSessionPayload,
  RESTART_247_TTL_MS,
  RESTART_NORMAL_TTL_MS,
@@ -189,3 +190,27 @@ test('AES-256-GCM cloud backup (resumeSeal) retries on cold boot and never overw
   rmSync(dir, { recursive: true, force: true });
  }
 });
+
+test('healRestoredYouTubeTrack restores YouTube tracks previously remapped onto SoundCloud while leaving real SoundCloud tracks untouched', () => {
+ const polluted = {
+  id: '987654321',
+  title: 'Yêu Òi',
+  url: 'https://soundcloud.com/trung-do-851694477/yeu-oi-2-kejo',
+  source: 'soundcloud',
+  thumbnail: 'https://i.ytimg.com/vi/yq2Gskif4aM/hqdefault.jpg',
+ };
+ const healed = healRestoredYouTubeTrack(polluted);
+ assert.equal(healed.id, 'yq2Gskif4aM');
+ assert.equal(healed.url, 'https://www.youtube.com/watch?v=yq2Gskif4aM');
+ assert.equal(healed.source, 'youtube');
+
+ const pureSc = {
+  id: '11223344',
+  title: 'Bài gốc SoundCloud',
+  url: 'https://soundcloud.com/artist/original-track',
+  source: 'soundcloud',
+  thumbnail: 'https://i1.sndcdn.com/artworks-abc-t500x500.jpg',
+ };
+ assert.deepEqual(healRestoredYouTubeTrack(pureSc), pureSc);
+});
+

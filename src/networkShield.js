@@ -230,6 +230,9 @@ export function createResilientDnsLookup({
      const normalized = res
       .filter(r => r && typeof r.address === 'string')
       .map(r => ({ address: r.address, family: r.family || (net.isIP(r.address) === 6 ? 6 : 4) }));
+     if (familyNum === 0 && normalized.length > 1) {
+      normalized.sort((a, b) => (a.family === 4 ? 0 : 1) - (b.family === 4 ? 0 : 1));
+     }
      if (normalized.length > 0) {
       saveCache(hostKey, normalized);
       finishAll(null, normalized);
@@ -283,6 +286,9 @@ let shieldInstalled = false;
 export function installResilientDnsShield() {
  if (shieldInstalled) return;
  shieldInstalled = true;
+ try {
+  dns.setDefaultResultOrder?.('ipv4first');
+ } catch {}
  const { lookup } = createResilientDnsLookup({ baseLookup: dns.lookup.bind(dns) });
  dns.lookup = lookup;
 }

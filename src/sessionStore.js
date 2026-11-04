@@ -12,6 +12,27 @@ export const DEFAULT_TMP_BACKUP_FILE = join(tmpdir(), 'bot-dis-2-runtime-session
 export const RESTART_NORMAL_TTL_MS = 2 * 60 * 60 * 1000;       // Phiên thường: tự vào lại phòng nếu bot vừa reset/update trong vòng 2 giờ.
 export const RESTART_247_TTL_MS = 7 * 24 * 60 * 60 * 1000;     // Phiên 24/7: tự vào lại phòng ngay cả sau khi bảo trì dài hạn (tối đa 7 ngày).
 
+// Tự động hồi phục các bài gốc YouTube từng bị đẩy nhầm sang SoundCloud ở phiên cũ (có thumbnail i.ytimg.com/vi/<id>/... nhưng url SoundCloud).
+export function healRestoredYouTubeTrack(t) {
+ if (!t || typeof t !== 'object') return t;
+ const thumb = typeof t.thumbnail === 'string' ? t.thumbnail.trim() : '';
+ const ytMatch = thumb.match(/^https:\/\/i\.ytimg\.com\/vi(?:_webp)?\/([A-Za-z0-9_-]{11})\//i);
+ if (
+  ytMatch?.[1] &&
+  (String(t.source ?? '').toLowerCase() === 'soundcloud' ||
+   String(t.url ?? '').toLowerCase().includes('soundcloud.com/'))
+ ) {
+  const vid = ytMatch[1];
+  return {
+   ...t,
+   id: vid,
+   url: `https://www.youtube.com/watch?v=${vid}`,
+   source: 'youtube',
+  };
+ }
+ return t;
+}
+
 // Sao lưu gọn nhẹ thông tin bài hát để ghi ra đĩa hoặc mã hóa dự phòng (< 500 byte/bài).
 export function cloneSerializableTrack(t) {
  if (!t || typeof t !== 'object' || !t.url) return null;

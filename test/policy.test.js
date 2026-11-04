@@ -292,3 +292,62 @@ test('new music command options are bounded', () => {
  assert.equal(option('play').max_length, 400);
  assert.equal(option('tts').max_length, 500);
 });
+
+test('YouTube RDMM personal mix rewrites to RD<videoId> & unwraps playlistPanelVideoWrapperRenderer with startIndex', async () => {
+ let capturedBody = null;
+ const mockFetch = async (_url, init) => {
+  capturedBody = JSON.parse(init.body);
+  return {
+   ok: true,
+   json: async () => ({
+    contents: {
+     twoColumnWatchNextResults: {
+      playlist: {
+       playlist: {
+        title: 'Danh sách kết hợp – Hãy Cho Tôi - Kejo',
+        totalVideos: 2,
+        contents: [
+         {
+          playlistPanelVideoRenderer: {
+           videoId: '7h9ST6bd-5w',
+           selected: true,
+           title: { simpleText: 'Hãy Cho Tôi - Kejo aka Lil Luyến (Reup)' },
+           shortBylineText: { runs: [{ text: 'Trần Gia Huy' }] },
+           lengthText: { simpleText: '3:29' },
+          },
+         },
+         {
+          playlistPanelVideoWrapperRenderer: {
+           primaryRenderer: {
+            playlistPanelVideoRenderer: {
+             videoId: 'TOfE7nlF7vc',
+             selected: false,
+             title: { simpleText: 'Thiên Thần Đang Dẫm - Kejo aka Lil Luyến (Reup)' },
+             shortBylineText: { runs: [{ text: 'Trần Gia Huy' }] },
+             lengthText: { simpleText: '3:16' },
+            },
+           },
+          },
+         },
+        ],
+       },
+      },
+     },
+    },
+   }),
+  };
+ };
+
+ const res = await resolveMusicRequest(
+  'https://www.youtube.com/watch?v=7h9ST6bd-5w&list=RDMM&index=4',
+  mockFetch,
+ );
+ assert.equal(capturedBody.playlistId, 'RD7h9ST6bd-5w');
+ assert.equal(capturedBody.videoId, '7h9ST6bd-5w');
+ assert.equal(capturedBody.index, 3);
+ assert.equal(res.youtubeCollection?.items?.length, 2);
+ assert.equal(res.youtubeCollection.items[0].videoId, '7h9ST6bd-5w');
+ assert.equal(res.youtubeCollection.items[1].videoId, 'TOfE7nlF7vc');
+ assert.equal(res.youtubeCollection.items[1].source, 'youtube');
+});
+

@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import {
  cleanYouTubeMetadata,
+ ensureYouTubeVisitorSession,
  extractYouTubePlaylistId,
  extractYouTubeVideoId,
  resolveSingleYouTubeMeta,
@@ -21,6 +22,8 @@ const PLAYER_ID_TTL_MS = 45 * 60 * 1000;
 const REQUEST_KEY = 'O43z0dpjhgX20SCx4KAo';
 const CHROME_UA =
  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36';
+const VISIONOS_UA =
+ 'Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15';
 
 const YT_SEARCH_FIELD_MASK = [
  'contents.twoColumnSearchResultsRenderer.primaryContents.sectionListRenderer.contents.itemSectionRenderer.contents.videoRenderer.videoId',
@@ -40,8 +43,16 @@ const SABR_CLIENTS = [
  {
   name: 'WEB',
   id: 1,
-  version: '2.20250220.01.00',
+  version: '2.20261030.02.00',
+  useLiveWebVersion: true,
   origin: 'https://www.youtube.com',
+  endpoint: 'https://www.youtube.com/youtubei/v1/player?prettyPrint=false',
+ },
+ {
+  name: 'MWEB',
+  id: 2,
+  version: '2.20260205.04.01',
+  origin: 'https://m.youtube.com',
   endpoint: 'https://www.youtube.com/youtubei/v1/player?prettyPrint=false',
  },
 ];
@@ -63,25 +74,139 @@ function parseClockDurationMs(raw) {
  return parts.reduce((acc, cur) => acc * 60 + cur, 0) * 1000;
 }
 
+function resolveHlsUri(rawUri, baseUrl) {
+ const trimmed = String(rawUri ?? '').trim();
+ if (!trimmed) return null;
+ try {
+  const u = baseUrl ? new URL(trimmed, baseUrl) : new URL(trimmed);
+  return u.protocol === 'https:' || u.protocol === 'http:' ? u.toString() : null;
+ } catch {
+  return null;
+ }
+}
+
+// Chọn luồng âm thanh chất lượng cao nhất trong HLS Master Playlist của YouTube (ưu tiên itag/234 AAC 128-160k -> itag/233 -> TYPE=AUDIO bất kỳ).
+export function parseYouTubeHlsMasterAudioUrl(masterText, masterUrl = '') {
+ if (typeof masterText !== 'string' || !masterText.includes('#EXTM3U')) return null;
+ const lines = masterText.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+ const audioCandidates = [];
+
+ for (const line of lines) {
+  if (!line.startsWith('#EXT-X-MEDIA:')) continue;
+  if (!/TYPE=AUDIO\b/i.test(line)) continue;
+  const uriMatch = line.match(/URI="([^"]+)"/i);
+  const resolved = uriMatch?.[1] ? resolveHlsUri(uriMatch[1], masterUrl) : null;
+  if (!resolved) continue;
+  const groupMatch = line.match(/GROUP-ID="([^"]+)"/i);
+  const groupId = groupMatch?.[1] ?? '';
+  let score = 10;
+  if (groupId === '234' || /\/itag\/(?:234|140|141)\b/.test(resolved)) score = 100;
+  else if (groupId === '233' || /\/itag\/(?:233|139)\b/.test(resolved)) score = 50;
+  if (/DEFAULT=YES/i.test(line)) score += 5;
+  audioCandidates.push({ url: resolved, score });
+ }
+
+ if (audioCandidates.length > 0) {
+  audioCandidates.sort((a, b) => b.score - a.score);
+  return audioCandidates[0].url;
+ }
+
+ // Dự phòng nếu playlist master trỏ thẳng tới danh sách phân đoạn hoặc stream đơn.
+ for (const line of lines) {
+  if (!line.startsWith('#')) {
+   const resolved = resolveHlsUri(line, masterUrl);
+   if (resolved) return resolved;
+  }
+ }
+ return null;
+}
+
+// Giải mã danh sách phân đoạn VOD (#EXTINF + URL + #EXT-X-MAP tùy chọn) để phát trực tiếp & tua tức thì đến đúng mili-giây.
+export function parseYouTubeHlsMediaPlaylist(mediaText, mediaUrl = '') {
+ if (typeof mediaText !== 'string' || !mediaText.includes('#EXTM3U')) return null;
+ const lines = mediaText.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+
+ let initUrl = null;
+ const segments = [];
+ let pendingDurMs = 5000;
+ let cursorMs = 0;
+
+ for (const line of lines) {
+  if (line.startsWith('#EXT-X-MAP:')) {
+   const m = line.match(/URI="([^"]+)"/i);
+   if (m?.[1]) initUrl = resolveHlsUri(m[1], mediaUrl);
+   continue;
+  }
+  if (line.startsWith('#EXTINF:')) {
+   const rawSec = Number.parseFloat(line.slice(8).split(',')[0]);
+   pendingDurMs = Number.isFinite(rawSec) && rawSec > 0 ? Math.round(rawSec * 1000) : 5000;
+   continue;
+  }
+  if (!line.startsWith('#')) {
+   const segUrl = resolveHlsUri(line, mediaUrl);
+   if (segUrl) {
+    segments.push({
+     url: segUrl,
+     durationMs: pendingDurMs,
+     startMs: cursorMs,
+    });
+    cursorMs += pendingDurMs;
+   }
+   pendingDurMs = 5000;
+  }
+ }
+
+ if (!segments.length) return null;
+ return {
+  initUrl,
+  segments,
+  totalDurationMs: cursorMs,
+ };
+}
+
+export function findHlsSegmentStartIndex(segments, seekMs = 0) {
+ const target = Math.max(0, Math.floor(Number(seekMs) || 0));
+ if (!Array.isArray(segments) || !segments.length || target <= 0) return 0;
+ for (let i = 0; i < segments.length; i++) {
+  const seg = segments[i];
+  if (seg.startMs + seg.durationMs > target) return i;
+ }
+ return Math.max(0, segments.length - 1);
+}
+
 // Tìm kiếm trực tiếp trên YouTube qua JSON FieldMask siêu nhẹ (~18 KB, 0 MB JSDOM) khi gõ tiền tố "yt: <tên bài>".
 export async function searchYouTubeVideos(query, { limit = 10, fetchImpl = fetch, signal } = {}) {
  const cleanQ = String(query ?? '').replace(/^(?:yt|youtube):\s*/i, '').trim();
  if (!cleanQ) return [];
 
+ const session = await ensureYouTubeVisitorSession({ fetchImpl });
  const reqSignal = signal
   ? AbortSignal.any([signal, AbortSignal.timeout(8000)])
   : AbortSignal.timeout(8000);
 
+ const headers = {
+  'Content-Type': 'application/json',
+  'User-Agent': CHROME_UA,
+  'X-Goog-FieldMask': YT_SEARCH_FIELD_MASK,
+  'X-Youtube-Client-Name': '1',
+  'X-Youtube-Client-Version': session.webClientVersion || '2.20261030.02.00',
+ };
+ if (session.visitorData) headers['X-Goog-Visitor-Id'] = session.visitorData;
+
  const res = await fetchImpl('https://www.youtube.com/youtubei/v1/search?prettyPrint=false', {
   method: 'POST',
   signal: reqSignal,
-  headers: {
-   'Content-Type': 'application/json',
-   'User-Agent': CHROME_UA,
-   'X-Goog-FieldMask': YT_SEARCH_FIELD_MASK,
-  },
+  headers,
   body: JSON.stringify({
-   context: { client: { clientName: 'WEB', clientVersion: '2.20250101.01.00', hl: 'vi', gl: 'VN' } },
+   context: {
+    client: {
+     clientName: 'WEB',
+     clientVersion: session.webClientVersion || '2.20261030.02.00',
+     ...(session.visitorData ? { visitorData: session.visitorData } : {}),
+     hl: 'vi',
+     gl: 'VN',
+    },
+   },
    query: cleanQ,
   }),
  });
@@ -146,7 +271,7 @@ return {
 };`,
  );
  const nCache = new Map();
- return function decipherYouTubeUrl(rawUrl, signatureCipher = '') {
+ return function decipherYouTubeUrl(rawUrl, signatureCipher = '', webVer = '2.20261030.02.00') {
   const args = signatureCipher ? new URLSearchParams(signatureCipher) : null;
   const u = new URL(args?.get('url') || rawUrl);
   const rawN = u.searchParams.get('n');
@@ -169,7 +294,8 @@ return {
 
   const clientParam = u.searchParams.get('c');
   if (clientParam === 'WEB_REMIX') u.searchParams.set('cver', SABR_CLIENTS[0].version);
-  else if (clientParam === 'WEB') u.searchParams.set('cver', SABR_CLIENTS[1].version);
+  else if (clientParam === 'WEB') u.searchParams.set('cver', webVer);
+  else if (clientParam === 'MWEB') u.searchParams.set('cver', SABR_CLIENTS[2].version);
   return u.toString();
  };
 }
@@ -186,7 +312,6 @@ async function fetchCurrentYouTubePlayerId(fetchImpl = fetch) {
 }
 
 // Tách hàm giải mã n/sig của base.js (~177 KB) trong tiến trình con ngắn hạn rồi ghi đệm ra đĩa (.data/yt-cipher.json).
-// Nhờ đó tiến trình Bot chính KHÔNG bao giờ phải nạp cây AST ~200 MB của youtubei.js, giữ RAM cực thấp cho gói 512MB!
 async function runChildCipherExtraction(playerIdHint = '') {
  const helperCode = `
 import { Player, Platform } from "youtubei.js";
@@ -205,12 +330,11 @@ process.stdout.write(JSON.stringify({
   if (playerIdHint) args.push('--', playerIdHint);
   const { stdout } = await execFileAsync(process.execPath, args, {
    cwd: PROJECT_ROOT,
-   timeout: 25_000,
+   timeout: 22_000,
    maxBuffer: 4 * 1024 * 1024,
   });
   return JSON.parse(stdout);
  } catch {
-  // Dự phòng ngay trong tiến trình nếu môi trường host chặn tạo tiến trình con Node phụ.
   const { Player, Platform } = await import('youtubei.js');
   Platform.shim.eval = async data => new Function(data.output)();
   const p = await Player.create(null, fetch, undefined, playerIdHint || undefined);
@@ -259,18 +383,30 @@ function mapRawFormatToSabr(buildSabrFormat, f) {
  });
 }
 
+function createPolicyBlockError(message) {
+ const err = new Error(message);
+ err.isPolicyBlock = true;
+ return err;
+}
+
 export function createNativeYouTubePlugin({
- ffmpegPath = 'ffmpeg',
+ ffmpegPath: _ffmpegPath = 'ffmpeg',
  cipherCacheFile = DEFAULT_CIPHER_FILE,
  onTrackMetaSynced = null,
+ fetchImpl = fetch,
 } = {}) {
- let compiledCipher = null; // { playerId, sts, decipherUrl, checkedAt }
+ let compiledCipher = null;
  let inflightCipherPromise = null;
 
  let sharedDomReady = false;
  let cachedPoMinter = null; // { minter, expiresAt }
  let inflightMinterPromise = null;
  let sabrModules = null;
+
+ function readOptionalCookie() {
+  const raw = String(process.env.YOUTUBE_COOKIE ?? '').trim();
+  return raw || '';
+ }
 
  async function ensureCipher({ forceRefresh = false } = {}) {
   const now = Date.now();
@@ -282,7 +418,7 @@ export function createNativeYouTubePlugin({
   inflightCipherPromise = (async () => {
    let livePlayerId = null;
    try {
-    livePlayerId = await fetchCurrentYouTubePlayerId();
+    livePlayerId = await fetchCurrentYouTubePlayerId(fetchImpl);
    } catch {}
 
    if (!forceRefresh && compiledCipher && (!livePlayerId || compiledCipher.playerId === livePlayerId)) {
@@ -345,10 +481,12 @@ export function createNativeYouTubePlugin({
   return inflightCipherPromise;
  }
 
- async function mintPoToken(videoId, signal) {
+ // Khởi tạo BotGuard WebPO an toàn tuyệt đối trên cả Node 20 lẫn Node 22+ (ghi đè navigator.userAgent chuẩn Chrome, không lộ Node.js/22 hay jsdom/28).
+ async function mintPoToken(contentBinding, signal) {
+  if (!contentBinding) throw new Error('Thiếu định danh để tạo PoToken.');
   const now = Date.now();
   if (cachedPoMinter && now < cachedPoMinter.expiresAt) {
-   return cachedPoMinter.minter.mintAsWebsafeString(videoId);
+   return cachedPoMinter.minter.mintAsWebsafeString(contentBinding);
   }
 
   if (!inflightMinterPromise) {
@@ -363,7 +501,7 @@ export function createNativeYouTubePlugin({
     if (!sharedDomReady) {
      const virtualConsole = new VirtualConsole();
      const dom = new JSDOM(
-      '<!DOCTYPE html><html lang="en"><head><title></title></head><body></body></html>',
+      '<!DOCTYPE html><html lang="en"><head><title>YouTube</title></head><body></body></html>',
       {
        url: 'https://www.youtube.com/',
        referrer: 'https://www.youtube.com/',
@@ -371,22 +509,34 @@ export function createNativeYouTubePlugin({
        virtualConsole,
       },
      );
-     Object.assign(globalThis, {
+     try {
+      Object.defineProperty(dom.window.navigator, 'userAgent', {
+       get: () => bgu.USER_AGENT,
+       configurable: true,
+      });
+      Object.defineProperty(dom.window.navigator, 'webdriver', {
+       get: () => false,
+       configurable: true,
+      });
+     } catch {}
+
+     for (const [k, v] of Object.entries({
       window: dom.window,
       document: dom.window.document,
       location: dom.window.location,
       origin: dom.window.origin,
-     });
-     if (!Reflect.has(globalThis, 'navigator')) {
-      Object.defineProperty(globalThis, 'navigator', {
-       value: dom.window.navigator,
+      navigator: dom.window.navigator,
+     })) {
+      Object.defineProperty(globalThis, k, {
+       value: v,
        configurable: true,
+       writable: true,
       });
      }
      sharedDomReady = true;
     }
 
-    const challenge = await bg.getChallenge({ fetchFunction: fetch, requestKey: REQUEST_KEY });
+    const challenge = await bg.getChallenge({ fetchFunction: fetchImpl, requestKey: REQUEST_KEY });
     const interpreterJs =
      challenge?.interpreterJavascript?.privateDoNotAccessOrElseSafeScriptWrappedValue;
     if (!interpreterJs) {
@@ -402,7 +552,7 @@ export function createNativeYouTubePlugin({
     const webPoSignalOutput = [];
     const botguardResponse = await botGuardClient.snapshot({ webPoSignalOutput });
 
-    const res = await fetch(bgu.buildURL('GenerateIT', true), {
+    const res = await fetchImpl(bgu.buildURL('GenerateIT', true), {
      method: 'POST',
      headers: bgu.getHeaders(),
      body: JSON.stringify([REQUEST_KEY, botguardResponse]),
@@ -430,7 +580,249 @@ export function createNativeYouTubePlugin({
 
   const holder = await inflightMinterPromise;
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-  return holder.minter.mintAsWebsafeString(videoId);
+  return holder.minter.mintAsWebsafeString(contentBinding);
+ }
+
+ async function fetchBufferWithRetry(url, { signal, ua = VISIONOS_UA, maxAttempts = 3 } = {}) {
+  let lastErr = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+   try {
+    const reqSignal = signal
+     ? AbortSignal.any([signal, AbortSignal.timeout(10_000)])
+     : AbortSignal.timeout(10_000);
+    const res = await fetchImpl(url, {
+     signal: reqSignal,
+     headers: {
+      'Accept': '*/*',
+      'User-Agent': ua,
+      'Origin': 'https://www.youtube.com',
+      'Referer': 'https://www.youtube.com/',
+     },
+    });
+    if (res.status === 401 || res.status === 403) {
+     const authErr = new Error(`HLS segment HTTP ${res.status}`);
+     authErr.status = res.status;
+     throw authErr;
+    }
+    if (!res.ok) throw new Error(`HLS segment HTTP ${res.status}`);
+    return Buffer.from(await res.arrayBuffer());
+   } catch (err) {
+    lastErr = err;
+    if (signal?.aborted || err?.status === 401 || err?.status === 403 || attempt >= maxAttempts) {
+     throw err;
+    }
+    await new Promise(r => setTimeout(r, 220 * attempt));
+   }
+  }
+  throw lastErr ?? new Error('Không thể tải phân đoạn âm thanh YouTube.');
+ }
+
+ async function resolveVisionOsHlsPlan(videoId, { signal, usePoToken = false } = {}) {
+  const session = await ensureYouTubeVisitorSession({ fetchImpl });
+  const cookie = readOptionalCookie();
+  let sessionPoToken = '';
+  if (usePoToken) {
+   sessionPoToken = await mintPoToken(session.visitorData || videoId, signal);
+  }
+
+  const reqSignal = signal
+   ? AbortSignal.any([signal, AbortSignal.timeout(9000)])
+   : AbortSignal.timeout(9000);
+
+  const headers = {
+   'Content-Type': 'application/json',
+   'Origin': 'https://www.youtube.com',
+   'Referer': 'https://www.youtube.com/',
+   'User-Agent': VISIONOS_UA,
+   'X-Youtube-Client-Name': '101',
+   'X-Youtube-Client-Version': '1.02',
+  };
+  if (session.visitorData) headers['X-Goog-Visitor-Id'] = session.visitorData;
+  if (cookie) headers['Cookie'] = cookie;
+
+  const res = await fetchImpl('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
+   method: 'POST',
+   signal: reqSignal,
+   headers,
+   body: JSON.stringify({
+    videoId,
+    context: {
+     client: {
+      clientName: 'VISIONOS',
+      clientVersion: '1.02',
+      deviceMake: 'Apple',
+      deviceModel: 'RealityDevice17,1',
+      osName: 'visionOS',
+      osVersion: '26.5.23O471',
+      ...(session.visitorData ? { visitorData: session.visitorData } : {}),
+      hl: 'vi',
+      gl: 'VN',
+     },
+    },
+    ...(sessionPoToken ? { serviceIntegrityDimensions: { poToken: sessionPoToken } } : {}),
+    contentCheckOk: true,
+    racyCheckOk: true,
+   }),
+  });
+  if (!res.ok) throw new Error(`VISIONOS player HTTP ${res.status}`);
+  const playerData = await res.json();
+  const status = playerData?.playabilityStatus?.status;
+  const reason = playerData?.playabilityStatus?.reason || status || 'UNPLAYABLE';
+
+  const vd = playerData?.videoDetails ?? {};
+  if (vd.isLiveContent || vd.isLive) {
+   throw createPolicyBlockError('Chỉ nhận bài tối đa 180 phút, không nhận phát trực tiếp (livestream).');
+  }
+  const lenMs = (Number(vd.lengthSeconds) || 0) * 1000;
+  if (lenMs > 10_800_000) {
+   throw createPolicyBlockError('Chỉ nhận bài tối đa 180 phút, không nhận phát trực tiếp (livestream).');
+  }
+
+  const hlsManifestUrl = playerData?.streamingData?.hlsManifestUrl;
+  if (status !== 'OK' || !hlsManifestUrl) {
+   const err = new Error(`VISIONOS không sẵn sàng (${reason})`);
+   err.playabilityStatus = status;
+   throw err;
+  }
+
+  const masterBuf = await fetchBufferWithRetry(hlsManifestUrl, { signal, maxAttempts: 2 });
+  const audioMediaUrl = parseYouTubeHlsMasterAudioUrl(masterBuf.toString('utf8'), hlsManifestUrl);
+  if (!audioMediaUrl) throw new Error('Không tìm thấy kênh âm thanh trong HLS Manifest.');
+
+  const mediaBuf = await fetchBufferWithRetry(audioMediaUrl, { signal, maxAttempts: 2 });
+  const parsedMedia = parseYouTubeHlsMediaPlaylist(mediaBuf.toString('utf8'), audioMediaUrl);
+  if (!parsedMedia?.segments?.length) {
+   throw new Error('Danh sách phân đoạn HLS YouTube trống.');
+  }
+
+  return {
+   lenMs: lenMs || parsedMedia.totalDurationMs,
+   initUrl: parsedMedia.initUrl,
+   segments: parsedMedia.segments,
+   usedPoToken: usePoToken,
+  };
+ }
+
+ // Tầng 1 (Siêu tốc ~0.3s, 0 MB JSDOM, 0 tiến trình phụ): Phát trực tiếp phân đoạn AAC HLS itag/234 qua Apple visionOS + visitorData!
+ async function openVisionOsHlsStream(videoId, { signal, track = null, seekMs = 0 } = {}) {
+  let plan;
+  try {
+   plan = await resolveVisionOsHlsPlan(videoId, { signal, usePoToken: false });
+  } catch (firstErr) {
+   if (firstErr?.isPolicyBlock || signal?.aborted) throw firstErr;
+   // Nếu IP máy chủ bị hỏi xác thực bot, tự kẹp thêm Session PoToken (visitorData) thử lại ngay!
+   plan = await resolveVisionOsHlsPlan(videoId, { signal, usePoToken: true });
+  }
+
+  if (track && plan.lenMs > 0 && (!track.duration || Math.abs(Number(track.duration) - plan.lenMs) > 4000)) {
+   track.duration = plan.lenMs;
+   onTrackMetaSynced?.(track);
+  }
+
+  const clampedSeekMs = Math.max(
+   0,
+   plan.lenMs > 2000
+    ? Math.min(Math.floor(Number(seekMs) || 0), plan.lenMs - 1500)
+    : Math.floor(Number(seekMs) || 0),
+  );
+
+  let activeSegments = plan.segments;
+  let activeInitUrl = plan.initUrl;
+  let segCursor = findHlsSegmentStartIndex(activeSegments, clampedSeekMs);
+  let initSent = !activeInitUrl;
+  let refreshedOnce = false;
+
+  // Tải sẵn phân đoạn đầu tiên ngay trong getStream() để xác thực 100% CDN trả HTTP 200 trước khi giao cho AudioPlayer!
+  let prefetchedInitBuf = null;
+  if (!initSent && activeInitUrl) {
+   prefetchedInitBuf = await fetchBufferWithRetry(activeInitUrl, { signal, maxAttempts: 2 });
+   initSent = true;
+  }
+  const firstSeg = activeSegments[segCursor];
+  if (!firstSeg) throw new Error('Không tìm thấy phân đoạn bắt đầu hợp lệ.');
+  let prefetchedFirstSegBuf = await fetchBufferWithRetry(firstSeg.url, { signal, maxAttempts: 2 });
+  segCursor++;
+
+  let pulling = false;
+  let closed = false;
+
+  const nodeStream = new Readable({
+   highWaterMark: 64 * 1024,
+   read() {
+    if (pulling || closed) return;
+    pulling = true;
+    void (async () => {
+     try {
+      if (prefetchedInitBuf) {
+       const b = prefetchedInitBuf;
+       prefetchedInitBuf = null;
+       if (!this.push(b)) return;
+      }
+      if (prefetchedFirstSegBuf) {
+       const b = prefetchedFirstSegBuf;
+       prefetchedFirstSegBuf = null;
+       if (!this.push(b)) return;
+      }
+
+      while (!closed && !this.destroyed && segCursor < activeSegments.length) {
+       if (signal?.aborted) {
+        closed = true;
+        this.push(null);
+        return;
+       }
+       const seg = activeSegments[segCursor];
+       let buf;
+       try {
+        buf = await fetchBufferWithRetry(seg.url, { signal, maxAttempts: 3 });
+        refreshedOnce = false;
+       } catch (segErr) {
+        if ((segErr?.status === 401 || segErr?.status === 403) && !refreshedOnce && !signal?.aborted) {
+         refreshedOnce = true;
+         const freshPlan = await resolveVisionOsHlsPlan(videoId, {
+          signal,
+          usePoToken: plan.usedPoToken,
+         });
+         activeSegments = freshPlan.segments;
+         segCursor = findHlsSegmentStartIndex(activeSegments, seg.startMs);
+         continue;
+        }
+        throw segErr;
+       }
+
+       if (closed || this.destroyed) return;
+       segCursor++;
+       const keepReading = this.push(buf);
+       if (!keepReading) break;
+      }
+
+      if (!closed && !this.destroyed && segCursor >= activeSegments.length) {
+       closed = true;
+       this.push(null);
+      }
+     } catch (err) {
+      if (!closed && !this.destroyed) {
+       closed = true;
+       this.destroy(err instanceof Error ? err : new Error(String(err)));
+      }
+     } finally {
+      pulling = false;
+     }
+    })();
+   },
+   destroy(err, callback) {
+    closed = true;
+    prefetchedInitBuf = null;
+    prefetchedFirstSegBuf = null;
+    callback(err);
+   },
+  });
+
+  if (signal) {
+   signal.addEventListener('abort', () => nodeStream.destroy(), { once: true });
+  }
+
+  return nodeStream;
  }
 
  async function loadSabrModules() {
@@ -444,27 +836,37 @@ export function createNativeYouTubePlugin({
   return sabrModules;
  }
 
- async function fetchSabrPlayerPayload(videoId, poToken, sts, clientCfg, signal) {
+ async function fetchSabrPlayerPayload(videoId, sessionPoToken, sts, clientCfg, visitorSession, signal) {
   const reqSignal = signal
    ? AbortSignal.any([signal, AbortSignal.timeout(10_000)])
    : AbortSignal.timeout(10_000);
-  const res = await fetch(clientCfg.endpoint, {
+  const clientVersion =
+   clientCfg.useLiveWebVersion && visitorSession?.webClientVersion
+    ? visitorSession.webClientVersion
+    : clientCfg.version;
+  const cookie = readOptionalCookie();
+  const headers = {
+   'Content-Type': 'application/json',
+   'Origin': clientCfg.origin,
+   'Referer': `${clientCfg.origin}/`,
+   'X-YouTube-Client-Name': String(clientCfg.id),
+   'X-YouTube-Client-Version': clientVersion,
+   'User-Agent': CHROME_UA,
+  };
+  if (visitorSession?.visitorData) headers['X-Goog-Visitor-Id'] = visitorSession.visitorData;
+  if (cookie) headers['Cookie'] = cookie;
+
+  const res = await fetchImpl(clientCfg.endpoint, {
    method: 'POST',
    signal: reqSignal,
-   headers: {
-    'Content-Type': 'application/json',
-    'Origin': clientCfg.origin,
-    'Referer': `${clientCfg.origin}/`,
-    'X-YouTube-Client-Name': String(clientCfg.id),
-    'X-YouTube-Client-Version': clientCfg.version,
-    'User-Agent': CHROME_UA,
-   },
+   headers,
    body: JSON.stringify({
     videoId,
     context: {
      client: {
       clientName: clientCfg.name,
-      clientVersion: clientCfg.version,
+      clientVersion,
+      ...(visitorSession?.visitorData ? { visitorData: visitorSession.visitorData } : {}),
       hl: 'vi',
       gl: 'VN',
      },
@@ -475,41 +877,56 @@ export function createNativeYouTubePlugin({
       html5Preference: 'HTML5_PREF_WANTS',
      },
     },
-    serviceIntegrityDimensions: { poToken },
+    serviceIntegrityDimensions: { poToken: sessionPoToken },
     contentCheckOk: true,
     racyCheckOk: true,
    }),
   });
   if (!res.ok) throw new Error(`YouTube player HTTP ${res.status}`);
-  return res.json();
+  return { data: await res.json(), clientVersion };
  }
 
+ // Tầng 2 (Dự phòng SABR Opus 251 đầy đủ): Kẹp đồng thời visitorData + Session PoToken (/player) + Content PoToken (SabrStream)!
  async function openRawSabrStream(
   videoId,
   { signal, track = null, seekMs = 0, allowCipherRetry = true } = {},
  ) {
-  // QUAN TRỌNG: Nạp cipher trước khi nạp JSDOM để đỉnh RAM không bao giờ chồng nhau trên gói 512MB!
-  const cipher = await ensureCipher({ forceRefresh: false });
-  const [poToken, { SabrStream, buildSabrFormat, EnabledTrackTypes }] = await Promise.all([
+  const [cipher, visitorSession] = await Promise.all([
+   ensureCipher({ forceRefresh: false }),
+   ensureYouTubeVisitorSession({ fetchImpl }),
+  ]);
+  const [gvsPoToken, { SabrStream, buildSabrFormat, EnabledTrackTypes }] = await Promise.all([
    mintPoToken(videoId, signal),
    loadSabrModules(),
   ]);
+  const sessionPoToken = visitorSession.visitorData
+   ? await mintPoToken(visitorSession.visitorData, signal)
+   : gvsPoToken;
 
   let chosenClient = null;
+  let chosenVersion = '';
   let playerData = null;
   let lastReason = '';
 
   for (const clientCfg of SABR_CLIENTS) {
    try {
-    const data = await fetchSabrPlayerPayload(videoId, poToken, cipher.sts, clientCfg, signal);
+    const { data, clientVersion } = await fetchSabrPlayerPayload(
+     videoId,
+     sessionPoToken,
+     cipher.sts,
+     clientCfg,
+     visitorSession,
+     signal,
+    );
     const status = data?.playabilityStatus?.status;
     const hasSabr = Boolean(
      data?.streamingData?.serverAbrStreamingUrl &&
-     data?.streamingData?.adaptiveFormats?.length &&
-     data?.playerConfig?.mediaCommonConfig?.mediaUstreamerRequestConfig?.videoPlaybackUstreamerConfig,
+      data?.streamingData?.adaptiveFormats?.length &&
+      data?.playerConfig?.mediaCommonConfig?.mediaUstreamerRequestConfig?.videoPlaybackUstreamerConfig,
     );
     if (status === 'OK' && hasSabr) {
      chosenClient = clientCfg;
+     chosenVersion = clientVersion;
      playerData = data;
      break;
     }
@@ -525,11 +942,11 @@ export function createNativeYouTubePlugin({
 
   const vd = playerData.videoDetails ?? {};
   if (vd.isLiveContent || vd.isLive) {
-   throw new Error('Chỉ nhận bài tối đa 180 phút, không nhận phát trực tiếp (livestream).');
+   throw createPolicyBlockError('Chỉ nhận bài tối đa 180 phút, không nhận phát trực tiếp (livestream).');
   }
   const lenMs = (Number(vd.lengthSeconds) || 0) * 1000;
   if (lenMs > 10_800_000) {
-   throw new Error('Chỉ nhận bài tối đa 180 phút, không nhận phát trực tiếp (livestream).');
+   throw createPolicyBlockError('Chỉ nhận bài tối đa 180 phút, không nhận phát trực tiếp (livestream).');
   }
 
   if (track && lenMs > 0 && (!track.duration || Math.abs(Number(track.duration) - lenMs) > 4000)) {
@@ -546,7 +963,11 @@ export function createNativeYouTubePlugin({
   let reloadHandler = null;
   let fmtInitHandler = null;
   try {
-   const serverAbrStreamingUrl = cipher.decipherUrl(playerData.streamingData.serverAbrStreamingUrl);
+   const serverAbrStreamingUrl = cipher.decipherUrl(
+    playerData.streamingData.serverAbrStreamingUrl,
+    '',
+    chosenVersion,
+   );
    const ustreamerConfig =
     playerData.playerConfig.mediaCommonConfig.mediaUstreamerRequestConfig.videoPlaybackUstreamerConfig;
    const formats = playerData.streamingData.adaptiveFormats.map(f =>
@@ -557,11 +978,10 @@ export function createNativeYouTubePlugin({
     formats,
     serverAbrStreamingUrl,
     videoPlaybackUstreamerConfig: ustreamerConfig,
-    poToken,
-    clientInfo: { clientName: chosenClient.id, clientVersion: chosenClient.version },
+    poToken: gvsPoToken,
+    clientInfo: { clientName: chosenClient.id, clientVersion: chosenVersion },
    });
 
-   // Tua thẳng ở tầng giao thức SABR trên máy chủ Google (~0.5s, không cần chạy thêm tiến trình FFmpeg).
    if (clampedSeekMs >= 500) {
     const origBuildBody = sabr.buildRequestBody.bind(sabr);
     sabr.buildRequestBody = function patchedSeekBuildBody(abrState, selAudio, selVideo) {
@@ -585,15 +1005,20 @@ export function createNativeYouTubePlugin({
    reloadHandler = async () => {
     try {
      if (signal?.aborted) return;
-     const [freshCipher, refreshedPo] = await Promise.all([
+     const [freshCipher, freshVisitor, refreshedGvsPo] = await Promise.all([
       ensureCipher({ forceRefresh: false }),
+      ensureYouTubeVisitorSession({ fetchImpl }),
       mintPoToken(videoId, signal),
      ]);
-     const reloaded = await fetchSabrPlayerPayload(
+     const refreshedSessionPo = freshVisitor.visitorData
+      ? await mintPoToken(freshVisitor.visitorData, signal)
+      : refreshedGvsPo;
+     const { data: reloaded, clientVersion: nextVer } = await fetchSabrPlayerPayload(
       videoId,
-      refreshedPo,
+      refreshedSessionPo,
       freshCipher.sts,
       chosenClient,
+      freshVisitor,
       signal,
      );
      const nextUrlRaw = reloaded?.streamingData?.serverAbrStreamingUrl;
@@ -602,8 +1027,8 @@ export function createNativeYouTubePlugin({
      const nextFormats = (reloaded?.streamingData?.adaptiveFormats ?? []).map(f =>
       mapRawFormatToSabr(buildSabrFormat, f),
      );
-     sabr?.setPoToken(refreshedPo);
-     if (nextUrlRaw) sabr?.setStreamingURL(freshCipher.decipherUrl(nextUrlRaw));
+     sabr?.setPoToken(refreshedGvsPo);
+     if (nextUrlRaw) sabr?.setStreamingURL(freshCipher.decipherUrl(nextUrlRaw, '', nextVer));
      if (nextCfg) sabr?.setUstreamerConfig(nextCfg);
      if (nextFormats.length) sabr?.setServerAbrFormats(nextFormats);
     } catch {}
@@ -699,7 +1124,7 @@ export function createNativeYouTubePlugin({
     }
     try { sabr.abort(); } catch {}
    }
-   if (allowCipherRetry && !signal?.aborted) {
+   if (allowCipherRetry && !err?.isPolicyBlock && !signal?.aborted) {
     await ensureCipher({ forceRefresh: true }).catch(() => {});
     return openRawSabrStream(videoId, { signal, track, seekMs, allowCipherRetry: false });
    }
@@ -707,8 +1132,13 @@ export function createNativeYouTubePlugin({
   }
  }
 
- async function openSeekedSabrStream(videoId, positionMs, { signal, track = null } = {}) {
-  return openRawSabrStream(videoId, { signal, track, seekMs: positionMs });
+ async function openYouTubeAudioStream(videoId, { signal, track = null, seekMs = 0 } = {}) {
+  try {
+   return await openVisionOsHlsStream(videoId, { signal, track, seekMs });
+  } catch (hlsErr) {
+   if (hlsErr?.isPolicyBlock || signal?.aborted) throw hlsErr;
+   return openRawSabrStream(videoId, { signal, track, seekMs });
+  }
  }
 
  function buildYouTubeTrack(item, requestedBy) {
@@ -729,7 +1159,7 @@ export function createNativeYouTubePlugin({
 
  return {
   name: 'youtube',
-  version: '2.0.0',
+  version: '2.1.0',
   priority: 30,
 
   validate(url) {
@@ -753,7 +1183,7 @@ export function createNativeYouTubePlugin({
    if (!trimmed) return { tracks: [] };
 
    if (/^(?:yt|youtube):\s*/i.test(trimmed)) {
-    const items = await searchYouTubeVideos(trimmed, { limit: 10, signal });
+    const items = await searchYouTubeVideos(trimmed, { limit: 10, fetchImpl, signal });
     return { tracks: items.map(it => buildYouTubeTrack(it, requestedBy)) };
    }
 
@@ -763,16 +1193,20 @@ export function createNativeYouTubePlugin({
 
    let playlistId = null;
    let videoId = null;
+   let startIndex = null;
    try {
     playlistId = extractYouTubePlaylistId(trimmed);
     videoId = extractYouTubeVideoId(trimmed);
+    const u = new URL(trimmed);
+    const rawIdx = Number.parseInt(u.searchParams.get('index') ?? '', 10);
+    if (Number.isInteger(rawIdx) && rawIdx >= 1) startIndex = rawIdx - 1;
    } catch {
     return { tracks: [] };
    }
    if (!playlistId && !videoId) return { tracks: [] };
 
    if (playlistId) {
-    const col = await resolveYouTubeCollection({ playlistId, videoId });
+    const col = await resolveYouTubeCollection({ playlistId, videoId, startIndex, fetchImpl });
     if (col?.items?.length) {
      return {
       tracks: col.items.map(it => buildYouTubeTrack(it, requestedBy)),
@@ -786,7 +1220,7 @@ export function createNativeYouTubePlugin({
    }
 
    if (!videoId) return { tracks: [] };
-   const meta = await resolveSingleYouTubeMeta(videoId);
+   const meta = await resolveSingleYouTubeMeta(videoId, fetchImpl);
    if (!meta || meta.isLive || Number(meta.durationMs) > 10_800_000) return { tracks: [] };
    const cleaned = cleanYouTubeMetadata(meta.rawTitle, meta.rawAuthor);
    const rawTitleClean = String(meta.rawTitle ?? '').replace(/\s+/g, ' ').trim();
@@ -815,11 +1249,11 @@ export function createNativeYouTubePlugin({
    if (!/^[A-Za-z0-9_-]{3,20}$/.test(videoId)) {
     throw new Error('Mã video YouTube không hợp lệ.');
    }
-   const stream = await openRawSabrStream(videoId, { signal, track });
+   const stream = await openYouTubeAudioStream(videoId, { signal, track, seekMs: 0 });
    return {
     stream,
     type: 'arbitrary',
-    recreate: positionMs => openSeekedSabrStream(videoId, positionMs, { track }),
+    recreate: positionMs => openYouTubeAudioStream(videoId, { track, seekMs: positionMs }),
     metadata: {
      title: track?.title,
      author: track?.metadata?.author,
@@ -838,6 +1272,7 @@ export function createNativeYouTubePlugin({
     const mix = await resolveYouTubeCollection({
      playlistId: `RD${videoId}`,
      videoId,
+     fetchImpl,
     });
     if (!mix?.items?.length) return [];
     const wantLimit = opts?.limit || 5;

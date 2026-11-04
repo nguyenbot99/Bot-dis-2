@@ -85,3 +85,23 @@ test('isRecoverableNetworkOrStreamError catches Node 22 fetch TypeError(cause=EA
  assert.equal(isRecoverableNetworkOrStreamError(new ReferenceError('x is not defined')), false);
  assert.equal(isRecoverableNetworkOrStreamError(new TypeError('Cannot read properties of null')), false);
 });
+
+test('createResilientDnsLookup sorts IPv4 ahead of IPv6 for family=0 to prevent YouTube IP-mismatch 403', async () => {
+ const mockBaseLookup = (_host, _opts, cb) => {
+  cb(null, [
+   { address: '2a01:4f8:c17:1234::1', family: 6 },
+   { address: '142.250.199.14', family: 4 },
+  ]);
+ };
+ const { lookup } = createResilientDnsLookup({ baseLookup: mockBaseLookup });
+ const lookupAsync = util.promisify(lookup);
+
+ const single = await lookupAsync('www.youtube.com');
+ assert.equal(single.address, '142.250.199.14');
+ assert.equal(single.family, 4);
+
+ const all = await lookupAsync('www.youtube.com', { all: true });
+ assert.equal(all[0].family, 4);
+ assert.equal(all[1].family, 6);
+});
+

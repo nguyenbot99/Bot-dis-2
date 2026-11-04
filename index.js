@@ -5,7 +5,14 @@ import { ActivityType, Client, Events, GatewayIntentBits, MessageFlags, Options,
 import { PlayerManager } from 'ziplayer';
 import ffmpeg from 'ffmpeg-static';
 import { isRecoverableNetworkOrStreamError } from './src/networkShield.js';
-import { parseSeekTime, pickBestMatchingTrack, resolveMusicRequest, resolveConfig } from './src/policy.js';
+import {
+ ensureYouTubeVisitorSession,
+ extractYouTubeVideoId,
+ parseSeekTime,
+ pickBestMatchingTrack,
+ resolveConfig,
+ resolveMusicRequest,
+} from './src/policy.js';
 import {
  AMBIENT_MODES,
  clampVolumePercent,
@@ -35,7 +42,12 @@ import { buildMixtapeDetailEmbed, buildMixtapesListEmbed, createMixtapeStore } f
 import { createNowPlayingHub } from './src/nowPlayingHub.js';
 import { deleteDiscordMessage, extractMessageRef, sweepChannelStaleNotices } from './src/messageCleaner.js';
 import { resolveRadioStation } from './src/radioStations.js';
-import { captureGatewayFallbackSessions, createRuntimeSessionStore, sealSessionPayload } from './src/sessionStore.js';
+import {
+ captureGatewayFallbackSessions,
+ createRuntimeSessionStore,
+ healRestoredYouTubeTrack,
+ sealSessionPayload,
+} from './src/sessionStore.js';
 import { synthesizeSfxWav } from './src/sfx.js';
 import { createSleepTimerManager } from './src/sleepTimer.js';
 import { buildStatsEmbed, createStatsStore } from './src/statsStore.js';
@@ -247,8 +259,16 @@ soundCloudPlugin.getRelatedTracks = async function patchedRelatedTracks(track, o
 };
 
 // Khi một link SoundCloud trực tiếp bị khóa luồng hoặc chỉ cho nghe thử Go+, tự tìm bản đầy đủ tương ứng và đồng bộ lại thời lượng.
+// TUYỆT ĐỐI KHÔNG can thiệp vào bài gốc YouTube để tránh đẩy nhầm list YouTube sang bản cover/khác bài bên SoundCloud!
 function installSmartFallback(plugin, notifySynced) {
  plugin.getFallback = async function patchedFallback(track) {
+  let isYtUrl = false;
+  try {
+   isYtUrl = Boolean(extractYouTubeVideoId(String(track?.url ?? '')));
+  } catch {}
+  if (String(track?.source ?? '').toLowerCase() === 'youtube' || isYtUrl) {
+   throw new Error('Giữ nguyên nguồn YouTube gốc (không chuyển sang SoundCloud).');
+  }
   const rawQuery = [track?.title, track?.metadata?.author].filter(Boolean).join(' ').trim() || track?.title;
   let res = await this.search(rawQuery, track?.requestedBy || 'fallback').catch(() => null);
   let candidates = (res?.tracks ?? []).filter(c => c && !c.isLive && !(c.duration > 10800000) && c.url !== track?.url);
@@ -292,7 +312,7 @@ function installSmartFallback(plugin, notifySynced) {
  };
 }
 
-// Plugin phát âm thanh gốc trực tiếp từ YouTube (SABR + WebPO bộ đệm đĩa, không đẩy sang SoundCloud làm lệch list).
+// Plugin phát âm thanh gốc trực tiếp từ YouTube (HLS visionOS siêu tốc + SABR WebPO dự phòng, không đẩy sang SoundCloud làm lệch list).
 const nativeYouTubePlugin = createNativeYouTubePlugin({
  ffmpegPath: ffmpeg,
  onTrackMetaSynced: syncedTrack => {
@@ -301,6 +321,7 @@ const nativeYouTubePlugin = createNativeYouTubePlugin({
   }
  },
 });
+void ensureYouTubeVisitorSession().catch(() => {});
 
 // Khởi tạo trình quản lý phát nhạc ZiPlayer ở cấu hình nhẹ, tắt bộ đệm tìm kiếm và thống kê.
 const manager = new PlayerManager({
@@ -309,7 +330,7 @@ const manager = new PlayerManager({
  enableStatsCollection: false,
  autoCleanup: true,
  cleanupInterval: 60000,
- extractorTimeout: 25000,
+ extractorTimeout: 35000,
 });
 
 installSmartFallback(soundCloudPlugin, syncedTrack => {
@@ -872,7 +893,9 @@ async function restoreKickSnapshotIfAny(player, voiceChannel, fallbackUserId) {
  guildKickSnapshots.delete(guildId);
  if (Date.now() - snap.savedAt > KICK_SNAPSHOT_TTL_MS) return null;
 
- const allTracks = [snap.currentTrack, ...(snap.upcomingTracks ?? [])].filter(Boolean);
+ const allTracks = [snap.currentTrack, ...(snap.upcomingTracks ?? [])]
+  .filter(Boolean)
+  .map(healRestoredYouTubeTrack);
  if (!allTracks.length) return null;
  const [firstTrack, ...restTracks] = allTracks;
 
@@ -1052,6 +1075,7 @@ async function destroyPlayerSession(guildId, reason) {
 
 // Gắn sự kiện vòng đời từ ZiPlayer để tự động đồng bộ khung điều khiển nhạc trên kênh chat & Website Now Playing.
 manager.on('trackStart', (player, track) => {
+ if (player?.userdata) player.userdata.consecutiveTrackErrors = 0;
  const humanOwner = resolveHumanRequester(track?.requestedBy);
  if (humanOwner && player?.userdata) player.userdata.ownerId = humanOwner;
  syncPlayerVibeAnchor(player, player?.userdata?.vibeMode ?? 'normal', 0);
@@ -1126,11 +1150,28 @@ manager.on('playerDestroy', player => {
  void closeCurrentPanel(player, 'Phiên phát nhạc đã kết thúc, bot đã rời kênh thoại.');
  if (player.userdata) player.userdata.textChannel = null;
 });
-manager.on('playerError', (player, error) => {
- console.error('[lỗi-phát-nhạc]', error?.name ?? 'Error');
- if (player.userdata?.stay247) {
-  player.userdata.idleOpen = true;
-  player.userdata.skipNextStopEvent = true;
+manager.on('playerError', (player, error, failedTrack) => {
+ const rawMsg = String(error?.message ?? error ?? 'Lỗi không xác định').replace(/\s+/g, ' ').trim().slice(0, 220);
+ const trackRef = failedTrack?.url || player?.queue?.currentTrack?.url || '';
+ console.error(
+  '[lỗi-phát-nhạc]',
+  `${error?.name ?? 'Error'}: ${rawMsg}${trackRef ? ` (${trackRef})` : ''}`,
+ );
+
+ const ud = player?.userdata;
+ const errStreak = (ud?.consecutiveTrackErrors ?? 0) + 1;
+ if (ud) ud.consecutiveTrackErrors = errStreak;
+
+ // Nếu danh sách phát vẫn còn bài kế tiếp (tối đa bỏ qua 3 bài lỗi liên tiếp), tự nhảy sang bài tiếp theo thay vì hủy cả list!
+ if (!player?.destroyed && (player?.upcomingTracks?.length ?? 0) > 0 && errStreak <= 3) {
+  console.warn(`[tự-chuyển-bài] Bỏ qua bài gặp sự cố (${errStreak}/3) để phát tiếp bài kế trong danh sách...`);
+  void player.skip().catch(() => {});
+  return;
+ }
+
+ if (ud?.stay247) {
+  ud.idleOpen = true;
+  ud.skipNextStopEvent = true;
   player.stop();
   player.clearLeaveTimeout?.();
   void closeCurrentPanel(player, 'Nguồn bài hát gặp sự cố — Bot vẫn giữ kết nối kênh thoại 24/7.', { keepIdle247: true });
@@ -2162,18 +2203,29 @@ async function restorePersistedSessionsOnStartup(readyClient, gatewayFallback = 
    if (snap.autoPlay) p.autoPlay(true);
 
    nowPlayingHub.setOutboundPushPaused(false);
-   const allTracks = [snap.currentTrack, ...(snap.upcomingTracks ?? [])].filter(Boolean);
+   const allTracks = [snap.currentTrack, ...(snap.upcomingTracks ?? [])]
+    .filter(Boolean)
+    .map(healRestoredYouTubeTrack);
    if (allTracks.length > 0) {
-    const [firstTrack, ...restTracks] = allTracks;
-    if (p.userdata) p.userdata.idleOpen = false;
-    const played = await p.play(firstTrack, firstTrack.requestedBy || fallbackOwner).catch(() => false);
-    if (played) {
+    let startedIdx = -1;
+    const maxRestoreAttempts = Math.min(3, allTracks.length);
+    for (let idx = 0; idx < maxRestoreAttempts; idx++) {
+     const candidate = allTracks[idx];
+     if (p.userdata) p.userdata.idleOpen = false;
+     const played = await p.play(candidate, candidate.requestedBy || fallbackOwner).catch(() => false);
+     if (played) {
+      startedIdx = idx;
+      break;
+     }
+    }
+    if (startedIdx >= 0) {
+     const restTracks = allTracks.slice(startedIdx + 1);
      if (restTracks.length > 0) {
       if (typeof p.queue?.addMultiple === 'function') p.queue.addMultiple(restTracks);
       else for (const t of restTracks) p.queue?.insert?.(t, p.queue.size);
      }
      if (snap.loopMode && snap.loopMode !== 'off') p.loop(snap.loopMode);
-     if (snap.currentTrack && snap.positionMs >= 5000) {
+     if (startedIdx === 0 && snap.currentTrack && snap.positionMs >= 5000) {
       await p.seek(snap.positionMs).catch(() => {});
      }
      if (snap.wasPaused && !p.isPaused) {

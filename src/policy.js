@@ -33,7 +33,73 @@ const YT_NEXT_PLAYLIST_FIELD_MASK = [
  'contents.twoColumnWatchNextResults.playlist.playlist.contents.playlistPanelVideoRenderer.shortBylineText',
  'contents.twoColumnWatchNextResults.playlist.playlist.contents.playlistPanelVideoRenderer.longBylineText',
  'contents.twoColumnWatchNextResults.playlist.playlist.contents.playlistPanelVideoRenderer.lengthText',
+ 'contents.twoColumnWatchNextResults.playlist.playlist.contents.playlistPanelVideoWrapperRenderer.primaryRenderer.playlistPanelVideoRenderer.videoId',
+ 'contents.twoColumnWatchNextResults.playlist.playlist.contents.playlistPanelVideoWrapperRenderer.primaryRenderer.playlistPanelVideoRenderer.selected',
+ 'contents.twoColumnWatchNextResults.playlist.playlist.contents.playlistPanelVideoWrapperRenderer.primaryRenderer.playlistPanelVideoRenderer.title',
+ 'contents.twoColumnWatchNextResults.playlist.playlist.contents.playlistPanelVideoWrapperRenderer.primaryRenderer.playlistPanelVideoRenderer.shortBylineText',
+ 'contents.twoColumnWatchNextResults.playlist.playlist.contents.playlistPanelVideoWrapperRenderer.primaryRenderer.playlistPanelVideoRenderer.longBylineText',
+ 'contents.twoColumnWatchNextResults.playlist.playlist.contents.playlistPanelVideoWrapperRenderer.primaryRenderer.playlistPanelVideoRenderer.lengthText',
 ].join(',');
+
+const YT_VISITOR_SESSION_TTL_MS = 45 * 60 * 1000;
+const DEFAULT_YT_WEB_VERSION = '2.20261030.02.00';
+const YT_DESKTOP_UA =
+ 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36';
+
+let cachedYtVisitorSession = null; // { visitorData, webClientVersion, expiresAt }
+let inflightYtVisitorPromise = null;
+
+// Lấy phiên khách (visitorData + phiên bản WEB hiện hành) siêu nhẹ từ sw.js_data (~0 MB JSDOM) để các IP máy chủ đám mây không bị YouTube chặn trắng!
+export async function ensureYouTubeVisitorSession({ fetchImpl = fetch, forceRefresh = false } = {}) {
+ if (fetchImpl !== fetch) {
+  return { visitorData: '', webClientVersion: DEFAULT_YT_WEB_VERSION };
+ }
+ const now = Date.now();
+ if (!forceRefresh && cachedYtVisitorSession && now < cachedYtVisitorSession.expiresAt) {
+  return cachedYtVisitorSession;
+ }
+ if (!forceRefresh && inflightYtVisitorPromise) {
+  return inflightYtVisitorPromise;
+ }
+
+ inflightYtVisitorPromise = (async () => {
+  try {
+   const res = await fetchImpl('https://www.youtube.com/sw.js_data', {
+    signal: AbortSignal.timeout(6500),
+    headers: {
+     'Accept': '*/*',
+     'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8',
+     'Referer': 'https://www.youtube.com/sw.js',
+     'User-Agent': YT_DESKTOP_UA,
+    },
+   });
+   if (res?.ok) {
+    const raw = await res.text();
+    const cleaned = raw.replace(/^\)\]\}'\s*/, '');
+    const parsed = JSON.parse(cleaned);
+    const deviceInfo = parsed?.[0]?.[2]?.[0]?.[0];
+    const visitorData = typeof deviceInfo?.[13] === 'string' ? deviceInfo[13].trim() : '';
+    const webClientVersion =
+     typeof deviceInfo?.[16] === 'string' && deviceInfo[16].startsWith('2.')
+      ? deviceInfo[16].trim()
+      : DEFAULT_YT_WEB_VERSION;
+    if (visitorData) {
+     cachedYtVisitorSession = {
+      visitorData,
+      webClientVersion,
+      expiresAt: Date.now() + YT_VISITOR_SESSION_TTL_MS,
+     };
+     return cachedYtVisitorSession;
+    }
+   }
+  } catch {}
+  return cachedYtVisitorSession ?? { visitorData: '', webClientVersion: DEFAULT_YT_WEB_VERSION };
+ })().finally(() => {
+  inflightYtVisitorPromise = null;
+ });
+
+ return inflightYtVisitorPromise;
+}
 
 const YT_NEXT_VIDEO_FIELD_MASK = [
  'contents.twoColumnWatchNextResults.results.results.contents.videoPrimaryInfoRenderer.title',
@@ -65,7 +131,7 @@ export function extractYouTubeVideoId(rawUrl) {
  return /^[A-Za-z0-9_-]{3,20}$/.test(id) ? id : null;
 }
 
-// Tách mã danh sách phát (Playlist PL..., Album OLAK5uy_..., Danh sách kết hợp Mix RD...) từ link YouTube / YouTube Music.
+// Tách mã danh sách phát (Playlist PL..., Album OLAK5uy_..., Danh sách kết hợp Mix RD.../RDMM) từ link YouTube / YouTube Music.
 export function extractYouTubePlaylistId(rawUrl) {
  let u;
  try { u = new URL(rawUrl); } catch { return null; }
@@ -73,7 +139,7 @@ export function extractYouTubePlaylistId(rawUrl) {
  if (!YOUTUBE_HOSTS.has(host)) return null;
  const list = (u.searchParams.get('list') ?? '').trim();
  if (!list || list === 'WL' || list === 'LL') return null;
- return /^[A-Za-z0-9_-]{6,120}$/.test(list) ? list : null;
+ return /^[A-Za-z0-9_-]{4,120}$/.test(list) ? list : null;
 }
 
 export const MAX_COLLECTION_TRACKS = 20;
@@ -133,7 +199,7 @@ function normalizeMusicUrl(rawUrl) {
     throw new Error('Danh sách Xem sau (WL) hoặc Đã thích (LL) của YouTube là riêng tư — hãy dán link Playlist Công khai hoặc Không công khai nhé!');
    }
   } else if (rawList) {
-   if (!/^[A-Za-z0-9_-]{6,120}$/.test(rawList)) {
+   if (!/^[A-Za-z0-9_-]{4,120}$/.test(rawList)) {
     throw new Error('Mã danh sách phát YouTube không hợp lệ.');
    }
    if (!isPlaylistPath && !videoId) {
@@ -262,32 +328,49 @@ function parseDurationLabelToMs(raw) {
 
 const UNPLAYABLE_YT_TITLE_RE = /^(?:\[(?:deleted|private)\s+video\]|deleted\s+video|private\s+video|video\s+đã\s+bị\s+xóa|video\s+riêng\s+tư)$/i;
 
-// Giải mã siêu nhẹ Danh sách phát YouTube (Playlist PL..., Album OLAK5uy_..., Danh sách kết hợp Mix RD.../RDAMVM...)
+// Giải mã siêu nhẹ Danh sách phát YouTube (Playlist PL..., Album OLAK5uy_..., Danh sách kết hợp Mix RD.../RDMM/RDAMVM...)
 // bằng truy vấn JSON FieldMask (~14–24 KB, 0 MB JSDOM, không bị chặn LOGIN_REQUIRED trên VPS 512MB RAM!).
-export async function resolveYouTubeCollection({ playlistId, videoId = null, fetchImpl = fetch }) {
+export async function resolveYouTubeCollection({
+ playlistId,
+ videoId = null,
+ startIndex = null,
+ fetchImpl = fetch,
+}) {
+ // "Danh sách nhạc kết hợp của tôi" (RDMM) là mix cá nhân theo tài khoản: khi có kèm bài gốc v=..., chuyển sang RD<videoId> để bắt đúng list cùng gu bài đó!
+ const rawListId = String(playlistId ?? '').trim();
+ const effectivePlaylistId =
+  rawListId.toUpperCase() === 'RDMM' && videoId ? `RD${videoId}` : rawListId;
+
+ const session = await ensureYouTubeVisitorSession({ fetchImpl });
  const bodyPayload = {
   context: {
    client: {
     clientName: 'WEB',
-    clientVersion: '2.20250101.01.00',
+    clientVersion: session.webClientVersion || DEFAULT_YT_WEB_VERSION,
+    ...(session.visitorData ? { visitorData: session.visitorData } : {}),
     hl: 'vi',
     gl: 'VN',
    },
   },
-  playlistId,
+  playlistId: effectivePlaylistId,
   ...(videoId ? { videoId } : {}),
+  ...(Number.isInteger(startIndex) && startIndex >= 0 ? { index: startIndex } : {}),
  };
 
  let data = null;
  try {
+  const headers = {
+   'Content-Type': 'application/json',
+   'User-Agent': YT_DESKTOP_UA,
+   'X-Goog-FieldMask': YT_NEXT_PLAYLIST_FIELD_MASK,
+   'X-Youtube-Client-Name': '1',
+   'X-Youtube-Client-Version': session.webClientVersion || DEFAULT_YT_WEB_VERSION,
+  };
+  if (session.visitorData) headers['X-Goog-Visitor-Id'] = session.visitorData;
   const res = await fetchImpl('https://www.youtube.com/youtubei/v1/next?prettyPrint=false', {
    method: 'POST',
    signal: AbortSignal.timeout(8000),
-   headers: {
-    'Content-Type': 'application/json',
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36',
-    'X-Goog-FieldMask': YT_NEXT_PLAYLIST_FIELD_MASK,
-   },
+   headers,
    body: JSON.stringify(bodyPayload),
   });
   if (res?.ok) {
@@ -298,17 +381,21 @@ export async function resolveYouTubeCollection({ playlistId, videoId = null, fet
  const playlistObj = data?.contents?.twoColumnWatchNextResults?.playlist?.playlist ?? null;
  const rawContents = Array.isArray(playlistObj?.contents) ? playlistObj.contents : [];
  let parsedItems = [];
+ const seenIds = new Set();
 
  for (const entry of rawContents) {
-  const r = entry?.playlistPanelVideoRenderer;
+  const r =
+   entry?.playlistPanelVideoRenderer ??
+   entry?.playlistPanelVideoWrapperRenderer?.primaryRenderer?.playlistPanelVideoRenderer;
   const vid = String(r?.videoId ?? '').trim();
-  if (!vid || !/^[A-Za-z0-9_-]{3,20}$/.test(vid)) continue;
+  if (!vid || seenIds.has(vid) || !/^[A-Za-z0-9_-]{3,20}$/.test(vid)) continue;
   const rawTitle = readYtText(r.title);
   if (!rawTitle || UNPLAYABLE_YT_TITLE_RE.test(rawTitle)) continue;
   const rawAuthor = readYtText(r.shortBylineText) || readYtText(r.longBylineText);
   const durationMs = parseDurationLabelToMs(readYtText(r.lengthText));
   if (durationMs > 10_800_000) continue; // Bỏ qua video dài trên 3 tiếng
 
+  seenIds.add(vid);
   const cleaned = cleanYouTubeMetadata(rawTitle, rawAuthor);
   const watchUrl = `https://www.youtube.com/watch?v=${vid}`;
   const artistName = cleaned.artist || rawAuthor.replace(/\s*-\s*Topic$/i, '').trim() || 'YouTube';
@@ -356,19 +443,36 @@ export async function resolveSingleYouTubeMeta(videoId, fetchImpl = fetch) {
 
  // Trên môi trường chạy thật, lấy nhanh cả tên bài + ca sĩ + thời lượng chính xác + cờ livestream chỉ với ~250 byte FieldMask JSON.
  if (fetchImpl === fetch) {
+  const session = await ensureYouTubeVisitorSession({ fetchImpl });
   try {
-   const res = await fetchImpl('https://music.youtube.com/youtubei/v1/player?prettyPrint=false', {
+   const headers = {
+    'Content-Type': 'application/json',
+    'Origin': 'https://www.youtube.com',
+    'User-Agent':
+     'Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15',
+    'X-Goog-FieldMask':
+     'videoDetails.videoId,videoDetails.title,videoDetails.author,videoDetails.lengthSeconds,videoDetails.isLiveContent',
+    'X-Youtube-Client-Name': '101',
+    'X-Youtube-Client-Version': '1.02',
+   };
+   if (session.visitorData) headers['X-Goog-Visitor-Id'] = session.visitorData;
+   const res = await fetchImpl('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
     method: 'POST',
     signal: AbortSignal.timeout(6000),
-    headers: {
-     'Content-Type': 'application/json',
-     'Origin': 'https://music.youtube.com',
-     'User-Agent': 'Mozilla/5.0',
-     'X-Goog-FieldMask': 'videoDetails.videoId,videoDetails.title,videoDetails.author,videoDetails.lengthSeconds,videoDetails.isLiveContent',
-    },
+    headers,
     body: JSON.stringify({
-     context: { client: { clientName: 'WEB_REMIX', clientVersion: '1.20250219.01.00', hl: 'vi', gl: 'VN' } },
+     context: {
+      client: {
+       clientName: 'VISIONOS',
+       clientVersion: '1.02',
+       ...(session.visitorData ? { visitorData: session.visitorData } : {}),
+       hl: 'vi',
+       gl: 'VN',
+      },
+     },
      videoId,
+     contentCheckOk: true,
+     racyCheckOk: true,
     }),
    });
    if (res?.ok) {
@@ -539,10 +643,17 @@ export async function resolveMusicRequest(input, fetchImpl = fetch, spotifyResol
  if (YOUTUBE_HOSTS.has(normHost)) {
   const playlistId = extractYouTubePlaylistId(normalized);
   const videoId = extractYouTubeVideoId(normalized);
+  const rawIndex = Number.parseInt(normUrlObj.searchParams.get('index') ?? '', 10);
+  const startIndex = Number.isInteger(rawIndex) && rawIndex >= 1 ? rawIndex - 1 : null;
 
-  // Nhánh 1: Danh sách phát YouTube (Playlist PL..., Album OLAK5uy_..., Danh sách kết hợp Mix RD...) -> phát đúng danh sách gốc từ YouTube!
+  // Nhánh 1: Danh sách phát YouTube (Playlist PL..., Album OLAK5uy_..., Danh sách kết hợp Mix RD.../RDMM) -> phát đúng danh sách gốc từ YouTube!
   if (playlistId) {
-   const ytCollection = await resolveYouTubeCollection({ playlistId, videoId, fetchImpl });
+   const ytCollection = await resolveYouTubeCollection({
+    playlistId,
+    videoId,
+    startIndex,
+    fetchImpl,
+   });
    if (ytCollection?.items?.length) {
     return {
      query: ytCollection.items[0].url,

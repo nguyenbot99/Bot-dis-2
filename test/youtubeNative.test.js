@@ -1,6 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createNativeYouTubePlugin, searchYouTubeVideos } from '../src/youtubeNative.js';
+import {
+ createNativeYouTubePlugin,
+ findHlsSegmentStartIndex,
+ parseYouTubeHlsMasterAudioUrl,
+ parseYouTubeHlsMediaPlaylist,
+ searchYouTubeVideos,
+} from '../src/youtubeNative.js';
 
 test('createNativeYouTubePlugin validates only YouTube URLs/yt: queries and leaves plain keywords to SoundCloud', async () => {
  const plugin = createNativeYouTubePlugin();
@@ -82,3 +88,81 @@ test('searchYouTubeVideos parses FieldMask JSON results cleanly and skips livest
  assert.equal(items[0].artist, 'Sơn Tùng M-TP');
  assert.equal(items[0].durationMs, 326_000);
 });
+
+test('VISIONOS HLS parser selects itag/234 high-bitrate audio, seeks to exact #EXTINF segment, and streams via getStream', async () => {
+ const masterM3u8 = [
+  '#EXTM3U',
+  '#EXT-X-MEDIA:URI="https://manifest.googlevideo.com/api/manifest/hls_playlist/itag/233/playlist/index.m3u8",TYPE=AUDIO,GROUP-ID="233",DEFAULT=YES',
+  '#EXT-X-MEDIA:URI="https://manifest.googlevideo.com/api/manifest/hls_playlist/itag/234/playlist/index.m3u8",TYPE=AUDIO,GROUP-ID="234",DEFAULT=YES',
+ ].join('\n');
+ assert.equal(
+  parseYouTubeHlsMasterAudioUrl(masterM3u8),
+  'https://manifest.googlevideo.com/api/manifest/hls_playlist/itag/234/playlist/index.m3u8',
+ );
+
+ const mediaM3u8 = [
+  '#EXTM3U',
+  '#EXT-X-VERSION:3',
+  '#EXTINF:5.0,',
+  'https://rr1---sn-test.googlevideo.com/seg0.ts',
+  '#EXTINF:5.0,',
+  'https://rr1---sn-test.googlevideo.com/seg1.ts',
+  '#EXTINF:5.0,',
+  'https://rr1---sn-test.googlevideo.com/seg2.ts',
+ ].join('\n');
+ const parsed = parseYouTubeHlsMediaPlaylist(mediaM3u8);
+ assert.equal(parsed.segments.length, 3);
+ assert.equal(parsed.totalDurationMs, 15_000);
+ assert.equal(findHlsSegmentStartIndex(parsed.segments, 0), 0);
+ assert.equal(findHlsSegmentStartIndex(parsed.segments, 4999), 0);
+ assert.equal(findHlsSegmentStartIndex(parsed.segments, 5000), 1);
+ assert.equal(findHlsSegmentStartIndex(parsed.segments, 11_200), 2);
+
+ const mockFetch = async url => {
+  const u = String(url);
+  if (u.includes('/youtubei/v1/player')) {
+   return {
+    ok: true,
+    status: 200,
+    json: async () => ({
+     playabilityStatus: { status: 'OK' },
+     videoDetails: { videoId: '7h9ST6bd-5w', lengthSeconds: '15', isLiveContent: false },
+     streamingData: { hlsManifestUrl: 'https://manifest.googlevideo.com/master.m3u8' },
+    }),
+   };
+  }
+  if (u.endsWith('/master.m3u8')) {
+   return { ok: true, status: 200, arrayBuffer: async () => Buffer.from(masterM3u8, 'utf8') };
+  }
+  if (u.endsWith('/index.m3u8')) {
+   return { ok: true, status: 200, arrayBuffer: async () => Buffer.from(mediaM3u8, 'utf8') };
+  }
+  const segLabel = u.split('/').pop();
+  return { ok: true, status: 200, arrayBuffer: async () => Buffer.from(`[${segLabel}]`, 'utf8') };
+ };
+
+ const synced = [];
+ const plugin = createNativeYouTubePlugin({
+  fetchImpl: mockFetch,
+  onTrackMetaSynced: t => synced.push(t.duration),
+ });
+ const track = {
+  id: '7h9ST6bd-5w',
+  title: 'Hãy Cho Tôi',
+  url: 'https://www.youtube.com/watch?v=7h9ST6bd-5w',
+  duration: 0,
+  source: 'youtube',
+ };
+ const streamInfo = await plugin.getStream(track);
+ const chunks = [];
+ for await (const c of streamInfo.stream) chunks.push(c.toString('utf8'));
+ assert.equal(chunks.join(''), '[seg0.ts][seg1.ts][seg2.ts]');
+ assert.deepEqual(synced, [15_000]);
+
+ // Kiểm tra recreate(positionMs) nhảy thẳng tới phân đoạn #1 (5.0s)
+ const seekedStream = await streamInfo.recreate(5200);
+ const seekChunks = [];
+ for await (const c of seekedStream) seekChunks.push(c.toString('utf8'));
+ assert.equal(seekChunks.join(''), '[seg1.ts][seg2.ts]');
+});
+

@@ -97,7 +97,7 @@ test('pickBestMatchingTrack prefers exact 4:21 audio over 6-minute MV or slowed 
  assert.equal(wantCover.id, 'cover');
 });
 
-test('resolveMusicRequest resolves YouTube links via lightweight oEmbed without JSDOM', async () => {
+test('resolveMusicRequest preserves exact YouTube URLs & youtubeMeta for native YouTube playback without SoundCloud remapping', async () => {
  assert.equal(extractYouTubeVideoId('https://www.youtube.com/shorts/FN7ALfpGxiI?feature=share'), 'FN7ALfpGxiI');
  assert.throws(() => validateQuery('https://www.youtube.com/live/FN7ALfpGxiI'), /livestream/);
 
@@ -119,13 +119,18 @@ test('resolveMusicRequest resolves YouTube links via lightweight oEmbed without 
   };
  };
  const resolved = await resolveMusicRequest('https://youtu.be/dQw4w9WgXcQ?si=123', fakeOembedFetch);
- assert.equal(resolved.query, 'Never Gonna Give You Up Rick Astley');
- assert.equal(resolved.spotifyMeta?.title, 'Never Gonna Give You Up');
- assert.equal(resolved.spotifyMeta?.artist, 'Rick Astley');
- assert.equal(resolved.spotifyMeta?.thumbnail, 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg');
+ assert.equal(resolved.query, 'https://www.youtube.com/watch?v=dQw4w9WgXcQ');
+ assert.equal(resolved.youtubeMeta?.videoId, 'dQw4w9WgXcQ');
+ assert.equal(resolved.youtubeMeta?.url, 'https://www.youtube.com/watch?v=dQw4w9WgXcQ');
+ assert.equal(resolved.youtubeMeta?.source, 'youtube');
+ assert.equal(resolved.youtubeMeta?.title, 'Rick Astley - Never Gonna Give You Up (Official Video) (4K Remaster)');
+ assert.equal(resolved.youtubeMeta?.cleanTitle, 'Never Gonna Give You Up');
+ assert.equal(resolved.youtubeMeta?.artist, 'Rick Astley');
+ assert.equal(resolved.youtubeMeta?.thumbnail, 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg');
+ assert.equal(resolved.spotifyMeta, null);
 });
 
-test('resolveMusicRequest resolves YouTube Playlists (PL...), YouTube Mixes (RD...), starting video rotation & private WL fallback', async () => {
+test('resolveMusicRequest resolves native YouTube Playlists (PL...), YouTube Mixes (RD...), starting video rotation & private WL fallback', async () => {
  assert.equal(
   validateQuery('https://m.youtube.com/playlist?list=PLHNNYen-Kcf6XW_30sNPqDtW04cHd8bM2&si=abc'),
   'https://www.youtube.com/playlist?list=PLHNNYen-Kcf6XW_30sNPqDtW04cHd8bM2',
@@ -193,15 +198,19 @@ test('resolveMusicRequest resolves YouTube Playlists (PL...), YouTube Mixes (RD.
   'https://www.youtube.com/watch?v=Llw9Q6akRo4&list=PLHNNYen-Kcf6XW_30sNPqDtW04cHd8bM2',
   mockPlaylistFetch,
  );
- assert.equal(resolvedPl.spotifyCollection?.kind, 'youtube_playlist');
- assert.equal(resolvedPl.spotifyCollection?.name, 'List nhạc Sơn Tùng M-TP');
- assert.equal(resolvedPl.spotifyCollection?.items.length, 2, 'Deleted videos should be skipped cleanly');
- // Bài đang chọn trong URL (Lạc Trôi) phải được xoay lên vị trí đầu tiên (#0) để phát ngay!
- assert.equal(resolvedPl.spotifyCollection?.items[0].videoId, 'Llw9Q6akRo4');
- assert.equal(resolvedPl.spotifyCollection?.items[0].title, 'LẠC TRÔI');
- assert.equal(resolvedPl.spotifyCollection?.items[0].artist, 'Sơn Tùng M-TP');
- assert.equal(resolvedPl.spotifyCollection?.items[0].durationMs, 273_000);
- assert.equal(resolvedPl.spotifyCollection?.items[1].videoId, 'FN7ALfpGxiI');
+ assert.equal(resolvedPl.youtubeCollection?.kind, 'youtube_playlist');
+ assert.equal(resolvedPl.youtubeCollection?.name, 'List nhạc Sơn Tùng M-TP');
+ assert.equal(resolvedPl.youtubeCollection?.items.length, 2, 'Deleted videos should be skipped cleanly');
+ assert.equal(resolvedPl.spotifyCollection, null, 'YouTube playlists must NOT be routed via Spotify->SoundCloud search');
+ // Bài đang chọn trong URL (Lạc Trôi) phải được xoay lên vị trí đầu tiên (#0) và giữ nguyên URL YouTube gốc!
+ assert.equal(resolvedPl.youtubeCollection?.items[0].videoId, 'Llw9Q6akRo4');
+ assert.equal(resolvedPl.youtubeCollection?.items[0].url, 'https://www.youtube.com/watch?v=Llw9Q6akRo4');
+ assert.equal(resolvedPl.youtubeCollection?.items[0].source, 'youtube');
+ assert.equal(resolvedPl.youtubeCollection?.items[0].cleanTitle, 'LẠC TRÔI');
+ assert.equal(resolvedPl.youtubeCollection?.items[0].artist, 'Sơn Tùng M-TP');
+ assert.equal(resolvedPl.youtubeCollection?.items[0].durationMs, 273_000);
+ assert.equal(resolvedPl.youtubeCollection?.items[1].videoId, 'FN7ALfpGxiI');
+ assert.equal(resolvedPl.youtubeCollection?.items[1].url, 'https://www.youtube.com/watch?v=FN7ALfpGxiI');
 
  // Nếu oEmbed bị tắt (401) trên bài lẻ -> tự động nhảy sang dự phòng JSON /next siêu nhẹ (715 byte)
  const mockEmbedDisabledFetch = async url => {
@@ -225,8 +234,10 @@ test('resolveMusicRequest resolves YouTube Playlists (PL...), YouTube Mixes (RD.
   };
  };
  const fallbackSingle = await resolveMusicRequest('https://www.youtube.com/watch?v=abPmZCZZrFA', mockEmbedDisabledFetch);
- assert.equal(fallbackSingle.spotifyMeta?.title, 'CHÚNG TA CỦA TƯƠNG LAI');
- assert.equal(fallbackSingle.spotifyMeta?.artist, 'Sơn Tùng M-TP');
+ assert.equal(fallbackSingle.query, 'https://www.youtube.com/watch?v=abPmZCZZrFA');
+ assert.equal(fallbackSingle.youtubeMeta?.videoId, 'abPmZCZZrFA');
+ assert.equal(fallbackSingle.youtubeMeta?.cleanTitle, 'CHÚNG TA CỦA TƯƠNG LAI');
+ assert.equal(fallbackSingle.youtubeMeta?.artist, 'Sơn Tùng M-TP');
  assert.ok(resolveYouTubeCollection);
 });
 
@@ -275,9 +286,9 @@ test('new music command options are bounded', () => {
  assert.equal(option('volume').min_value, 0);
  assert.equal(option('volume').max_value, 200);
  assert.equal(option('remove').min_value, 1);
- assert.equal(option('remove').max_value, 20);
+ assert.equal(option('remove').max_value, 50);
  assert.equal(option('move').min_value, 1);
- assert.equal(option('move').max_value, 20);
+ assert.equal(option('move').max_value, 50);
  assert.equal(option('play').max_length, 400);
  assert.equal(option('tts').max_length, 500);
 });

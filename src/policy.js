@@ -77,6 +77,7 @@ export function extractYouTubePlaylistId(rawUrl) {
 }
 
 export const MAX_COLLECTION_TRACKS = 20;
+export const MAX_YOUTUBE_PLAYLIST_TRACKS = 50;
 
 // Chuẩn hóa đường dẫn YouTube (bài lẻ & Playlist / Mix) / SoundCloud / Spotify về định dạng chuẩn ổn định nhất.
 function normalizeMusicUrl(rawUrl) {
@@ -309,17 +310,20 @@ export async function resolveYouTubeCollection({ playlistId, videoId = null, fet
   if (durationMs > 10_800_000) continue; // Bỏ qua video dài trên 3 tiếng
 
   const cleaned = cleanYouTubeMetadata(rawTitle, rawAuthor);
-  const query = [cleaned.title, cleaned.artist].filter(Boolean).join(' ').trim().slice(0, 260);
-  if (!query) continue;
+  const watchUrl = `https://www.youtube.com/watch?v=${vid}`;
+  const artistName = cleaned.artist || rawAuthor.replace(/\s*-\s*Topic$/i, '').trim() || 'YouTube';
 
   parsedItems.push({
    videoId: vid,
+   url: watchUrl,
    selected: Boolean(r.selected),
-   title: cleaned.title,
-   artist: cleaned.artist,
+   title: rawTitle.trim(),
+   cleanTitle: cleaned.title || rawTitle.trim(),
+   artist: artistName,
    durationMs,
    thumbnail: `https://i.ytimg.com/vi/${vid}/hqdefault.jpg`,
-   query,
+   source: 'youtube',
+   query: watchUrl,
   });
  }
 
@@ -335,7 +339,7 @@ export async function resolveYouTubeCollection({ playlistId, videoId = null, fet
   }
  }
 
- const items = parsedItems.slice(0, MAX_COLLECTION_TRACKS);
+ const items = parsedItems.slice(0, MAX_YOUTUBE_PLAYLIST_TRACKS);
  const rawName = String(playlistObj?.title ?? 'YouTube Playlist').replace(/\s+/g, ' ').trim();
 
  return {
@@ -347,8 +351,43 @@ export async function resolveYouTubeCollection({ playlistId, videoId = null, fet
  };
 }
 
-async function resolveSingleYouTubeMeta(videoId, fetchImpl = fetch) {
+export async function resolveSingleYouTubeMeta(videoId, fetchImpl = fetch) {
  const watchUrl = `https://www.youtube.com/watch?v=${videoId}`;
+
+ // Trên môi trường chạy thật, lấy nhanh cả tên bài + ca sĩ + thời lượng chính xác + cờ livestream chỉ với ~250 byte FieldMask JSON.
+ if (fetchImpl === fetch) {
+  try {
+   const res = await fetchImpl('https://music.youtube.com/youtubei/v1/player?prettyPrint=false', {
+    method: 'POST',
+    signal: AbortSignal.timeout(6000),
+    headers: {
+     'Content-Type': 'application/json',
+     'Origin': 'https://music.youtube.com',
+     'User-Agent': 'Mozilla/5.0',
+     'X-Goog-FieldMask': 'videoDetails.videoId,videoDetails.title,videoDetails.author,videoDetails.lengthSeconds,videoDetails.isLiveContent',
+    },
+    body: JSON.stringify({
+     context: { client: { clientName: 'WEB_REMIX', clientVersion: '1.20250219.01.00', hl: 'vi', gl: 'VN' } },
+     videoId,
+    }),
+   });
+   if (res?.ok) {
+    const pData = await res.json();
+    const vd = pData?.videoDetails;
+    if (vd?.title && !UNPLAYABLE_YT_TITLE_RE.test(vd.title)) {
+     const lenSec = Number(vd.lengthSeconds) || 0;
+     return {
+      rawTitle: String(vd.title).trim(),
+      rawAuthor: String(vd.author ?? '').trim(),
+      durationMs: lenSec > 0 ? lenSec * 1000 : 0,
+      isLive: Boolean(vd.isLiveContent),
+      thumbnail: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+     };
+    }
+   }
+  } catch {}
+ }
+
  try {
   const res = await fetchImpl(`https://www.youtube.com/oembed?url=${encodeURIComponent(watchUrl)}&format=json`, {
    signal: AbortSignal.timeout(6000),
@@ -360,6 +399,8 @@ async function resolveSingleYouTubeMeta(videoId, fetchImpl = fetch) {
     return {
      rawTitle: oembed.title,
      rawAuthor: oembed.author_name ?? '',
+     durationMs: 0,
+     isLive: false,
      thumbnail: oembed.thumbnail_url || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
     };
    }
@@ -398,6 +439,8 @@ async function resolveSingleYouTubeMeta(videoId, fetchImpl = fetch) {
     return {
      rawTitle,
      rawAuthor,
+     durationMs: 0,
+     isLive: false,
      thumbnail: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
     };
    }
@@ -497,14 +540,16 @@ export async function resolveMusicRequest(input, fetchImpl = fetch, spotifyResol
   const playlistId = extractYouTubePlaylistId(normalized);
   const videoId = extractYouTubeVideoId(normalized);
 
-  // Nhánh 1: Danh sách phát YouTube (Playlist PL..., Album OLAK5uy_..., Danh sách kết hợp Mix RD...)
+  // Nhánh 1: Danh sách phát YouTube (Playlist PL..., Album OLAK5uy_..., Danh sách kết hợp Mix RD...) -> phát đúng danh sách gốc từ YouTube!
   if (playlistId) {
    const ytCollection = await resolveYouTubeCollection({ playlistId, videoId, fetchImpl });
    if (ytCollection?.items?.length) {
     return {
-     query: ytCollection.items[0].query,
-     spotifyMeta: ytCollection.items[0],
-     spotifyCollection: ytCollection,
+     query: ytCollection.items[0].url,
+     youtubeMeta: ytCollection.items[0],
+     youtubeCollection: ytCollection,
+     spotifyMeta: null,
+     spotifyCollection: null,
     };
    }
    // Nếu list đi kèm videoId bị khóa riêng tư -> tự động lùi mượt về phát bài lẻ videoId thay vì báo lỗi!
@@ -513,23 +558,33 @@ export async function resolveMusicRequest(input, fetchImpl = fetch, spotifyResol
    }
   }
 
-  // Nhánh 2: Video bài hát đơn lẻ trên YouTube / YouTube Music / Shorts
+  // Nhánh 2: Video bài hát đơn lẻ trên YouTube / YouTube Music / Shorts -> giữ nguyên URL YouTube gốc để phát trực tiếp qua luồng SABR!
   if (!videoId) throw new Error('Link YouTube không hợp lệ.');
   const ytMeta = await resolveSingleYouTubeMeta(videoId, fetchImpl);
   if (!ytMeta) {
    throw new Error('Không thể đọc thông tin bài hát từ link YouTube này (video bị ẩn hoặc không tồn tại).');
   }
+  if (ytMeta.isLive || Number(ytMeta.durationMs) > 10_800_000) {
+   throw new Error('Chỉ nhận bài tối đa 180 phút, không nhận phát trực tiếp (livestream).');
+  }
   const cleaned = cleanYouTubeMetadata(ytMeta.rawTitle, ytMeta.rawAuthor);
-  const combined = [cleaned.title, cleaned.artist].filter(Boolean).join(' ').trim();
-  if (!combined) throw new Error('Không thể đọc tên bài hát từ link YouTube này.');
+  const watchUrl = `https://www.youtube.com/watch?v=${videoId}`;
+  const rawTitleClean = String(ytMeta.rawTitle ?? '').replace(/\s+/g, ' ').trim();
+  if (!rawTitleClean) throw new Error('Không thể đọc tên bài hát từ link YouTube này.');
+  const artistName = cleaned.artist || String(ytMeta.rawAuthor ?? '').replace(/\s*-\s*Topic$/i, '').trim() || 'YouTube';
   return {
-   query: combined.slice(0, 300),
-   spotifyMeta: {
-    title: cleaned.title,
-    artist: cleaned.artist,
-    durationMs: 0,
+   query: watchUrl,
+   youtubeMeta: {
+    videoId,
+    url: watchUrl,
+    title: rawTitleClean,
+    cleanTitle: cleaned.title || rawTitleClean,
+    artist: artistName,
+    durationMs: Number(ytMeta.durationMs) || 0,
     thumbnail: ytMeta.thumbnail,
+    source: 'youtube',
    },
+   spotifyMeta: null,
   };
  }
 

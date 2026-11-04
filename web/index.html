@@ -2496,7 +2496,9 @@
         els.listenBtnLabel.textContent = "🔴 Đang nghe trực tiếp";
         els.liveAudioHint.textContent = latestState.track.webAudio
           ? "🔊 Đang phát trực tiếp đồng bộ thời gian thực cùng kênh thoại Discord"
-          : "⏳ Đang đồng bộ luồng âm thanh trực tiếp từ Bot...";
+          : (latestState.track.source === "youtube"
+              ? "▶️ Bài gốc YouTube đang phát trực tiếp chuẩn bản trong phòng thoại Discord"
+              : "⏳ Đang đồng bộ luồng âm thanh trực tiếp từ Bot...");
       }
 
       async function syncWebAudioPlayback({ forceHardSeek = false } = {}) {
@@ -2509,13 +2511,13 @@
           return;
         }
 
+        const key = getTrackKey(track);
         const wa = track.webAudio;
         if (!wa) {
-          scheduleQuickRefetch();
+          if (loadedTrackKey && loadedTrackKey !== key) destroyCurrentAudioStream();
+          if (track.source !== "youtube") scheduleQuickRefetch();
           return;
         }
-
-        const key = getTrackKey(track);
         const targetSec = getExpectedBotPositionMs() / 1000;
 
         // Cập nhật chữ ký mới tại chỗ nếu vẫn cùng bài hát (không làm giật tiếng)

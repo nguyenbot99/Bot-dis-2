@@ -31,7 +31,7 @@ const definitions = [
  ['radio', 'Mở Đài Radio Không Ngủ theo tâm trạng (tự lên danh sách & phát xuyên đêm)'],
  ['vibe', 'Biến đổi Vibe bài hát trực tiếp: Chuẩn Gốc / Nightcore / Slowed + Echo / Lo-Fi'],
  ['ambient', 'Trộn âm thanh thiên nhiên nền (Mưa đêm, Lửa trại, Sóng biển, Gió đêm) vào nhạc'],
- ['play', 'Phát nhạc từ tên bài, link lẻ hoặc nguyên Playlist / Album Spotify & SoundCloud'],
+ ['play', 'Phát nhạc từ tên bài, link lẻ hoặc trọn Playlist / Mix YouTube, SoundCloud & Spotify'],
  ['search', 'Tìm bài hát và tự tay chọn đúng phiên bản ưng ý nhất trong Top 5 kết quả'],
  ['dedicate', 'Gửi tặng bài hát kèm lời nhắn vinh danh lên khung nhạc Discord & Website'],
  ['similar', 'Bơm ngay 5 bài hát cùng Vibe & cùng gu với bài đang phát vào hàng đợi'],
@@ -74,7 +74,7 @@ export const HELP_CATEGORIES = Object.freeze([
   description: 'Xem các lệnh thuộc danh mục Phát nhạc & Tìm kiếm',
   color: 0xc084fc,
   items: [
-   ['`/play` `query` `[next]`', 'Phát nhạc ngay từ tên bài, link lẻ hoặc trọn bộ Playlist / Album Spotify & SoundCloud'],
+   ['`/play` `query` `[next]`', 'Phát nhạc ngay từ tên bài, link lẻ hoặc trọn bộ Playlist / Mix YouTube, SoundCloud & Spotify'],
    ['`/search` `query` `[next]`', 'Tìm Top 5 phiên bản khớp nhất và tự tay chọn đúng bản muốn nghe'],
    ['`/dedicate` `query` `to` `message`', 'Gửi tặng bài hát kèm lời chúc hiện lên Khung Nhạc Discord & Website Karaoke'],
    ['`/similar`', 'Dò sóng từ bài đang nghe và bơm tiếp 5 bài hát cùng gu vào hàng đợi'],
@@ -338,7 +338,7 @@ export function buildHelpEmbed(botUser) {
    },
    {
     name: '⚙️ Giới hạn phiên',
-    value: 'Tối đa **20 bài** chờ\nThời lượng **≤ 180 phút/bài**',
+    value: 'Tối đa **50 bài** chờ\nThời lượng **≤ 180 phút/bài**',
     inline: true,
    },
   )
@@ -377,7 +377,7 @@ export const slashCommands = definitions.map(([name, description]) => {
    .setDescription('Nhảy cóc thẳng tới số thứ tự bài trong /queue (để trống nếu chỉ qua 1 bài)')
    .setRequired(false)
    .setMinValue(1)
-   .setMaxValue(20));
+   .setMaxValue(50));
  }
  if (name === 'seek') {
   c.addStringOption(o => o
@@ -420,16 +420,16 @@ export const slashCommands = definitions.map(([name, description]) => {
  if (name === 'move') {
   c.addIntegerOption(o => o
    .setName('from')
-   .setDescription('Vị trí hiện tại của bài hát trong /queue (1–20)')
+   .setDescription('Vị trí hiện tại của bài hát trong /queue (1–50)')
    .setRequired(true)
    .setMinValue(1)
-   .setMaxValue(20));
+   .setMaxValue(50));
   c.addIntegerOption(o => o
    .setName('to')
-   .setDescription('Vị trí mới muốn chuyển tới trong /queue (1–20)')
+   .setDescription('Vị trí mới muốn chuyển tới trong /queue (1–50)')
    .setRequired(true)
    .setMinValue(1)
-   .setMaxValue(20));
+   .setMaxValue(50));
  }
  if (name === 'volume') {
   c.addIntegerOption(o => o
@@ -442,10 +442,10 @@ export const slashCommands = definitions.map(([name, description]) => {
  if (name === 'remove') {
   c.addIntegerOption(o => o
    .setName('position')
-   .setDescription('Số thứ tự bài chờ xem trong /queue (bắt đầu từ 1)')
+   .setDescription('Số thứ tự bài chờ xem trong /queue (1–50)')
    .setRequired(true)
    .setMinValue(1)
-   .setMaxValue(20));
+   .setMaxValue(50));
  }
  if (name === 'lyrics') {
   c.addStringOption(o => o

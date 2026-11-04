@@ -49,7 +49,7 @@ export function capturePlayerSessionSnapshot(player, now = Date.now()) {
  const cur = player.queue?.currentTrack ?? player.currentTrack ?? null;
  const clonedCur = cloneSerializableTrack(cur);
  const upcoming = (Array.isArray(player.upcomingTracks) ? player.upcomingTracks : [])
-  .slice(0, 20)
+  .slice(0, 50)
   .map(cloneSerializableTrack)
   .filter(Boolean);
 

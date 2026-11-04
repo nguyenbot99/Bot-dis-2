@@ -43,6 +43,7 @@ import { createVoiceRoomStatusSync } from './src/voiceStatus.js';
 import { createGuildTtsController, synthesizeGoogleTtsBuffer, TTS_VOICES } from './src/tts.js';
 import { resolveTrackWebAudio, WEB_AUDIO_REFRESH_MS } from './src/webAudio.js';
 import { createWebRemoteManager } from './src/webRemote.js';
+import { createNativeYouTubePlugin } from './src/youtubeNative.js';
 import { buildSaveQueuePayload, extractPlayableFromMessage, extractSaveQueueUrls } from './src/saveQueue.js';
 import {
  ANNOUNCE_FONT_MODES,
@@ -96,10 +97,11 @@ if (major < 22 || (major === 22 && minor < 12)) throw new Error('Cần Node >=22
 const { token: DISCORD_TOKEN, guildId: GUILD_ID, autoRegister } = resolveConfig(process.env);
 installAudioEnhancer(ffmpeg);
 
-// Chỉ nạp trực tiếp SoundCloudPlugin siêu nhẹ (~80–140MB RAM, không nạp YouTubePlugin/jsdom vốn ngốn >300MB & bị chặn LOGIN_REQUIRED trên VPS).
-// Mọi link YouTube & Spotify đều được giải mã metadata qua HTTP/oEmbed gọn nhẹ ở src/policy.js rồi phát luồng âm thanh chuẩn từ SoundCloud.
+// Kết hợp SoundCloudPlugin siêu nhẹ (cho tìm kiếm tên bài, SoundCloud & Spotify) cùng NativeYouTubePlugin SABR khởi tạo lười
+// (chỉ nạp khi phát link/list YouTube, ghi đệm cipher ra đĩa giúp giữ tổng RAM ~125–185MB an toàn tuyệt đối cho gói 512MB RAM).
 const pluginRoot = new URL('./node_modules/@ziplayer/plugin/dist/', import.meta.url);
 const { SoundCloudPlugin } = await import(new URL('SoundCloudPlugin.js', pluginRoot));
+const MAX_QUEUE_TRACKS = 50;
 
 // Khởi tạo Discord client với bộ nhớ đệm tối thiểu để giảm mức tiêu thụ RAM.
 // Bật GuildMessages & DirectMessages (đều là intent thường, KHÔNG cần quyền đặc biệt trên Portal & MessageManager vẫn bằng 0 MB)
@@ -171,12 +173,16 @@ if (soundCloudPlugin.client?.http?.interceptors?.request) {
 const rawSoundCloudSearch = soundCloudPlugin.search.bind(soundCloudPlugin);
 
 soundCloudPlugin.search = async function patchedSoundCloudSearch(query, requestedBy) {
- await this.client.ensureReady();
  const trimmed = String(query ?? '').trim();
+ if (/^(?:yt|youtube):\s*/i.test(trimmed)) return { tracks: [] };
+ if (/^https?:\/\//i.test(trimmed) && !/^https?:\/\/(?:www\.|m\.)?soundcloud\.com\//i.test(trimmed)) {
+  return { tracks: [] };
+ }
+ await this.client.ensureReady();
  if (/^https?:\/\//i.test(trimmed)) {
   if (/^https:\/\/soundcloud\.com\/[^/]+\/sets\/[^/?#]+/i.test(trimmed)) {
    const playlist = await this.client.getPlaylistDetails(trimmed);
-   let rawItems = Array.isArray(playlist?.tracks) ? playlist.tracks.slice(0, 30) : [];
+   let rawItems = Array.isArray(playlist?.tracks) ? playlist.tracks.slice(0, 60) : [];
    const stubIds = rawItems.filter(t => t?.id && (!t.title || !t.permalink_url)).map(t => t.id);
    if (stubIds.length > 0 && typeof this.client.fetchTracksByIds === 'function') {
     const hydrated = await this.client.fetchTracksByIds(stubIds).catch(() => []);
@@ -185,7 +191,7 @@ soundCloudPlugin.search = async function patchedSoundCloudSearch(query, requeste
    }
    const playable = rawItems.filter(t => t?.title && t?.permalink_url && isPlayableSoundCloudRaw(t));
    const tracks = (playable.length ? playable : rawItems.filter(t => t?.title && t?.permalink_url))
-    .slice(0, 20)
+    .slice(0, MAX_QUEUE_TRACKS)
     .map(item => mapSoundCloudRawTrack(item, requestedBy));
    return {
     tracks,
@@ -215,6 +221,7 @@ soundCloudPlugin.search = async function patchedSoundCloudSearch(query, requeste
 };
 
 soundCloudPlugin.getRelatedTracks = async function patchedRelatedTracks(track, opts = {}) {
+ if (String(track?.source ?? '').toLowerCase() === 'youtube') return [];
  await this.client.ensureReady();
  try {
   const wantLimit = opts?.limit || 1;
@@ -285,14 +292,24 @@ function installSmartFallback(plugin, notifySynced) {
  };
 }
 
+// Plugin phát âm thanh gốc trực tiếp từ YouTube (SABR + WebPO bộ đệm đĩa, không đẩy sang SoundCloud làm lệch list).
+const nativeYouTubePlugin = createNativeYouTubePlugin({
+ ffmpegPath: ffmpeg,
+ onTrackMetaSynced: syncedTrack => {
+  for (const p of manager.getAll()) {
+   if (p?.queue?.currentTrack === syncedTrack) schedulePanelUpdate(p, { track: syncedTrack });
+  }
+ },
+});
+
 // Khởi tạo trình quản lý phát nhạc ZiPlayer ở cấu hình nhẹ, tắt bộ đệm tìm kiếm và thống kê.
 const manager = new PlayerManager({
- plugins: [soundCloudPlugin],
+ plugins: [nativeYouTubePlugin, soundCloudPlugin],
  enableSearchCache: false,
  enableStatsCollection: false,
  autoCleanup: true,
  cleanupInterval: 60000,
- extractorTimeout: 15000,
+ extractorTimeout: 25000,
 });
 
 installSmartFallback(soundCloudPlugin, syncedTrack => {
@@ -815,7 +832,7 @@ function captureKickSnapshot(player) {
  if (!player || player.destroyed) return null;
  const cur = player.queue?.currentTrack ?? player.currentTrack ?? null;
  const upcoming = (Array.isArray(player.upcomingTracks) ? player.upcomingTracks : [])
-  .slice(0, 20)
+  .slice(0, MAX_QUEUE_TRACKS)
   .map(cloneSavedTrack)
   .filter(Boolean);
  const clonedCur = cloneSavedTrack(cur);
@@ -1197,7 +1214,7 @@ async function ensureVoiceSession({ guild, voiceChannel, textChannel, userId, in
    smartTransition: { enabled: false },
    loudnessNormalization: { enabled: false },
    maxStreamStore: 1,
-   extractorTimeout: 15000,
+   extractorTimeout: 25000,
    antiStuck: {
     enabled: true,
     maxRetries: 2,
@@ -1232,7 +1249,24 @@ async function ensureVoiceSession({ guild, voiceChannel, textChannel, userId, in
  }
 }
 
-// Nạp một danh sách bài hát đã tìm thấy (từ Playlist/Album hoặc Đài Radio) vào phiên phát hiện tại, tối đa 20 bài chờ.
+// Chuyển đổi thông tin bài YouTube đã giải mã thành đối tượng Track chuẩn để phát trực tiếp qua luồng gốc SABR (không đẩy sang SoundCloud).
+function buildTrackFromYouTubeMeta(ytItem, userId) {
+ return {
+  id: String(ytItem.videoId),
+  title: ytItem.title,
+  url: ytItem.url || `https://www.youtube.com/watch?v=${ytItem.videoId}`,
+  duration: Number(ytItem.durationMs) || 0,
+  thumbnail: ytItem.thumbnail || `https://i.ytimg.com/vi/${ytItem.videoId}/hqdefault.jpg`,
+  requestedBy: userId,
+  source: 'youtube',
+  metadata: {
+   author: ytItem.artist || 'YouTube',
+   cleanTitle: ytItem.cleanTitle || ytItem.title,
+  },
+ };
+}
+
+// Nạp một danh sách bài hát đã tìm thấy (từ Playlist/Mix YouTube, Spotify, SoundCloud hoặc Đài Radio) vào phiên phát hiện tại, tối đa 50 bài chờ.
 async function enqueueTrackBatch(p, tracks, userId, playNext = false) {
  const validTracks = (Array.isArray(tracks) ? tracks : [])
   .filter(t => t && !t.isLive && !(Number(t.duration) > 10800000));
@@ -1250,7 +1284,7 @@ async function enqueueTrackBatch(p, tracks, userId, playNext = false) {
   if (!(await p.play(first, userId))) {
    throw new Error('Không thể phát danh sách bài hát này.');
   }
-  const canQueue = rest.slice(0, Math.max(0, 20 - p.queue.size));
+  const canQueue = rest.slice(0, Math.max(0, MAX_QUEUE_TRACKS - p.queue.size));
   if (canQueue.length > 0) {
    if (typeof p.queue?.addMultiple === 'function') p.queue.addMultiple(canQueue);
    else for (const t of canQueue) p.queue?.insert?.(t, p.queue.size);
@@ -1259,8 +1293,8 @@ async function enqueueTrackBatch(p, tracks, userId, playNext = false) {
   return { firstTrack: first, addedCount: 1 + canQueue.length, queued: false };
  }
 
- const roomLeft = Math.max(0, 20 - p.queue.size);
- if (roomLeft === 0) throw new Error('Hàng đợi đã đủ 20 bài.');
+ const roomLeft = Math.max(0, MAX_QUEUE_TRACKS - p.queue.size);
+ if (roomLeft === 0) throw new Error(`Hàng đợi đã đủ ${MAX_QUEUE_TRACKS} bài.`);
  const slice = validTracks.slice(0, roomLeft);
  if (playNext) {
   for (let idx = slice.length - 1; idx >= 0; idx--) {
@@ -1279,19 +1313,42 @@ async function enqueueTrackBatch(p, tracks, userId, playNext = false) {
 async function enqueueAndPlay({ guild, voiceChannel, textChannel, rawQuery, userId, playNext = false, dedication = null }) {
  const now = Date.now();
  if (now - (cooldown.get(userId) ?? 0) < 3000) throw new Error('Chờ 3 giây giữa hai lần thêm nhạc.');
- const { query: q, spotifyMeta, spotifyCollection, isSoundCloudSet } = await resolveMusicRequest(rawQuery);
+ const {
+  query: q,
+  youtubeMeta,
+  youtubeCollection,
+  spotifyMeta,
+  spotifyCollection,
+  isSoundCloudSet,
+ } = await resolveMusicRequest(rawQuery);
  if (cooldown.size >= 100) cooldown.clear();
  cooldown.set(userId, Date.now());
 
  const { player: p, created } = await ensureVoiceSession({ guild, voiceChannel, textChannel, userId });
  guildKickSnapshots.delete(guild.id);
  try {
-  if (p.queue.size >= 20) throw new Error('Hàng đợi đã đủ 20 bài.');
+  if (p.queue.size >= MAX_QUEUE_TRACKS) throw new Error(`Hàng đợi đã đủ ${MAX_QUEUE_TRACKS} bài.`);
+
+  // Trường hợp 0: Danh sách phát gốc từ YouTube (Playlist PL..., Album OLAK5uy_..., Mix RD...) -> nạp đúng nguyên danh sách YouTube tức thì, KHÔNG đẩy sang SoundCloud!
+  if (youtubeCollection?.items?.length) {
+   const ytTracks = youtubeCollection.items.map(it => buildTrackFromYouTubeMeta(it, userId));
+   if (dedication && typeof dedication === 'object' && ytTracks[0]) {
+    ytTracks[0].metadata = { ...(ytTracks[0].metadata ?? {}), dedication };
+   }
+   const batch = await enqueueTrackBatch(p, ytTracks, userId, playNext);
+   return {
+    track: batch.firstTrack,
+    queued: batch.queued,
+    insertedNext: Boolean(playNext && batch.queued),
+    collectionName: youtubeCollection.name,
+    addedCount: batch.addedCount,
+   };
+  }
 
   // Trường hợp 1: Playlist hoặc Album Spotify -> tìm các bài tương ứng trên SoundCloud với độ song song tối đa 3 luồng nhẹ RAM.
   if (spotifyCollection?.items?.length) {
    const hadCurrent = Boolean(p.queue.currentTrack);
-   const maxWanted = Math.min(spotifyCollection.items.length, (hadCurrent ? 0 : 1) + Math.max(0, 20 - p.queue.size));
+   const maxWanted = Math.min(spotifyCollection.items.length, (hadCurrent ? 0 : 1) + Math.max(0, MAX_QUEUE_TRACKS - p.queue.size));
    const targets = spotifyCollection.items.slice(0, Math.max(1, maxWanted));
    const resolvedTracks = new Array(targets.length).fill(null);
    let cursor = 0;
@@ -1319,6 +1376,28 @@ async function enqueueAndPlay({ guild, voiceChannel, textChannel, rawQuery, user
    };
   }
 
+  // Trường hợp 1B: Link video / bài hát đơn lẻ trên YouTube -> phát thẳng luồng âm thanh YouTube gốc!
+  if (youtubeMeta?.videoId) {
+   const track = buildTrackFromYouTubeMeta(youtubeMeta, userId);
+   if (dedication && typeof dedication === 'object') {
+    track.metadata = { ...(track.metadata ?? {}), dedication };
+   }
+   const hadCurrent = Boolean(p.queue.currentTrack);
+   if (!hadCurrent && p.userdata) {
+    p.userdata.ownerId = userId;
+    p.userdata.idleOpen = false;
+    p.userdata.ttsOnlyIdle = false;
+   }
+   if (hadCurrent && playNext) {
+    p.queue.insert(track, 0);
+    schedulePanelUpdate(p);
+    return { track, queued: true, insertedNext: true, collectionName: null, addedCount: 1 };
+   }
+   if (!(await p.play(track, userId))) throw new Error('Không thể phát bài hát YouTube này.');
+   if (hadCurrent) schedulePanelUpdate(p);
+   return { track, queued: hadCurrent, insertedNext: false, collectionName: null, addedCount: 1 };
+  }
+
   let result = await p.search(q, userId).catch(() => null);
 
   // Trường hợp 2: SoundCloud Playlist / Set (/sets/...).
@@ -1333,8 +1412,9 @@ async function enqueueAndPlay({ guild, voiceChannel, textChannel, rawQuery, user
    };
   }
 
-  // Trường hợp 3: Bài hát đơn lẻ (từ khóa, YouTube lẻ, SoundCloud lẻ, Spotify track lẻ).
+  // Trường hợp 3: Bài hát đơn lẻ (từ khóa thường, tìm kiếm yt:, SoundCloud lẻ, Spotify track lẻ).
   const isDirectScUrl = q.startsWith('https://soundcloud.com/');
+  const isYtPrefix = /^(?:yt|youtube):\s*/i.test(q);
   // Dự phòng cho link SoundCloud nếu API /resolve bị kén định dạng slug của bài hát.
   if (!result?.tracks?.length && isDirectScUrl) {
    const parts = new URL(q).pathname.split('/').filter(Boolean);
@@ -1345,7 +1425,7 @@ async function enqueueAndPlay({ guild, voiceChannel, textChannel, rawQuery, user
     if (matched) result = { tracks: [matched] };
    }
   }
-  const track = isDirectScUrl
+  const track = (isDirectScUrl || isYtPrefix)
    ? result?.tracks?.[0]
    : pickBestMatchingTrack(result?.tracks ?? [], spotifyMeta ?? { title: q });
   if (!track) throw new Error('Không tìm thấy bài hát phù hợp (link bị ẩn, giới hạn vùng/Go+ hoặc không tồn tại).');
@@ -1416,7 +1496,7 @@ async function startRadioStation({ guild, voiceChannel, textChannel, stationId, 
   if (p.queue?.currentTrack) {
    const [first, ...rest] = radioTracks;
    p.queue.insert(first, 0);
-   const canAdd = rest.slice(0, Math.max(0, 20 - p.queue.size));
+   const canAdd = rest.slice(0, Math.max(0, MAX_QUEUE_TRACKS - p.queue.size));
    if (canAdd.length > 0) {
     if (typeof p.queue?.addMultiple === 'function') p.queue.addMultiple(canAdd);
     else for (const t of canAdd) p.queue?.insert?.(t, p.queue.size);
@@ -1440,7 +1520,7 @@ async function enqueuePickedTrack({ guild, voiceChannel, textChannel, track, use
  const { player: p, created } = await ensureVoiceSession({ guild, voiceChannel, textChannel, userId });
  guildKickSnapshots.delete(guild.id);
  try {
-  if (p.queue.size >= 20) throw new Error('Hàng đợi đã đủ 20 bài.');
+  if (p.queue.size >= MAX_QUEUE_TRACKS) throw new Error(`Hàng đợi đã đủ ${MAX_QUEUE_TRACKS} bài.`);
   track.requestedBy = userId;
   const hadCurrent = Boolean(p.queue.currentTrack);
   if (!hadCurrent && p.userdata) {
@@ -1466,15 +1546,17 @@ async function enqueuePickedTrack({ guild, voiceChannel, textChannel, track, use
 async function enqueueSimilarTracks(p, userId) {
  const cur = p?.queue?.currentTrack;
  if (!cur) throw new Error('Hiện chưa phát bài hát nào để dò nhạc cùng gu.');
- const roomLeft = Math.max(0, 20 - p.queue.size);
- if (roomLeft === 0) throw new Error('Hàng đợi đã đủ 20 bài.');
+ const roomLeft = Math.max(0, MAX_QUEUE_TRACKS - p.queue.size);
+ if (roomLeft === 0) throw new Error(`Hàng đợi đã đủ ${MAX_QUEUE_TRACKS} bài.`);
 
  const historyPool = [
   cur,
   ...(p.upcomingTracks ?? []),
   ...(p.previousTracks ?? []),
  ];
- const related = await soundCloudPlugin.getRelatedTracks(cur, {
+ const isYtCurrent = String(cur.source ?? '').toLowerCase() === 'youtube' || nativeYouTubePlugin.validate(cur.url);
+ const relatedProvider = isYtCurrent ? nativeYouTubePlugin : soundCloudPlugin;
+ const related = await relatedProvider.getRelatedTracks(cur, {
   limit: Math.min(8, roomLeft + 3),
   history: historyPool,
  }).catch(() => []);
@@ -1565,8 +1647,8 @@ async function enqueueFavoriteTracks({ guild, voiceChannel, textChannel, favItem
  guildKickSnapshots.delete(guild.id);
  try {
   const hadCurrent = Boolean(p.queue.currentTrack);
-  if (hadCurrent && p.queue.size >= 20) {
-   throw new Error('Hàng đợi đã đủ 20 bài.');
+  if (hadCurrent && p.queue.size >= MAX_QUEUE_TRACKS) {
+   throw new Error(`Hàng đợi đã đủ ${MAX_QUEUE_TRACKS} bài.`);
   }
   if (!hadCurrent) {
    const [first, ...rest] = list;
@@ -1578,7 +1660,7 @@ async function enqueueFavoriteTracks({ guild, voiceChannel, textChannel, favItem
    if (!(await p.play(first, userId))) {
     throw new Error('Không thể phát danh sách Yêu thích lúc này.');
    }
-   const canQueue = rest.slice(0, Math.max(0, 20 - p.queue.size));
+   const canQueue = rest.slice(0, Math.max(0, MAX_QUEUE_TRACKS - p.queue.size));
    if (canQueue.length > 0) {
     if (typeof p.queue?.addMultiple === 'function') p.queue.addMultiple(canQueue);
     else for (const t of canQueue) p.queue?.insert?.(t, p.queue.size);
@@ -1587,9 +1669,9 @@ async function enqueueFavoriteTracks({ guild, voiceChannel, textChannel, favItem
    return { startedTrack: first, addedCount: 1 + canQueue.length };
   }
 
-  const slots = Math.max(0, 20 - p.queue.size);
+  const slots = Math.max(0, MAX_QUEUE_TRACKS - p.queue.size);
   const toQueue = list.slice(0, slots);
-  if (toQueue.length === 0) throw new Error('Hàng đợi đã đủ 20 bài.');
+  if (toQueue.length === 0) throw new Error(`Hàng đợi đã đủ ${MAX_QUEUE_TRACKS} bài.`);
   if (typeof p.queue?.addMultiple === 'function') p.queue.addMultiple(toQueue);
   else for (const t of toQueue) p.queue?.insert?.(t, p.queue.size);
   schedulePanelUpdate(p);
@@ -1609,8 +1691,8 @@ async function restoreSavedQueueBatch({ guild, voiceChannel, textChannel, urls, 
  guildKickSnapshots.delete(guild.id);
  try {
   const hadCurrent = Boolean(p.queue.currentTrack);
-  const maxWanted = Math.min(urls.length, (hadCurrent ? 0 : 1) + Math.max(0, 20 - p.queue.size));
-  if (maxWanted <= 0) throw new Error('Hàng đợi đã đủ 20 bài.');
+  const maxWanted = Math.min(urls.length, (hadCurrent ? 0 : 1) + Math.max(0, MAX_QUEUE_TRACKS - p.queue.size));
+  if (maxWanted <= 0) throw new Error(`Hàng đợi đã đủ ${MAX_QUEUE_TRACKS} bài.`);
   const targets = urls.slice(0, maxWanted);
   const resolved = new Array(targets.length).fill(null);
   let cursor = 0;
@@ -4105,16 +4187,26 @@ client.on(Events.InteractionCreate, async i => {
     const rawQuery = i.options.getString('query')?.trim();
     let targetTrack = null;
     if (rawQuery) {
-     const { query: q, spotifyMeta } = await resolveMusicRequest(rawQuery);
-     const searchRes = await soundCloudPlugin.search(q, i.user.id).catch(() => null);
-     const isDirectScUrl = q.startsWith('https://soundcloud.com/');
-     targetTrack = isDirectScUrl
-      ? searchRes?.tracks?.[0]
-      : pickBestMatchingTrack(searchRes?.tracks ?? [], spotifyMeta ?? { title: q });
+     const { query: q, youtubeMeta, youtubeCollection, spotifyMeta } = await resolveMusicRequest(rawQuery);
+     const ytPick = youtubeCollection?.items?.[0] ?? youtubeMeta ?? null;
+     if (ytPick?.videoId) {
+      targetTrack = buildTrackFromYouTubeMeta(ytPick, i.user.id);
+     } else if (/^(?:yt|youtube):\s*/i.test(q)) {
+      const ytRes = await nativeYouTubePlugin.search(q, i.user.id).catch(() => null);
+      targetTrack = ytRes?.tracks?.[0] ?? null;
+     } else {
+      const searchRes = await soundCloudPlugin.search(q, i.user.id).catch(() => null);
+      const isDirectScUrl = q.startsWith('https://soundcloud.com/');
+      targetTrack = isDirectScUrl
+       ? searchRes?.tracks?.[0]
+       : pickBestMatchingTrack(searchRes?.tracks ?? [], spotifyMeta ?? { title: q });
+      if (targetTrack && spotifyMeta?.thumbnail && !targetTrack.thumbnail) {
+       targetTrack.thumbnail = spotifyMeta.thumbnail;
+      }
+     }
      if (!targetTrack) {
       throw new Error('Không tìm thấy bài hát phù hợp để lưu vào Tủ nhạc Yêu thích.');
      }
-     if (spotifyMeta?.thumbnail && !targetTrack.thumbnail) targetTrack.thumbnail = spotifyMeta.thumbnail;
     } else {
      targetTrack = p?.queue?.currentTrack ?? null;
      if (!targetTrack) {
@@ -4193,14 +4285,24 @@ client.on(Events.InteractionCreate, async i => {
     const rawQuery = i.options.getString('query')?.trim();
     let targetTrack = null;
     if (rawQuery) {
-     const { query: q, spotifyMeta } = await resolveMusicRequest(rawQuery);
-     const searchRes = await soundCloudPlugin.search(q, i.user.id).catch(() => null);
-     const isDirectScUrl = q.startsWith('https://soundcloud.com/');
-     targetTrack = isDirectScUrl
-      ? searchRes?.tracks?.[0]
-      : pickBestMatchingTrack(searchRes?.tracks ?? [], spotifyMeta ?? { title: q });
+     const { query: q, youtubeMeta, youtubeCollection, spotifyMeta } = await resolveMusicRequest(rawQuery);
+     const ytPick = youtubeCollection?.items?.[0] ?? youtubeMeta ?? null;
+     if (ytPick?.videoId) {
+      targetTrack = buildTrackFromYouTubeMeta(ytPick, i.user.id);
+     } else if (/^(?:yt|youtube):\s*/i.test(q)) {
+      const ytRes = await nativeYouTubePlugin.search(q, i.user.id).catch(() => null);
+      targetTrack = ytRes?.tracks?.[0] ?? null;
+     } else {
+      const searchRes = await soundCloudPlugin.search(q, i.user.id).catch(() => null);
+      const isDirectScUrl = q.startsWith('https://soundcloud.com/');
+      targetTrack = isDirectScUrl
+       ? searchRes?.tracks?.[0]
+       : pickBestMatchingTrack(searchRes?.tracks ?? [], spotifyMeta ?? { title: q });
+      if (targetTrack && spotifyMeta?.thumbnail && !targetTrack.thumbnail) {
+       targetTrack.thumbnail = spotifyMeta.thumbnail;
+      }
+     }
      if (!targetTrack) throw new Error('Không tìm thấy bài hát phù hợp để thêm vào tủ Mixtape.');
-     if (spotifyMeta?.thumbnail && !targetTrack.thumbnail) targetTrack.thumbnail = spotifyMeta.thumbnail;
     } else {
      targetTrack = p?.queue?.currentTrack ?? null;
      if (!targetTrack) {
@@ -4408,9 +4510,20 @@ client.on(Events.InteractionCreate, async i => {
   if (i.commandName === 'search') {
    const rawQuery = i.options.getString('query', true).trim();
    const playNext = Boolean(i.options.getBoolean('next'));
-   const { query: q } = await resolveMusicRequest(rawQuery);
-   const searchRes = await soundCloudPlugin.search(q, i.user.id).catch(() => null);
-   const candidates = (searchRes?.tracks ?? [])
+   const { query: q, youtubeMeta, youtubeCollection } = await resolveMusicRequest(rawQuery);
+   let rawCandidates = [];
+   if (youtubeCollection?.items?.length) {
+    rawCandidates = youtubeCollection.items.slice(0, 5).map(it => buildTrackFromYouTubeMeta(it, i.user.id));
+   } else if (youtubeMeta?.videoId) {
+    rawCandidates = [buildTrackFromYouTubeMeta(youtubeMeta, i.user.id)];
+   } else if (/^(?:yt|youtube):\s*/i.test(q)) {
+    const ytRes = await nativeYouTubePlugin.search(q, i.user.id).catch(() => null);
+    rawCandidates = ytRes?.tracks ?? [];
+   } else {
+    const searchRes = await soundCloudPlugin.search(q, i.user.id).catch(() => null);
+    rawCandidates = searchRes?.tracks ?? [];
+   }
+   const candidates = rawCandidates
     .filter(t => t && !t.isLive && !(Number(t.duration) > 10800000))
     .slice(0, 5);
    if (candidates.length === 0) {

@@ -606,32 +606,57 @@ function clearEmptyTimer(player) {
   clearTimeout(player.userdata.emptyTimer);
   player.userdata.emptyTimer = null;
  }
+ if (player?.userdata?.idleEndTimer) {
+  clearTimeout(player.userdata.idleEndTimer);
+  player.userdata.idleEndTimer = null;
+ }
  if (player?.userdata?.restoreReconnectTimer) {
   clearTimeout(player.userdata.restoreReconnectTimer);
   player.userdata.restoreReconnectTimer = null;
  }
 }
 
-// Áp dụng trạng thái 24/7 trực tiếp lên cả Player options lẫn LifecycleController bên trong ZiPlayer.
+// Hẹn rời phòng an toàn sau 3 phút nghỉ rảnh (khi không bật 24/7), tránh lỗi LifecycleController của ZiPlayer tự ngắt nhầm lúc đang tải hoặc tạm dừng bài!
+function scheduleIdleEndLeave(player, delayMs = 180_000) {
+ const ud = player?.userdata;
+ if (!ud || player.destroyed || ud.stay247) return;
+ if (ud.idleEndTimer) clearTimeout(ud.idleEndTimer);
+ ud.idleEndTimer = setTimeout(() => {
+  ud.idleEndTimer = null;
+  if (
+   !player.destroyed &&
+   !ud.stay247 &&
+   !player.isPlaying &&
+   !player.isPaused &&
+   !player.queue?.currentTrack &&
+   (player.upcomingTracks?.length ?? 0) === 0
+  ) {
+   void destroyPlayerSession(player.guildId, 'Đã phát hết danh sách nhạc và nghỉ quá 3 phút nên bot tự rời phòng.');
+  }
+ }, delayMs);
+ ud.idleEndTimer.unref?.();
+}
+
+// Áp dụng trạng thái 24/7 an toàn (luôn tắt LifecycleController nội bộ của ZiPlayer để không bao giờ bị tự out nhầm giữa chừng).
 function apply247State(player, enabled) {
  if (!player?.userdata) return;
  player.userdata.stay247 = enabled;
- player.options.leaveOnEnd = !enabled;
- player.options.leaveOnEmpty = !enabled;
+ player.options.leaveOnEnd = false;
+ player.options.leaveOnEmpty = false;
  if (player.runtimeGraph?.lifecycleController) {
-  player.runtimeGraph.lifecycleController.leaveOnEnd = !enabled;
-  player.runtimeGraph.lifecycleController.leaveOnEmpty = !enabled;
+  player.runtimeGraph.lifecycleController.leaveOnEnd = false;
+  player.runtimeGraph.lifecycleController.leaveOnEmpty = false;
  }
+ player.clearLeaveTimeout?.();
  if (enabled) {
   if (!player.queue?.currentTrack && (player.upcomingTracks?.length ?? 0) === 0) {
    player.userdata.idleOpen = true;
   }
-  player.clearLeaveTimeout?.();
   clearEmptyTimer(player);
  } else {
   player.userdata.idleOpen = false;
   if (!player.queue?.currentTrack && (player.upcomingTracks?.length ?? 0) === 0) {
-   player.scheduleLeave?.();
+   scheduleIdleEndLeave(player);
   }
  }
 }
@@ -1075,7 +1100,13 @@ async function destroyPlayerSession(guildId, reason) {
 
 // Gắn sự kiện vòng đời từ ZiPlayer để tự động đồng bộ khung điều khiển nhạc trên kênh chat & Website Now Playing.
 manager.on('trackStart', (player, track) => {
- if (player?.userdata) player.userdata.consecutiveTrackErrors = 0;
+ if (player?.userdata) {
+  player.userdata.consecutiveTrackErrors = 0;
+  if (player.userdata.idleEndTimer) {
+   clearTimeout(player.userdata.idleEndTimer);
+   player.userdata.idleEndTimer = null;
+  }
+ }
  const humanOwner = resolveHumanRequester(track?.requestedBy);
  if (humanOwner && player?.userdata) player.userdata.ownerId = humanOwner;
  syncPlayerVibeAnchor(player, player?.userdata?.vibeMode ?? 'normal', 0);
@@ -1118,7 +1149,13 @@ manager.on('playerResume', player => {
 });
 manager.on('seek', player => schedulePanelUpdate(player));
 manager.on('volumeChange', player => schedulePanelUpdate(player));
-manager.on('queueAdd', player => schedulePanelUpdate(player));
+manager.on('queueAdd', player => {
+ if (player?.userdata?.idleEndTimer) {
+  clearTimeout(player.userdata.idleEndTimer);
+  player.userdata.idleEndTimer = null;
+ }
+ schedulePanelUpdate(player);
+});
 manager.on('queueRemove', player => schedulePanelUpdate(player));
 manager.on('queueEnd', player => {
  if (player.userdata?.stay247) {
@@ -1127,7 +1164,10 @@ manager.on('queueEnd', player => {
   void closeCurrentPanel(player, 'Đã phát hết hàng đợi — Bot vẫn đang treo trong kênh thoại 24/7.', { keepIdle247: true });
   return;
  }
- void closeCurrentPanel(player, 'Đã phát hết toàn bộ danh sách nhạc.');
+ if (player.userdata) player.userdata.idleOpen = true;
+ persistActiveSession(player, { immediate: true });
+ scheduleIdleEndLeave(player);
+ void closeCurrentPanel(player, 'Đã phát hết toàn bộ danh sách nhạc — Bot vẫn đang giữ phòng 3 phút chờ bài mới.');
 });
 manager.on('playerStop', player => {
  if (player.userdata?.skipNextStopEvent) {
@@ -1140,7 +1180,10 @@ manager.on('playerStop', player => {
   void closeCurrentPanel(player, 'Đã dừng phát nhạc — Bot vẫn đang giữ kết nối kênh thoại 24/7.', { keepIdle247: true });
   return;
  }
- void closeCurrentPanel(player, 'Đã dừng phát nhạc.');
+ if (player.userdata) player.userdata.idleOpen = true;
+ persistActiveSession(player, { immediate: true });
+ scheduleIdleEndLeave(player);
+ void closeCurrentPanel(player, 'Đã dừng phát nhạc — Bot vẫn đang ở trong phòng chờ lệnh mới.');
 });
 manager.on('playerDestroy', player => {
  if (player?.guildId) sleepTimerManager.cancel(player.guildId);
@@ -1169,15 +1212,22 @@ manager.on('playerError', (player, error, failedTrack) => {
   return;
  }
 
- if (ud?.stay247) {
+ // Không tự ý đuổi bot khỏi phòng hay xóa mất phiên khôi phục khi bài lỗi — giữ nguyên phòng thoại để anh em chọn bài tiếp!
+ if (ud) {
   ud.idleOpen = true;
   ud.skipNextStopEvent = true;
-  player.stop();
-  player.clearLeaveTimeout?.();
+ }
+ try {
+  player?.stop?.();
+  player?.clearLeaveTimeout?.();
+ } catch {}
+ persistActiveSession(player, { immediate: true });
+ if (ud?.stay247) {
   void closeCurrentPanel(player, 'Nguồn bài hát gặp sự cố — Bot vẫn giữ kết nối kênh thoại 24/7.', { keepIdle247: true });
   return;
  }
- void destroyPlayerSession(player.guildId, 'Nguồn nhạc gặp sự cố nên phiên phát đã tự đóng để bảo vệ tài nguyên.');
+ scheduleIdleEndLeave(player);
+ void closeCurrentPanel(player, '⚠️ Bài hát vừa chọn không thể phát (bị khóa vùng/ẩn) — Bot vẫn đang ở trong phòng, hãy mở bài khác nhé!');
 });
 manager.on('error', () => console.error('[quản-lý-nhạc] lỗi'));
 
@@ -1217,9 +1267,9 @@ async function ensureVoiceSession({ guild, voiceChannel, textChannel, userId, in
  if (!p) {
   if (manager.getAll().length) throw new Error('Chỉ cho phép một phiên phát đồng thời.');
   p = await manager.create(guild.id, {
-   leaveOnEnd: !initial247,
-   leaveOnEmpty: !initial247,
-   leaveTimeout: 30000,
+   leaveOnEnd: false,
+   leaveOnEmpty: false,
+   leaveTimeout: 180000,
    userdata: {
     ownerId: userId,
     textChannel,
@@ -1235,6 +1285,7 @@ async function ensureVoiceSession({ guild, voiceChannel, textChannel, userId, in
     panelTimer: null,
     autoDeleteTimer: null,
     emptyTimer: null,
+    idleEndTimer: null,
     ending: false,
     manualDisconnect: false,
     lastReconnectAt: 0,
@@ -1255,16 +1306,17 @@ async function ensureVoiceSession({ guild, voiceChannel, textChannel, userId, in
    smartTransition: { enabled: false },
    loudnessNormalization: { enabled: false },
    maxStreamStore: 1,
-   extractorTimeout: 25000,
+   extractorTimeout: 35000,
    antiStuck: {
     enabled: true,
-    maxRetries: 2,
-    retryDelayMs: 1500,
+    maxRetries: 1,
+    retryDelayMs: 1200,
     reusePreloadFirst: false,
     reduceQualityOnRetry: false,
     controlledSkipThreshold: 2,
    },
   });
+  if (p.pluginManager?.options) p.pluginManager.options.enableCache = false;
   created = true;
  } else if (p.userdata) {
   if (textChannel) p.userdata.textChannel = textChannel;
@@ -1316,22 +1368,33 @@ async function enqueueTrackBatch(p, tracks, userId, playNext = false) {
  }
  const hadCurrent = Boolean(p.queue.currentTrack);
  if (!hadCurrent) {
-  const [first, ...rest] = validTracks;
-  if (p.userdata) {
-   p.userdata.ownerId = userId;
-   p.userdata.idleOpen = false;
-   p.userdata.ttsOnlyIdle = false;
+  let startedIdx = -1;
+  const maxTry = Math.min(3, validTracks.length);
+  for (let idx = 0; idx < maxTry; idx++) {
+   const candidate = validTracks[idx];
+   if (p.userdata) {
+    p.userdata.ownerId = userId;
+    p.userdata.idleOpen = false;
+    p.userdata.ttsOnlyIdle = false;
+   }
+   const ok = await p.play(candidate, userId).catch(() => false);
+   if (ok) {
+    startedIdx = idx;
+    break;
+   }
   }
-  if (!(await p.play(first, userId))) {
-   throw new Error('Không thể phát danh sách bài hát này.');
+  if (startedIdx < 0) {
+   throw new Error('Không thể phát danh sách bài hát này (các bài đầu bị khóa vùng hoặc ẩn).');
   }
+  const chosenFirst = validTracks[startedIdx];
+  const rest = validTracks.slice(startedIdx + 1);
   const canQueue = rest.slice(0, Math.max(0, MAX_QUEUE_TRACKS - p.queue.size));
   if (canQueue.length > 0) {
    if (typeof p.queue?.addMultiple === 'function') p.queue.addMultiple(canQueue);
    else for (const t of canQueue) p.queue?.insert?.(t, p.queue.size);
   }
   schedulePanelUpdate(p);
-  return { firstTrack: first, addedCount: 1 + canQueue.length, queued: false };
+  return { firstTrack: chosenFirst, addedCount: 1 + canQueue.length, queued: false };
  }
 
  const roomLeft = Math.max(0, MAX_QUEUE_TRACKS - p.queue.size);
@@ -1493,7 +1556,11 @@ async function enqueueAndPlay({ guild, voiceChannel, textChannel, rawQuery, user
   return { track, queued: hadCurrent, insertedNext: false, collectionName: null, addedCount: 1 };
  } catch (e) {
   cooldown.delete(userId);
-  if (created && !p.userdata?.stay247) manager.delete(guild.id);
+  if (created && p && !p.destroyed && !p.userdata?.stay247) {
+   if (p.userdata) p.userdata.idleOpen = true;
+   persistActiveSession(p, { immediate: true });
+   scheduleIdleEndLeave(p);
+  }
   throw e;
  }
 }

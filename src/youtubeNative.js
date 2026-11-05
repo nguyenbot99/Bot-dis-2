@@ -326,25 +326,23 @@ process.stdout.write(JSON.stringify({
  output: p.data.output,
 }));
 `;
- try {
-  const args = ['--max-old-space-size=192', '--input-type=module', '-e', helperCode];
-  if (playerIdHint) args.push('--', playerIdHint);
-  const { stdout } = await execFileAsync(process.execPath, args, {
-   cwd: PROJECT_ROOT,
-   timeout: 22_000,
-   maxBuffer: 4 * 1024 * 1024,
-  });
-  return JSON.parse(stdout);
- } catch {
-  const { Player, Platform } = await import('youtubei.js');
-  Platform.shim.eval = async data => new Function(data.output)();
-  const p = await Player.create(null, fetch, undefined, playerIdHint || undefined);
-  return {
-   playerId: p.player_id,
-   sts: Number(p.signature_timestamp) || 0,
-   output: p.data.output,
-  };
+ const args = ['--max-old-space-size=256', '--input-type=module', '-e', helperCode];
+ if (playerIdHint) args.push('--', playerIdHint);
+ let lastErr = null;
+ for (let attempt = 1; attempt <= 2; attempt++) {
+  try {
+   const { stdout } = await execFileAsync(process.execPath, args, {
+    cwd: PROJECT_ROOT,
+    env: { ...process.env, NODE_OPTIONS: '' },
+    timeout: 24_000,
+    maxBuffer: 4 * 1024 * 1024,
+   });
+   return JSON.parse(stdout);
+  } catch (err) {
+   lastErr = err;
+  }
  }
+ throw lastErr ?? new Error('Không thể giải mã chữ ký luồng YouTube trong tiến trình con.');
 }
 
 function mapRawFormatToSabr(buildSabrFormat, f) {
@@ -801,7 +799,11 @@ export function createNativeYouTubePlugin({
    plan = await resolveVisionOsHlsPlan(videoId, { signal, usePoToken: false });
   } catch (firstErr) {
    if (firstErr?.isPolicyBlock || signal?.aborted) throw firstErr;
-   // Nếu IP máy chủ bị hỏi xác thực bot, tự kẹp thêm Session PoToken (visitorData) thử lại ngay!
+   if (firstErr?.playabilityStatus === 'LOGIN_REQUIRED') {
+    const hasCookie = Boolean(await readOptionalCookieRaw());
+    if (hasCookie) throw firstErr;
+   }
+   // Nếu IP máy chủ bị hỏi xác thực bot và chưa gắn Cookie, tự kẹp thêm Session PoToken (visitorData) thử lại ngay!
    plan = await resolveVisionOsHlsPlan(videoId, { signal, usePoToken: true });
   }
 
@@ -1226,13 +1228,26 @@ export function createNativeYouTubePlugin({
   }
  }
 
+ let streamSetupChain = Promise.resolve();
+ function withSingleFlightStreamSetup(fn) {
+  const next = streamSetupChain.then(fn, fn);
+  streamSetupChain = next.then(
+   () => undefined,
+   () => undefined,
+  );
+  return next;
+ }
+
  async function openYouTubeAudioStream(videoId, { signal, track = null, seekMs = 0 } = {}) {
-  try {
-   return await openVisionOsHlsStream(videoId, { signal, track, seekMs });
-  } catch (hlsErr) {
-   if (hlsErr?.isPolicyBlock || signal?.aborted) throw hlsErr;
-   return openRawSabrStream(videoId, { signal, track, seekMs });
-  }
+  return withSingleFlightStreamSetup(async () => {
+   if (signal?.aborted) throw new Error('Đã hủy tải luồng YouTube.');
+   try {
+    return await openVisionOsHlsStream(videoId, { signal, track, seekMs });
+   } catch (hlsErr) {
+    if (hlsErr?.isPolicyBlock || signal?.aborted) throw hlsErr;
+    return openRawSabrStream(videoId, { signal, track, seekMs });
+   }
+  });
  }
 
  function buildYouTubeTrack(item, requestedBy) {

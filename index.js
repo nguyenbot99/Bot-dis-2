@@ -1378,10 +1378,17 @@ async function enqueueTrackBatch(p, tracks, userId, playNext = false) {
     p.userdata.ttsOnlyIdle = false;
    }
    const ok = await p.play(candidate, userId).catch(() => false);
-   if (ok) {
+   const reallyActive =
+    Boolean(ok) &&
+    Boolean(p.queue?.currentTrack) &&
+    Boolean(p.isPlaying || p.isBuffering || p.isPaused);
+   if (reallyActive) {
     startedIdx = idx;
     break;
    }
+   try {
+    p.queue?.clear?.();
+   } catch {}
   }
   if (startedIdx < 0) {
    throw new Error('Không thể phát danh sách bài hát này (các bài đầu bị khóa vùng hoặc ẩn).');

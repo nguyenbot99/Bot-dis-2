@@ -4,6 +4,7 @@ import {
  buildYouTubeCookieAuthHeaders,
  createNativeYouTubePlugin,
  findHlsSegmentStartIndex,
+ mapRawFormatToSabr,
  parseYouTubeHlsMasterAudioUrl,
  parseYouTubeHlsMediaPlaylist,
  searchYouTubeVideos,
@@ -185,5 +186,27 @@ test('buildYouTubeCookieAuthHeaders parses both raw Cookie header and Netscape c
  assert.equal(h2.Cookie, 'SID=sid_token_99; SAPISID=sapi_token_88');
  assert.match(h2.Authorization, /^SAPISIDHASH 1760000000_[0-9a-f]{40}$/);
 });
+
+test('mapRawFormatToSabr preserves xtags and lastModified so SabrStream format keys match MediaHeader keys without infinite loop', async () => {
+ const { buildSabrFormat } = await import('googlevideo/utils');
+ const mapped = mapRawFormatToSabr(buildSabrFormat, {
+  itag: 251,
+  xtags: 'CgIIAXoCdmI',
+  mimeType: 'audio/webm; codecs="opus"',
+  bitrate: 148000,
+  lastModified: '1729123456789012',
+  contentLength: '3570821',
+  approxDurationMs: '208030',
+  audioQuality: 'AUDIO_QUALITY_MEDIUM',
+  isDrc: true,
+ });
+ assert.equal(mapped.itag, 251);
+ assert.equal(mapped.xtags, 'CgIIAXoCdmI');
+ assert.equal(mapped.lastModified, '1729123456789012');
+ assert.equal(mapped.contentLength, 3570821);
+ assert.equal(mapped.approxDurationMs, 208030);
+ assert.equal(mapped.isDrc, true);
+});
+
 
 

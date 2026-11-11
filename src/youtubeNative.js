@@ -345,27 +345,34 @@ process.stdout.write(JSON.stringify({
  throw lastErr ?? new Error('Không thể giải mã chữ ký luồng YouTube trong tiến trình con.');
 }
 
-function mapRawFormatToSabr(buildSabrFormat, f) {
+export function mapRawFormatToSabr(buildSabrFormat, f) {
  return buildSabrFormat({
   itag: f.itag,
   url: f.url,
-  mime_type: f.mimeType,
+  xtags: f.xtags,
+  mimeType: f.mimeType,
   bitrate: f.bitrate,
   width: f.width,
   height: f.height,
-  last_modified: f.lastModified,
-  content_length: f.contentLength,
+  lastModified: String(f.lastModified ?? f.last_modified_ms ?? '0'),
+  contentLength: Number.parseInt(String(f.contentLength ?? '0'), 10) || 0,
   quality: f.quality,
   fps: f.fps,
-  quality_label: f.qualityLabel,
-  projection_type: f.projectionType,
-  average_bitrate: f.averageBitrate,
-  approx_duration_ms: f.approxDurationMs,
-  audio_sample_rate: f.audioSampleRate,
-  audio_channels: f.audioChannels,
-  audio_quality: f.audioQuality,
-  loudness_db: f.loudnessDb,
-  is_drc: f.isDrc,
+  qualityLabel: f.qualityLabel,
+  projectionType: f.projectionType,
+  averageBitrate: f.averageBitrate,
+  approxDurationMs: Number.parseInt(String(f.approxDurationMs ?? '0'), 10) || 0,
+  audioSampleRate: f.audioSampleRate,
+  audioChannels: f.audioChannels,
+  audioQuality: f.audioQuality,
+  loudnessDb: f.loudnessDb,
+  is_drc: Boolean(f.isDrc),
+  is_auto_dubbed: Boolean(f.isAutoDubbed),
+  is_descriptive: Boolean(f.isDescriptive),
+  is_dubbed: Boolean(f.isDubbed),
+  language: f.audioTrack?.id ? String(f.audioTrack.id).split('.')[0] : undefined,
+  is_original: Boolean(f.audioTrack?.audioIsDefault),
+  audioTrackId: f.audioTrack?.id,
   audio_track: f.audioTrack
    ? {
       audio_is_default: f.audioTrack.audioIsDefault,
@@ -461,6 +468,7 @@ export function buildYouTubeCookieAuthHeaders(
 export function createNativeYouTubePlugin({
  ffmpegPath: _ffmpegPath = 'ffmpeg',
  cipherCacheFile = DEFAULT_CIPHER_FILE,
+ cookieFilePath = '',
  onTrackMetaSynced = null,
  fetchImpl = fetch,
 } = {}) {
@@ -468,6 +476,7 @@ export function createNativeYouTubePlugin({
  let inflightCipherPromise = null;
 
  let sharedDomReady = false;
+ let lastBotGuardGlobalName = null;
  let cachedPoMinter = null; // { minter, expiresAt }
  let inflightMinterPromise = null;
  let sabrModules = null;
@@ -482,10 +491,12 @@ export function createNativeYouTubePlugin({
   cachedDiskCookie.checkedAt = now;
 
   for (const candidate of [
+   cookieFilePath,
+   process.env.YOUTUBE_COOKIE_FILE,
    join(PROJECT_ROOT, 'cookies.txt'),
    join(PROJECT_ROOT, 'youtube-cookies.txt'),
    join(DEFAULT_DATA_DIR, 'cookies.txt'),
-  ]) {
+  ].filter(Boolean)) {
    try {
     const content = (await readFile(candidate, 'utf8')).trim();
     if (content) {
@@ -632,6 +643,12 @@ export function createNativeYouTubePlugin({
     if (!interpreterJs) {
      throw new Error('Không lấy được thử thách BotGuard từ YouTube.');
     }
+    if (lastBotGuardGlobalName && lastBotGuardGlobalName !== challenge.globalName) {
+     try {
+      delete globalThis[lastBotGuardGlobalName];
+     } catch {}
+    }
+    lastBotGuardGlobalName = challenge.globalName || null;
     new Function(interpreterJs)();
 
     const botGuardClient = await bg.BotGuardClient.create({
@@ -1076,7 +1093,61 @@ export function createNativeYouTubePlugin({
     videoPlaybackUstreamerConfig: ustreamerConfig,
     poToken: gvsPoToken,
     clientInfo: { clientName: chosenClient.id, clientVersion: chosenVersion },
+    durationMs: lenMs > 0 ? lenMs : undefined,
+    fetch: fetchImpl,
    });
+
+   // Khóa điều tiết áp lực ngược (Backpressure) trên SabrStream: chỉ tải trước tối đa ~384 KB (~24 giây âm thanh Opus)
+   // rồi tự ngủ chờ FFmpeg đọc vơi xuống < 192 KB mới tải tiếp -> chặn đứng nạp dồn cả bài dài vào RAM hoặc vòng lặp vô tận!
+   const SABR_HIGH_WATER_BYTES = 384 * 1024;
+   const SABR_LOW_WATER_BYTES = 192 * 1024;
+   const maxAllowedTrackBytes = Math.max(
+    24 * 1024 * 1024,
+    Math.ceil(((lenMs > 0 ? lenMs : 10_800_000) / 1000) * 48 * 1024),
+   );
+   let queuedAheadBytes = 0;
+   let totalDeliveredBytes = 0;
+   let drainWaiter = null;
+   let cleanedUp = false;
+
+   const wakeDrainWaiter = () => {
+    if (drainWaiter) {
+     const resolve = drainWaiter;
+     drainWaiter = null;
+     resolve();
+    }
+   };
+
+   if (sabr.audioController && typeof sabr.audioController.enqueue === 'function') {
+    const origEnqueue = sabr.audioController.enqueue.bind(sabr.audioController);
+    sabr.audioController.enqueue = chunk => {
+     const sz = chunk?.byteLength ?? chunk?.length ?? 0;
+     queuedAheadBytes += sz;
+     totalDeliveredBytes += sz;
+     if (totalDeliveredBytes > maxAllowedTrackBytes) {
+      throw new Error('SABR vượt ngưỡng dữ liệu an toàn của bài hát.');
+     }
+     return origEnqueue(chunk);
+    };
+   }
+
+   if (typeof sabr.fetchAndProcessSegments === 'function') {
+    const origFetchSegments = sabr.fetchAndProcessSegments.bind(sabr);
+    sabr.fetchAndProcessSegments = async function throttledFetchSegments(...args) {
+     while (
+      queuedAheadBytes >= SABR_HIGH_WATER_BYTES &&
+      !cleanedUp &&
+      !sabr._aborted &&
+      !signal?.aborted
+     ) {
+      await new Promise(resolve => {
+       drainWaiter = resolve;
+      });
+     }
+     if (cleanedUp || sabr._aborted || signal?.aborted) return;
+     return origFetchSegments(...args);
+    };
+   }
 
    if (clampedSeekMs >= 500) {
     const origBuildBody = sabr.buildRequestBody.bind(sabr);
@@ -1126,11 +1197,34 @@ export function createNativeYouTubePlugin({
      sabr?.setPoToken(refreshedGvsPo);
      if (nextUrlRaw) sabr?.setStreamingURL(freshCipher.decipherUrl(nextUrlRaw, '', nextVer));
      if (nextCfg) sabr?.setUstreamerConfig(nextCfg);
-     if (nextFormats.length) sabr?.setServerAbrFormats(nextFormats);
+     if (nextFormats.length && sabr) {
+      sabr.formatIds = [];
+      sabr.setServerAbrFormats(nextFormats);
+     }
     } catch {}
    };
 
    sabr.on('reloadPlayerResponse', reloadHandler);
+
+   for (const ctrl of [sabr.videoController, sabr.audioController]) {
+    if (!ctrl) continue;
+    if (typeof ctrl.close === 'function') {
+     const origClose = ctrl.close.bind(ctrl);
+     ctrl.close = () => {
+      try {
+       origClose();
+      } catch {}
+     };
+    }
+    if (typeof ctrl.error === 'function') {
+     const origError = ctrl.error.bind(ctrl);
+     ctrl.error = errArg => {
+      try {
+       origError(errArg);
+      } catch {}
+     };
+    }
+   }
 
    const started = await sabr.start({
     enabledTrackTypes: EnabledTrackTypes.AUDIO_ONLY,
@@ -1141,18 +1235,15 @@ export function createNativeYouTubePlugin({
    if (!started?.audioStream) {
     throw new Error('SABR không trả về luồng âm thanh.');
    }
-   try {
-    void started.videoStream?.cancel?.('Audio only');
-   } catch {}
 
    const reader = started.audioStream.getReader();
    const sabrRef = sabr;
-   let cleanedUp = false;
    let pulling = false;
 
    const teardown = () => {
     if (cleanedUp) return;
     cleanedUp = true;
+    wakeDrainWaiter();
     if (reloadHandler) {
      try { sabrRef.off('reloadPlayerResponse', reloadHandler); } catch {}
     }
@@ -1185,6 +1276,10 @@ export function createNativeYouTubePlugin({
          break;
         }
         if (value?.byteLength) {
+         queuedAheadBytes = Math.max(0, queuedAheadBytes - value.byteLength);
+         if (queuedAheadBytes <= SABR_LOW_WATER_BYTES) {
+          wakeDrainWaiter();
+         }
          const keepReading = this.push(Buffer.from(value));
          if (!keepReading) break;
         }

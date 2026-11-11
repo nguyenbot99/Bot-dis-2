@@ -1,7 +1,7 @@
 // Các lệnh chỉ đọc thông tin, ai trong máy chủ cũng có thể xem được.
 const readOnlyCommands = new Set(['help', 'queue', 'nowplaying', 'history', 'lyrics', 'ping', 'stats', 'grab', 'avatar', 'savequeue', 'gif']);
 const sharedVoiceFunCommands = new Set(['tts', 'sfx']);
-const sessionStarterCommands = new Set(['play', 'search', 'dedicate', 'radio', 'fav', 'mixtape']);
+const sessionStarterCommands = new Set(['play', 'playfile', 'search', 'dedicate', 'radio', 'fav', 'mixtape']);
 
 // ID Discord chủ bot có toàn quyền điều khiển mọi phiên nhạc bất kể ai là người bắt bài.
 export const DEFAULT_BOT_OWNER_IDS = Object.freeze(['1243061570247069696']);
@@ -35,7 +35,7 @@ export function assertMusicAccess(command, userId, player, env = process.env) {
  if (
   sessionStarterCommands.has(command)
   && !player.queue?.currentTrack
-  && ((player.userdata?.stay247 && player.userdata?.idleOpen) || player.userdata?.ttsOnlyIdle)
+  && Boolean(player.userdata?.idleOpen || player.userdata?.ttsOnlyIdle)
  ) {
   return;
  }

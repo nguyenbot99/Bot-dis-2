@@ -6,6 +6,10 @@ const ALLOWED_AUDIO_HOST_SUFFIXES = [
  '.sndcdn.com',
  '.soundcloud.com',
  'soundcloud.com',
+ 'cdn.discordapp.com',
+ 'media.discordapp.net',
+ '.discordapp.com',
+ '.discordapp.net',
 ];
 
 const detailsCache = new Map();
@@ -271,9 +275,50 @@ export function sanitizeWebAudioDescriptor(raw) {
  return null;
 }
 
-// Trích xuất luồng âm thanh trực tiếp từ SoundCloud để trình duyệt tự phát song song mà không tốn băng thông/RAM của bot.
-export async function resolveTrackWebAudio(scClient, track, { fetchImpl = fetch, forceRefreshDetails = false } = {}) {
- if (!scClient || !track) return null;
+// Trích xuất luồng âm thanh trực tiếp từ SoundCloud hoặc tệp đính kèm Discord (/playfile) để trình duyệt tự phát song song mà không tốn băng thông/RAM của bot.
+export async function resolveTrackWebAudio(
+ scClient,
+ track,
+ { fetchImpl = fetch, forceRefreshDetails = false, discordRest = null } = {},
+) {
+ if (!track) return null;
+
+ if (String(track.source ?? '').toLowerCase() === 'file') {
+  let fileUrl = safeStreamUrl(track.url, 2048);
+  if (!fileUrl) return null;
+  if (discordRest && typeof discordRest.post === 'function') {
+   try {
+    const parsed = new URL(fileUrl);
+    const exHex = parsed.searchParams.get('ex');
+    if (
+     (parsed.hostname === 'cdn.discordapp.com' || parsed.hostname === 'media.discordapp.net') &&
+     exHex &&
+     /^[0-9a-f]+$/i.test(exHex)
+    ) {
+     const expMs = Number.parseInt(exHex, 16) * 1000;
+     if (Number.isFinite(expMs) && expMs <= Date.now() + 20 * 60_000) {
+      const resp = await discordRest.post('/attachments/refresh-urls', {
+       body: { attachment_urls: [fileUrl] },
+      });
+      const refreshed = safeStreamUrl(resp?.refreshed_urls?.[0]?.refreshed, 2048);
+      if (refreshed) {
+       fileUrl = refreshed;
+       track.url = refreshed;
+      }
+     }
+    }
+   } catch {}
+  }
+  if (!isAllowedWebAudioUrl(fileUrl)) return null;
+  return sanitizeWebAudioDescriptor({
+   kind: 'progressive',
+   url: fileUrl,
+   mime: track.metadata?.mimeType || 'audio/mpeg',
+   fetchedAtMs: Date.now(),
+  });
+ }
+
+ if (!scClient) return null;
  const trackUrl = safeStreamUrl(track.url, 1024);
  if (!trackUrl || !trackUrl.includes('soundcloud.com')) return null;
 

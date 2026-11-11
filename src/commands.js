@@ -32,6 +32,7 @@ const definitions = [
  ['vibe', 'Biến đổi Vibe bài hát trực tiếp: Chuẩn Gốc / Nightcore / Slowed + Echo / Lo-Fi'],
  ['ambient', 'Trộn âm thanh thiên nhiên nền (Mưa đêm, Lửa trại, Sóng biển, Gió đêm) vào nhạc'],
  ['play', 'Phát nhạc từ tên bài, link lẻ hoặc trọn Playlist / Mix YouTube, SoundCloud & Spotify'],
+ ['playfile', 'Phát nhạc trực tiếp từ tệp âm thanh hoặc video tải lên (tự tách tiếng & đồng bộ Web)'],
  ['search', 'Tìm bài hát và tự tay chọn đúng phiên bản ưng ý nhất trong Top 5 kết quả'],
  ['dedicate', 'Gửi tặng bài hát kèm lời nhắn vinh danh lên khung nhạc Discord & Website'],
  ['similar', 'Bơm ngay 5 bài hát cùng Vibe & cùng gu với bài đang phát vào hàng đợi'],
@@ -75,6 +76,7 @@ export const HELP_CATEGORIES = Object.freeze([
   color: 0xc084fc,
   items: [
    ['`/play` `query` `[next]`', 'Phát nhạc ngay từ tên bài, link lẻ hoặc trọn bộ Playlist / Mix YouTube, SoundCloud & Spotify'],
+   ['`/playfile` `[file]` `[url]` `[title]` `[next]`', 'Phát nhạc trực tiếp từ tệp âm thanh (`.mp3`, `.m4a`, `.wav`, `.flac`) hoặc video (`.mp4`, `.mov`, `.webm`) tải lên + đồng bộ Web'],
    ['`/search` `query` `[next]`', 'Tìm Top 5 phiên bản khớp nhất và tự tay chọn đúng bản muốn nghe'],
    ['`/dedicate` `query` `to` `message`', 'Gửi tặng bài hát kèm lời chúc hiện lên Khung Nhạc Discord & Website Karaoke'],
    ['`/similar`', 'Dò sóng từ bài đang nghe và bơm tiếp 5 bài hát cùng gu vào hàng đợi'],
@@ -301,7 +303,7 @@ export function buildHelpEmbed(botUser) {
    {
     name: '▶️ Phát, Chọn bản, Tặng nhạc & Tủ chung',
     value: [
-     '`/play` `query` • `/search` `query` — Phát ngay (hỗ trợ Playlist) hoặc chọn từ Top 5',
+     '`/play` `query` • `/playfile` `[file]` • `/search` `query` — Phát tên/link, tệp/video tải lên hoặc chọn Top 5',
      '`/dedicate` `query` `to` `message` — Tặng bài hát kèm lời nhắn lên Discord & Web',
      '`/fav` `action` • `/mixtape` `action` • `/savequeue` — Tủ cá nhân, Tủ hội & Lưu hàng đợi',
      '`/sleeptimer` • `/webkey` — Hẹn giờ đi ngủ & Mã PIN điều khiển nhạc trên Website',
@@ -610,6 +612,26 @@ export const slashCommands = definitions.map(([name, description]) => {
   c.addBooleanOption(o => o
    .setName('next')
    .setDescription('Đặt True để chèn bài bạn chọn lên đầu hàng đợi (phát ngay kế tiếp)')
+   .setRequired(false));
+ }
+ if (name === 'playfile') {
+  c.addAttachmentOption(o => o
+   .setName('file')
+   .setDescription('Tải tệp nhạc (.mp3, .m4a, .wav, .flac, .ogg) hoặc video (.mp4, .mov, .webm, .mkv) lên')
+   .setRequired(false));
+  c.addStringOption(o => o
+   .setName('url')
+   .setDescription('Hoặc dán link tệp nhạc / video trực tiếp (ví dụ link file Discord)')
+   .setRequired(false)
+   .setMaxLength(1000));
+  c.addStringOption(o => o
+   .setName('title')
+   .setDescription('Đặt tên hiển thị cho bài hát trên khung điều khiển & Website (tùy chọn)')
+   .setRequired(false)
+   .setMaxLength(110));
+  c.addBooleanOption(o => o
+   .setName('next')
+   .setDescription('Đặt True để chèn phát ngay kế tiếp sau bài hiện tại')
    .setRequired(false));
  }
  if (name === 'dedicate') {

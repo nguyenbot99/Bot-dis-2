@@ -56,6 +56,7 @@ import { createGuildTtsController, synthesizeGoogleTtsBuffer, TTS_VOICES } from 
 import { resolveTrackWebAudio, WEB_AUDIO_REFRESH_MS } from './src/webAudio.js';
 import { createWebRemoteManager } from './src/webRemote.js';
 import { createNativeYouTubePlugin } from './src/youtubeNative.js';
+import { createMediaFilePlugin, resolvePlayFileTrack } from './src/mediaFilePlugin.js';
 import { buildSaveQueuePayload, extractPlayableFromMessage, extractSaveQueueUrls } from './src/saveQueue.js';
 import {
  ANNOUNCE_FONT_MODES,
@@ -233,7 +234,8 @@ soundCloudPlugin.search = async function patchedSoundCloudSearch(query, requeste
 };
 
 soundCloudPlugin.getRelatedTracks = async function patchedRelatedTracks(track, opts = {}) {
- if (String(track?.source ?? '').toLowerCase() === 'youtube') return [];
+ const srcLower = String(track?.source ?? '').toLowerCase();
+ if (srcLower === 'youtube' || srcLower === 'file') return [];
  await this.client.ensureReady();
  try {
   const wantLimit = opts?.limit || 1;
@@ -266,8 +268,9 @@ function installSmartFallback(plugin, notifySynced) {
   try {
    isYtUrl = Boolean(extractYouTubeVideoId(String(track?.url ?? '')));
   } catch {}
-  if (String(track?.source ?? '').toLowerCase() === 'youtube' || isYtUrl) {
-   throw new Error('Giữ nguyên nguồn YouTube gốc (không chuyển sang SoundCloud).');
+  const srcLower = String(track?.source ?? '').toLowerCase();
+  if (srcLower === 'youtube' || isYtUrl || srcLower === 'file') {
+   throw new Error('Giữ nguyên nguồn gốc bài hát (không chuyển sang SoundCloud).');
   }
   const rawQuery = [track?.title, track?.metadata?.author].filter(Boolean).join(' ').trim() || track?.title;
   let res = await this.search(rawQuery, track?.requestedBy || 'fallback').catch(() => null);
@@ -323,9 +326,20 @@ const nativeYouTubePlugin = createNativeYouTubePlugin({
 });
 void ensureYouTubeVisitorSession().catch(() => {});
 
+// Plugin phát nhạc trực tiếp từ tệp âm thanh (.mp3, .m4a, .wav, .flac) & tách tiếng từ tệp video (.mp4, .mov, .webm, .mkv) dưới 3 MB RAM.
+const mediaFilePlugin = createMediaFilePlugin({
+ ffmpegPath: ffmpeg,
+ getDiscordRest: () => client.rest,
+ onTrackMetaSynced: syncedTrack => {
+  for (const p of manager.getAll()) {
+   if (p?.queue?.currentTrack === syncedTrack) schedulePanelUpdate(p, { track: syncedTrack });
+  }
+ },
+});
+
 // Khởi tạo trình quản lý phát nhạc ZiPlayer ở cấu hình nhẹ, tắt bộ đệm tìm kiếm và thống kê.
 const manager = new PlayerManager({
- plugins: [nativeYouTubePlugin, soundCloudPlugin],
+ plugins: [mediaFilePlugin, nativeYouTubePlugin, soundCloudPlugin],
  enableSearchCache: false,
  enableStatsCollection: false,
  autoCleanup: true,
@@ -432,7 +446,7 @@ const channelLastSweepAt = new Map();
 const KICK_SNAPSHOT_TTL_MS = 30 * 60 * 1000; // Giữ trạng thái bài đang phát & hàng đợi trong 30 phút sau khi bị kick để khôi phục khi /join.
 const PROGRESS_TICK_MS = 5000; // Chu kỳ cập nhật thanh tiến trình (5 giây/lần: chuẩn mượt, không bao giờ chạm giới hạn rate-limit Discord).
 const CHANNEL_SWEEP_COOLDOWN_MS = 180000; // Quét dọn tin nhắn mồ côi tối đa 3 phút/lần mỗi kênh.
-const KNOWN_ERROR_RE = /^(Hãy|Bạn|Bot|Chờ|Chỉ|Hàng|Không|Chưa|Tên|URL|Lệnh|Bản|Link|Thời|Số|Định|Vị|Mức|Âm|Nội|Tủ|Hẹn|Hiệu|Đài|Người|Máy|Phiên|Bài|Tin|Mã|Hiện|Thao|Kênh|Bảng|Video|Tệp|Ảnh|Quá|Ổ|Bậc|Thiếu|Danh)/;
+const KNOWN_ERROR_RE = /^(Hãy|Bạn|Bot|Chờ|Chỉ|Hàng|Không|Chưa|Tên|URL|Lệnh|Bản|Link|Thời|Số|Định|Vị|Mức|Âm|Nội|Tủ|Hẹn|Hiệu|Đài|Người|Máy|Phiên|Bài|Tin|Mã|Hiện|Thao|Kênh|Bảng|Video|Tệp|Ảnh|Quá|Ổ|Bậc|Thiếu|Danh|Dung|Đường|Liên)/;
 const ttsController = createGuildTtsController();
 
 function syncSleepTimerLabel(player) {
@@ -770,6 +784,7 @@ async function syncTrackWebAudio(player, track, { forceRefresh = false } = {}) {
  if (!player || player.destroyed || !track) return;
  const webAudio = await resolveTrackWebAudio(soundCloudPlugin.client, track, {
   forceRefreshDetails: forceRefresh,
+  discordRest: client.rest,
  });
  if (!webAudio || player.destroyed) return;
  const active = player.queue?.currentTrack ?? player.currentTrack ?? null;
@@ -783,9 +798,12 @@ async function syncTrackWebAudio(player, track, { forceRefresh = false } = {}) {
  );
 
  if (player.userdata) {
+  const refreshDelayMs = String(active.source ?? '').toLowerCase() === 'file'
+   ? 15 * 60_000
+   : WEB_AUDIO_REFRESH_MS;
   player.userdata.webAudioTimer = setTimeout(() => {
    void syncTrackWebAudio(player, active);
-  }, WEB_AUDIO_REFRESH_MS);
+  }, refreshDelayMs);
   player.userdata.webAudioTimer.unref?.();
  }
 }
@@ -1523,9 +1541,10 @@ async function enqueueAndPlay({ guild, voiceChannel, textChannel, rawQuery, user
    };
   }
 
-  // Trường hợp 3: Bài hát đơn lẻ (từ khóa thường, tìm kiếm yt:, SoundCloud lẻ, Spotify track lẻ).
+  // Trường hợp 3: Bài hát đơn lẻ (từ khóa thường, tìm kiếm yt:, SoundCloud lẻ, Spotify track lẻ, link file trực tiếp).
   const isDirectScUrl = q.startsWith('https://soundcloud.com/');
   const isYtPrefix = /^(?:yt|youtube):\s*/i.test(q);
+  const isDirectFileUrl = mediaFilePlugin.validate(q);
   // Dự phòng cho link SoundCloud nếu API /resolve bị kén định dạng slug của bài hát.
   if (!result?.tracks?.length && isDirectScUrl) {
    const parts = new URL(q).pathname.split('/').filter(Boolean);
@@ -1536,7 +1555,7 @@ async function enqueueAndPlay({ guild, voiceChannel, textChannel, rawQuery, user
     if (matched) result = { tracks: [matched] };
    }
   }
-  const track = (isDirectScUrl || isYtPrefix)
+  const track = (isDirectScUrl || isYtPrefix || isDirectFileUrl)
    ? result?.tracks?.[0]
    : pickBestMatchingTrack(result?.tracks ?? [], spotifyMeta ?? { title: q });
   if (!track) throw new Error('Không tìm thấy bài hát phù hợp (link bị ẩn, giới hạn vùng/Go+ hoặc không tồn tại).');
@@ -1630,9 +1649,9 @@ async function startRadioStation({ guild, voiceChannel, textChannel, stationId, 
  }
 }
 
-// Phát hoặc chèn một bài hát đã được người dùng chọn sẵn từ danh sách /search Top 5.
+// Phát hoặc chèn một bài hát đã được người dùng chọn sẵn (từ /search Top 5 hoặc /playfile).
 async function enqueuePickedTrack({ guild, voiceChannel, textChannel, track, userId, playNext = false }) {
- const { player: p, created } = await ensureVoiceSession({ guild, voiceChannel, textChannel, userId });
+ const { player: p } = await ensureVoiceSession({ guild, voiceChannel, textChannel, userId });
  guildKickSnapshots.delete(guild.id);
  try {
   if (p.queue.size >= MAX_QUEUE_TRACKS) throw new Error(`Hàng đợi đã đủ ${MAX_QUEUE_TRACKS} bài.`);
@@ -1648,11 +1667,18 @@ async function enqueuePickedTrack({ guild, voiceChannel, textChannel, track, use
    schedulePanelUpdate(p);
    return { track, queued: true, insertedNext: true };
   }
-  if (!(await p.play(track, userId))) throw new Error('Không thể phát bài hát này.');
+  const ok = await p.play(track, userId);
+  const reallyActive =
+   hadCurrent ||
+   (Boolean(ok) && Boolean(p.queue?.currentTrack) && Boolean(p.isPlaying || p.isBuffering || p.isPaused));
+  if (!reallyActive) throw new Error('Không thể phát tệp hoặc bài hát này (tệp bị lỗi hoặc không có rãnh âm thanh).');
   if (hadCurrent) schedulePanelUpdate(p);
   return { track, queued: hadCurrent, insertedNext: false };
  } catch (e) {
-  if (created && !p.userdata?.stay247) manager.delete(guild.id);
+  if (!p.queue?.currentTrack && !p.userdata?.stay247) {
+   if (p.userdata) p.userdata.idleOpen = true;
+   scheduleIdleEndLeave(p);
+  }
   throw e;
  }
 }
@@ -4480,8 +4506,14 @@ client.on(Events.InteractionCreate, async i => {
   }
 
   const channel = await requireSameVoiceChannel(i.guild, i.user.id);
-  // Kiểm tra quyền điều khiển: chỉ người yêu cầu bài đang phát mới được tác động vào nhạc.
-  assertMusicAccess(i.commandName, i.user.id, p);
+  // Kiểm tra quyền điều khiển: riêng /playfile cho phép mọi người trong phòng thoại gửi file vào cuối hàng đợi, nhưng muốn chèn lên đầu (next: True) hoặc điều khiển bài đang phát thì vẫn chỉ người mở bài + Chủ Bot.
+  if (i.commandName === 'playfile') {
+   if (Boolean(i.options.getBoolean('next')) && p?.queue?.currentTrack) {
+    assertMusicAccess('playfile', i.user.id, p);
+   }
+  } else {
+   assertMusicAccess(i.commandName, i.user.id, p);
+  }
 
   if (i.commandName === 'join') {
    const alreadyConnected = Boolean(p?.connection);
@@ -4732,6 +4764,47 @@ client.on(Events.InteractionCreate, async i => {
      : queued
       ? `✅ Đã thêm vào hàng đợi: **${cleanText(track.title, 90)}**`
       : `▶️ Đang phát: **${cleanText(track.title, 90)}** — dùng khung điều khiển bên dưới kênh chat để thao tác nhanh!`,
+   );
+  }
+
+  if (i.commandName === 'playfile') {
+   const now = Date.now();
+   if (now - (cooldown.get(i.user.id) ?? 0) < 3000) {
+    throw new Error('Chờ 3 giây giữa hai lần gửi tệp nhạc.');
+   }
+   const attachment = i.options.getAttachment('file');
+   const rawUrl = i.options.getString('url') ?? '';
+   const customTitle = i.options.getString('title') ?? '';
+   const playNext = Boolean(i.options.getBoolean('next'));
+
+   const fileTrack = await resolvePlayFileTrack(
+    {
+     attachment,
+     rawUrl,
+     customTitle,
+     requestedBy: i.user.id,
+     uploaderName: i.member?.displayName || i.user.globalName || i.user.username,
+    },
+    { ffmpegPath: ffmpeg },
+   );
+   cooldown.set(i.user.id, Date.now());
+
+   const { track, queued, insertedNext } = await enqueuePickedTrack({
+    guild: i.guild,
+    voiceChannel: channel,
+    textChannel: i.channel,
+    track: fileTrack,
+    userId: i.user.id,
+    playNext,
+   });
+   const kindEmoji = track.metadata?.isVideoFile ? '🎬' : '📁';
+   const durTag = track.duration > 0 ? ` (\`${formatDuration(track.duration)}\`)` : '';
+   return await reply(
+    insertedNext
+     ? `⏭️ ${kindEmoji} Đã chèn tệp lên đầu hàng đợi (phát ngay kế tiếp): **${cleanText(track.title, 85)}**${durTag}`
+     : queued
+      ? `✅ ${kindEmoji} Đã thêm tệp vào hàng đợi: **${cleanText(track.title, 85)}**${durTag}`
+      : `▶️ ${kindEmoji} Đang phát từ tệp${track.metadata?.isVideoFile ? ' video (đã tách lấy tiếng)' : ''}: **${cleanText(track.title, 85)}**${durTag} — đã đồng bộ lên Website Live Radio!`,
    );
   }
 

@@ -17,6 +17,7 @@ const SOURCE_NAMES = {
  ytsr: 'YouTube',
  soundcloud: 'SoundCloud',
  spotify: 'Spotify',
+ file: 'Tệp nhạc / Video',
 };
 
 const MAX_SSE_CLIENTS = 20;

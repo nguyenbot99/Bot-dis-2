@@ -264,11 +264,11 @@ test('resolveConfig works with DISCORD_TOKEN only and optional GUILD_ID', () => 
  assert.throws(() => resolveConfig({ DISCORD_TOKEN: 'abc', GUILD_ID: 'ten-server' }), /GUILD_ID không hợp lệ/);
 });
 
-test('unique guild-only commands (45 slash + 3 context menu) and valid help embed covering all 45 slash commands', () => {
- assert.equal(slashCommands.length, 45);
+test('unique guild-only commands (46 slash + 3 context menu) and valid help embed covering all 46 slash commands', () => {
+ assert.equal(slashCommands.length, 46);
  assert.equal(contextCommands.length, 3);
- assert.equal(commands.length, 48);
- assert.equal(new Set(commands.map(c => c.name)).size, 48);
+ assert.equal(commands.length, 49);
+ assert.equal(new Set(commands.map(c => c.name)).size, 49);
  assert.ok(commands.every(c => c.dm_permission === false));
  const data = buildHelpEmbed({ username: 'Bắt_Don', displayAvatarURL: () => 'https://cdn.discordapp.com/embed/avatars/0.png' }).toJSON();
  assert.equal(data.color, 0x5865f2);

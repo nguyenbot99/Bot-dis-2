@@ -38,6 +38,8 @@ export function cloneSerializableTrack(t) {
  if (!t || typeof t !== 'object' || !t.url) return null;
  const meta = {};
  if (t.metadata?.author) meta.author = String(t.metadata.author);
+ if (t.metadata?.mimeType) meta.mimeType = String(t.metadata.mimeType).slice(0, 64);
+ if (typeof t.metadata?.isVideoFile === 'boolean') meta.isVideoFile = t.metadata.isVideoFile;
  if (t.metadata?.dedication && typeof t.metadata.dedication === 'object') {
   const d = t.metadata.dedication;
   meta.dedication = {

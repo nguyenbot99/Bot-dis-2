@@ -49,6 +49,8 @@ const SOURCE_LABELS = {
  youtube: 'YouTube',
  ytsr: 'YouTube',
  soundcloud: 'SoundCloud',
+ spotify: 'Spotify',
+ file: 'Tệp nhạc / Video',
 };
 
 // Làm sạch tiêu đề/tác giả để tránh chèn định dạng hoặc mention ngoài ý muốn.

@@ -6,6 +6,7 @@ import { PlayerManager } from 'ziplayer';
 import ffmpeg from 'ffmpeg-static';
 import { isRecoverableNetworkOrStreamError } from './src/networkShield.js';
 import { playTrackChecked } from './src/playResult.js';
+import { resolveSocialPreview, downloadPreviewMedia } from './src/socialPreview.js';
 import {
  ensureYouTubeVisitorSession,
  extractYouTubeVideoId,
@@ -2007,6 +2008,8 @@ async function executeWebRemoteCommand(cmd) {
 }
 
 // Theo dõi biến động kênh thoại: phát hiện bị tắt mic (Server Mute / Stage), bị kick khỏi phòng, chuyển kênh AFK, hoặc kênh trống.
+let socialPreviewBusy = false;
+
 client.on(Events.VoiceStateUpdate, (oldState, newState) => {
  if (closing) return;
  const guild = newState.guild ?? oldState.guild;
@@ -4054,7 +4057,38 @@ client.on(Events.InteractionCreate, async i => {
  const reply = content => i.editReply({ content, allowedMentions: { parse: [] } });
  let ownsLock = false;
  try {
-  // Lệnh /gif chuyển Video sang ảnh động GIF nét cao (ai trong Server cũng dùng được, có hàng đợi riêng bảo vệ RAM 512MB).
+  // Xem trước công khai; giới hạn một lượt đồng thời để bảo vệ RAM.
+ if (i.commandName === 'preview') {
+  await i.deferReply();
+  if (socialPreviewBusy) return await i.editReply({ content: '⏳ Đang xử lý một link khác, bạn thử lại sau nhé.', allowedMentions: { parse: [] } });
+  socialPreviewBusy = true;
+  let downloaded = null;
+  try {
+   const result = await resolveSocialPreview(i.options.getString('url', true));
+   let note = '';
+   if (result.media) {
+    try {
+     downloaded = await downloadPreviewMedia(result.media, { maxBytes: i.attachmentSizeLimit || 7 * 1024 * 1024 });
+     if (!downloaded) note = 'Không thể đính kèm tệp từ nguồn này.';
+    } catch { note = 'Không thể đính kèm tệp (có thể tệp quá lớn hoặc nguồn chặn tải).'; }
+   } else {
+    note = 'Không lấy được tệp trực tiếp; hãy mở link gốc. Discord có thể tự hiện bản xem trước nếu nguồn cho phép.';
+   }
+   const description = [result.author ? `👤 ${result.author}` : null, result.title !== `Bài đăng ${result.platform}` ? result.title : null, note || null].filter(Boolean).join('\n');
+   const payload = {
+    content: `🔗 ${result.url}`,
+    embeds: [{ title: `🌐 ${result.platform}`, description: description.slice(0, 1000) || 'Bài đăng công khai', color: 0x34d399, ...(result.source ? { footer: { text: `Dữ liệu công khai qua ${result.source}` } } : {}) }],
+    allowedMentions: { parse: [] },
+    ...(downloaded ? { files: [downloaded.file] } : {}),
+   };
+   return await i.editReply(payload);
+  } finally {
+   if (downloaded) await downloaded.cleanup().catch(() => {});
+   socialPreviewBusy = false;
+  }
+ }
+
+ // Lệnh /gif chuyển Video sang ảnh động GIF nét cao (ai trong Server cũng dùng được, có hàng đợi riêng bảo vệ RAM 512MB).
  if (i.commandName === 'gif') {
   await handleGifCommandOrContext(i);
   return;

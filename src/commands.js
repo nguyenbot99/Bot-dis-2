@@ -41,6 +41,7 @@ const definitions = [
  ['savequeue', 'Đóng gói bài đang phát & toàn bộ hàng đợi thành Thẻ Phiên Nhạc để hôm sau mở lại 1 chạm'],
  ['webkey', 'Lấy mã PIN 6 số để điều khiển nhạc 2 chiều trực tiếp từ trên Website'],
  ['avatar', 'Soi ảnh đại diện gốc / Server / Banner 4K chống tự xóa & tự đăng lại nếu bị xóa'],
+ ['preview', 'Xem trước link mạng xã hội và thử gửi ảnh hoặc video công khai'],
  ['gif', 'Chuyển đổi Video sang ảnh động GIF nét cao (cắt giây, tốc độ, chèn chữ Meme)'],
  ['spamtag', 'Réo tên (@tag) gọi bạn bè liên tục kèm nút Dừng ngay & Xóa sạch dấu vết (chỉ Chủ Bot)'],
  ['lock', 'Khóa kênh chat (hỗ trợ chế độ 📢 Kênh Thông Báo hiện nút Theo dõi y hệt mẫu, chỉ Chủ Bot)'],
@@ -159,6 +160,7 @@ export const HELP_CATEGORIES = Object.freeze([
   description: 'Xem các lệnh thuộc danh mục Tra cứu & Tiện ích',
   color: 0x34d399,
   items: [
+   ['`/preview` `url`', 'Xem trước link TikTok, Instagram, Facebook, YouTube, X và Reddit; thử gửi tệp khi hỗ trợ'],
    ['`/gif` `[video]` `[url]` `[caption]` `[speed]`', 'Đổi Video sang ảnh động **GIF nét cao** (cắt giây, tốc độ `0.25x–3x`, chèn chữ Meme — dùng cả trong DM!)'],
    ['`/avatar` `[user]` `[type]`', 'Soi Avatar gốc / Avatar Server / Banner **4K** đóng băng file thật & **chống xóa tự động**'],
    ['`/nowplaying`', 'Xem thẻ thông tin chi tiết bài hát đang phát hiện tại'],
@@ -324,6 +326,7 @@ export function buildHelpEmbed(botUser) {
    {
     name: '📋 Tiện ích, Quản trị Kênh & Bảng Vàng',
     value: [
+     '`/preview` `url` — Xem trước link mạng xã hội và thử gửi ảnh/video công khai',
      '`/gif` `[video]` `[caption]` — Chuyển Video sang **GIF nét cao** + chèn chữ Meme (Server & DM)',
      '`/avatar` `[user]` `[type]` — Soi Avatar/Banner 4K (đóng băng ảnh & chống xóa tự động)',
      '`/lock` • `/unlock` • `/announce` — Khóa kênh kiểu 📢 Theo dõi & Đăng bài bằng Bot *(Chủ Bot)*',
@@ -613,6 +616,9 @@ export const slashCommands = definitions.map(([name, description]) => {
    .setName('next')
    .setDescription('Đặt True để chèn bài bạn chọn lên đầu hàng đợi (phát ngay kế tiếp)')
    .setRequired(false));
+ }
+ if (name === 'preview') {
+  c.addStringOption(o => o.setName('url').setDescription('Link bài đăng công khai cần xem trước').setRequired(true).setMaxLength(1500));
  }
  if (name === 'playfile') {
   c.addAttachmentOption(o => o

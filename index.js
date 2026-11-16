@@ -5,6 +5,7 @@ import { ActivityType, Client, Events, GatewayIntentBits, MessageFlags, Options,
 import { PlayerManager } from 'ziplayer';
 import ffmpeg from 'ffmpeg-static';
 import { isRecoverableNetworkOrStreamError } from './src/networkShield.js';
+import { playTrackChecked } from './src/playResult.js';
 import {
  ensureYouTubeVisitorSession,
  extractYouTubeVideoId,
@@ -1395,7 +1396,7 @@ async function enqueueTrackBatch(p, tracks, userId, playNext = false) {
     p.userdata.idleOpen = false;
     p.userdata.ttsOnlyIdle = false;
    }
-   const ok = await p.play(candidate, userId).catch(() => false);
+   const ok = await playTrackChecked(p, candidate, userId).catch(() => false);
    const reallyActive =
     Boolean(ok) &&
     Boolean(p.queue?.currentTrack) &&
@@ -1522,7 +1523,7 @@ async function enqueueAndPlay({ guild, voiceChannel, textChannel, rawQuery, user
     schedulePanelUpdate(p);
     return { track, queued: true, insertedNext: true, collectionName: null, addedCount: 1 };
    }
-   if (!(await p.play(track, userId))) throw new Error('Không thể phát bài hát YouTube này.');
+   if (!(await playTrackChecked(p, track, userId))) throw new Error('Không thể phát bài hát YouTube này.');
    if (hadCurrent) schedulePanelUpdate(p);
    return { track, queued: hadCurrent, insertedNext: false, collectionName: null, addedCount: 1 };
   }
@@ -1577,7 +1578,7 @@ async function enqueueAndPlay({ guild, voiceChannel, textChannel, rawQuery, user
    schedulePanelUpdate(p);
    return { track, queued: true, insertedNext: true, collectionName: null, addedCount: 1 };
   }
-  if (!(await p.play(track, userId))) throw new Error('Không thể phát bài hát này.');
+  if (!(await playTrackChecked(p, track, userId))) throw new Error('Không thể phát bài hát này.');
   if (hadCurrent) schedulePanelUpdate(p);
   return { track, queued: hadCurrent, insertedNext: false, collectionName: null, addedCount: 1 };
  } catch (e) {
@@ -1667,7 +1668,7 @@ async function enqueuePickedTrack({ guild, voiceChannel, textChannel, track, use
    schedulePanelUpdate(p);
    return { track, queued: true, insertedNext: true };
   }
-  const ok = await p.play(track, userId);
+  const ok = await playTrackChecked(p, track, userId);
   const reallyActive =
    hadCurrent ||
    (Boolean(ok) && Boolean(p.queue?.currentTrack) && Boolean(p.isPlaying || p.isBuffering || p.isPaused));
@@ -2017,6 +2018,51 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
 
  // Trường hợp trạng thái thoại của chính bot thay đổi (vào phòng, bị tắt/mở mic, bị kéo phòng hoặc bị kick).
  if ((newState.id ?? oldState.id) === client.user?.id) {
+  // Nếu bị kéo sang phòng khác, dùng rejoin của kết nối hiện tại để quay lại phòng cũ.
+  // Giới hạn số lần thử để tránh vòng lặp khi quản trị viên liên tục di chuyển bot.
+  if (oldState.channelId && newState.channelId && oldState.channelId !== newState.channelId && !p.userdata.manualDisconnect) {
+   const returning = p.userdata.returningVoiceChannelId;
+   if (returning && newState.channelId === returning) {
+    p.userdata.returningVoiceChannelId = null;
+   } else if (!returning) {
+    const now = Date.now();
+    const attempts = (p.userdata.moveReturnAttempts ?? []).filter(t => now - t < 30000);
+    if (attempts.length < 2) {
+     attempts.push(now);
+     p.userdata.moveReturnAttempts = attempts;
+     const targetId = oldState.channelId;
+     const target = guild.channels.cache.get(targetId);
+     const me = guild.members.me;
+     const perms = target?.permissionsFor(me);
+     p.userdata.returningVoiceChannelId = targetId;
+     let accepted = false;
+     try {
+      if (target && perms?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect, PermissionFlagsBits.Speak])) {
+       accepted = Boolean(p.connection?.rejoin({ channelId: targetId, selfDeaf: true, selfMute: false }));
+      }
+     } catch {}
+     if (accepted) {
+      const timer = setTimeout(() => {
+       if (p.destroyed || p.userdata?.returningVoiceChannelId !== targetId) return;
+       p.userdata.returningVoiceChannelId = null;
+       const actual = guild.members.me?.voice?.channelId;
+       if (actual && actual !== targetId) {
+        p.userdata.voiceChannelId = actual;
+        persistActiveSession(p, { immediate: true });
+        p.userdata.textChannel?.send?.({ content: `⚠️ Bot không thể tự quay lại phòng <#${targetId}>. Hãy kiểm tra quyền kết nối.` }).catch(() => {});
+       }
+      }, 10000);
+      timer.unref?.();
+      return;
+     }
+     p.userdata.returningVoiceChannelId = null;
+     p.userdata.textChannel?.send?.({ content: `⚠️ Bot không thể tự quay lại phòng <#${targetId}>. Hãy kiểm tra quyền kết nối.` }).catch(() => {});
+    }
+   } else {
+    // Chờ Discord xác nhận lần quay về đang diễn ra.
+    return;
+   }
+  }
   // Trong 15 giây đầu vừa khôi phục sau restart, nếu Discord dọn trễ phiên voice cũ gây rớt thoáng qua thì tự nối lại êm ái thay vì báo nhầm bị kick.
   if (p.userdata.restoringUntil && Date.now() < p.userdata.restoringUntil && !p.userdata.manualDisconnect) {
    if (newState.channelId) {

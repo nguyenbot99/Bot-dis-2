@@ -4074,9 +4074,10 @@ client.on(Events.InteractionCreate, async i => {
    } else {
     note = 'Không lấy được tệp trực tiếp; hãy mở link gốc. Discord có thể tự hiện bản xem trước nếu nguồn cho phép.';
    }
+   if (downloaded && result.coverOnly) note = 'Chỉ lấy được ảnh bìa; chưa lấy được video gốc.';
    const description = [result.author ? `👤 ${result.author}` : null, result.title !== `Bài đăng ${result.platform}` ? result.title : null, note || null].filter(Boolean).join('\n');
    const payload = {
-    content: `🔗 ${result.url}`,
+    content: `🔗 ${result.url}${result.embedUrl && !downloaded ? `\n🌐 Thử xem trực tiếp qua ${result.source}: ${result.embedUrl}` : ''}`,
     embeds: [{ title: `🌐 ${result.platform}`, description: description.slice(0, 1000) || 'Bài đăng công khai', color: 0x34d399, ...(result.source ? { footer: { text: `Dữ liệu công khai qua ${result.source}` } } : {}) }],
     allowedMentions: { parse: [] },
     ...(downloaded ? { files: [downloaded.file] } : {}),

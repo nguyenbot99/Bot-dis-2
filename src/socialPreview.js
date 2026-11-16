@@ -40,6 +40,50 @@ async function readJsonLimited(url, fetchImpl) {
  return JSON.parse(Buffer.concat(chunks, total).toString('utf8'));
 }
 
+// Chỉ đọc metadata HTML từ dịch vụ đã chọn, giới hạn dung lượng và thời gian.
+async function readOpenGraph(url, fetchImpl) {
+ const res = await fetchImpl(url, { redirect: 'error', signal: AbortSignal.timeout(12000), headers: { 'User-Agent': 'Discordbot/2.0', Accept: 'text/html' } });
+ if (!res.ok || !res.body || !(res.headers.get('content-type') || '').toLowerCase().includes('text/html')) throw new Error('Không đọc được dữ liệu xem trước.');
+ const chunks = []; let total = 0;
+ for await (const part of res.body) {
+  total += part.length;
+  if (total > MAX_JSON) throw new Error('Dữ liệu xem trước quá lớn.');
+  chunks.push(Buffer.from(part));
+ }
+ const html = Buffer.concat(chunks, total).toString('utf8');
+ const decode = value => value.replace(/&(?:amp|quot|apos|lt|gt|#(?:x[0-9a-f]+|[0-9]+));/gi, entity => {
+  const map = { '&amp;': '&', '&quot;': '"', '&apos;': "'", '&lt;': '<', '&gt;': '>' };
+  if (map[entity.toLowerCase()]) return map[entity.toLowerCase()];
+  const n = entity.slice(2, -1); const code = n[0]?.toLowerCase() === 'x' ? parseInt(n.slice(1), 16) : parseInt(n, 10);
+  return Number.isFinite(code) && code >= 0 && code <= 0x10ffff ? String.fromCodePoint(code) : '';
+ });
+ const result = {};
+ for (const tag of html.match(/<meta\s+[^>]{1,8192}>/gi) || []) {
+  const attrs = {};
+  for (const m of tag.matchAll(/([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g)) attrs[m[1].toLowerCase()] = decode(m[2] ?? m[3] ?? '');
+  const key = (attrs.property || attrs.name || '').toLowerCase();
+  if (key.startsWith('og:') && attrs.content && !(key in result)) result[key] = attrs.content;
+ }
+ return result;
+}
+
+export function socialEmbedProxy(parsed) {
+ const original = new URL(parsed.url);
+ if (parsed.platform === 'Instagram') {
+  const m = original.pathname.match(/^\/(?:[A-Za-z0-9._]+\/)?(p|reel|reels)\/([A-Za-z0-9_-]{2,40})\/?$/i);
+  if (!m) return null;
+  return `https://ig.mynameistito.com/${m[1].toLowerCase()}/${m[2]}/`;
+ }
+ if (parsed.platform === 'Facebook' && (original.hostname === 'facebook.com' || original.hostname.endsWith('.facebook.com'))) {
+  // Chỉ chuyển đường dẫn bài đăng, không chuyển các tham số đăng nhập/theo dõi.
+  if (!/^\/(?:reel\/\d+\/?|watch\/?|share\/(?:r|v|p)\/[A-Za-z0-9]+\/?|[A-Za-z0-9.]+\/(?:videos|posts)\/[A-Za-z0-9._-]+\/?)$/i.test(original.pathname)) return null;
+  const url = new URL(`https://www.facecot.com${original.pathname}`);
+  if (original.pathname.startsWith('/watch') && /^\d+$/.test(original.searchParams.get('v') || '')) url.searchParams.set('v', original.searchParams.get('v'));
+  return url.toString();
+ }
+ return null;
+}
+
 export async function resolveSocialPreview(input, { fetchImpl = fetch } = {}) {
  const parsed = parseSocialUrl(input);
  const result = { ...parsed, title: `Bài đăng ${parsed.platform}`, author: '', media: null, source: null };
@@ -56,6 +100,18 @@ export async function resolveSocialPreview(input, { fetchImpl = fetch } = {}) {
    else if (typeof data.wmplay === 'string' && data.wmplay) result.media = { url: data.wmplay, type: 'video' };
    else if (typeof data.play === 'string' && data.play) result.media = { url: data.play, type: 'video' };
    result.source = 'TikWM';
+  } else if (parsed.platform === 'Instagram' || parsed.platform === 'Facebook') {
+   const proxy = socialEmbedProxy(parsed);
+   if (!proxy) return result;
+   result.embedUrl = proxy;
+   result.source = parsed.platform === 'Instagram' ? 'fxinstagram' : 'Facecot';
+   const og = await readOpenGraph(proxy, fetchImpl);
+   result.title = String(og['og:title'] || og['og:description'] || result.title).slice(0, 240);
+   const video = og['og:video:secure_url'] || og['og:video'];
+   const image = og['og:image:secure_url'] || og['og:image'];
+   if (video && allowedMediaUrl(video)) result.media = { url: video, type: 'video' };
+   else if (image && allowedMediaUrl(image)) result.media = { url: image, type: 'image' };
+   if (result.media?.type === 'image' && parsed.platform === 'Facebook' && /\/(?:reel|videos|watch)(?:\/|$)/i.test(new URL(parsed.url).pathname)) result.coverOnly = true;
   } else if (parsed.platform === 'X') {
    const match = new URL(parsed.url).pathname.match(/^\/(?:[A-Za-z0-9_]+|i\/web)\/status\/(\d{5,25})\/?$/);
    if (!match) return result;
@@ -77,7 +133,7 @@ export function allowedMediaUrl(raw) {
  try {
   const url = new URL(raw);
   if (url.protocol !== 'https:' || url.username || url.password || url.port) return false;
-  return ['tiktokcdn.com', 'tiktokcdn-us.com', 'tiktokcdn-eu.com', 'tikwm.com', 'twimg.com'].some(root => belongs(url.hostname.toLowerCase(), root));
+  return ['tiktokcdn.com', 'tiktokcdn-us.com', 'tiktokcdn-eu.com', 'tikwm.com', 'twimg.com', 'cdninstagram.com', 'fbcdn.net', 'facecot.com'].some(root => belongs(url.hostname.toLowerCase(), root));
  } catch { return false; }
 }
 

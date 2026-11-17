@@ -77,3 +77,12 @@ test('Facebook cho biết ảnh bìa khi video không có sẵn', async () => {
  const result = await resolveSocialPreview('https://www.facebook.com/reel/123', { fetchImpl });
  assert.equal(result.coverOnly, true);
 });
+
+test('TikTok: ưu tiên MP4 CDN trước wmplay ở miền không cho phép', async () => {
+ const play = 'https://v16m.tiktokcdn-us.com/video/test.mp4';
+ const wmplay = 'https://api16-normal-useast5.tiktokv.us/aweme/v1/play/?video_id=123';
+ const fetchImpl = async () => new Response(JSON.stringify({ code: 0, data: { title: 'Video công khai', play, wmplay, size: 3525204 } }));
+ const result = await resolveSocialPreview('https://vt.tiktok.com/ZSpGqa4c5/', { fetchImpl });
+ assert.deepEqual(result.media, { url: play, type: 'video' });
+ assert.equal(allowedMediaUrl(wmplay), false);
+});

@@ -27,8 +27,8 @@ export function parseSocialUrl(input) {
  return { platform, url: url.toString() };
 }
 
-async function readJsonLimited(url, fetchImpl) {
- const res = await fetchImpl(url, { redirect: 'error', signal: AbortSignal.timeout(12000), headers: { 'Accept': 'application/json' } });
+async function readJsonLimited(url, fetchImpl, timeoutMs = 12000) {
+ const res = await fetchImpl(url, { redirect: 'error', signal: AbortSignal.timeout(timeoutMs), headers: { 'Accept': 'application/json' } });
  if (!res.ok || !res.body) throw new Error('Dịch vụ xem trước không phản hồi.');
  let total = 0;
  const chunks = [];
@@ -91,14 +91,17 @@ export async function resolveSocialPreview(input, { fetchImpl = fetch } = {}) {
   if (parsed.platform === 'TikTok') {
    const endpoint = new URL('https://www.tikwm.com/api/');
    endpoint.searchParams.set('url', parsed.url);
-   const data = (await readJsonLimited(endpoint, fetchImpl))?.data;
+   // TikWM có thể mất hơn 12 giây cho link rút gọn; đã defer tương tác Discord.
+   const data = (await readJsonLimited(endpoint, fetchImpl, 28000))?.data;
    if (!data || typeof data !== 'object') return result;
    result.title = String(data.title || result.title).slice(0, 240);
    result.author = String(data.author?.nickname || data.author?.unique_id || '').slice(0, 100);
-   const image = Array.isArray(data.images) ? data.images.find(x => typeof x === 'string') : null;
+   const image = Array.isArray(data.images) ? data.images.find(x => typeof x === 'string' && allowedMediaUrl(x)) : null;
+   // wmplay đôi lúc trỏ đến tiktokv.us (không nằm trong danh sách tải an toàn),
+   // còn play là MP4 trên CDN TikTok. Ưu tiên play để gửi được tệp video.
+   const video = [data.play, data.wmplay, data.hdplay].find(x => typeof x === 'string' && allowedMediaUrl(x));
    if (image) result.media = { url: image, type: 'image' };
-   else if (typeof data.wmplay === 'string' && data.wmplay) result.media = { url: data.wmplay, type: 'video' };
-   else if (typeof data.play === 'string' && data.play) result.media = { url: data.play, type: 'video' };
+   else if (video) result.media = { url: video, type: 'video' };
    result.source = 'TikWM';
   } else if (parsed.platform === 'Instagram' || parsed.platform === 'Facebook') {
    const proxy = socialEmbedProxy(parsed);

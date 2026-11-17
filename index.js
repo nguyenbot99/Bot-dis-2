@@ -6,7 +6,7 @@ import { PlayerManager } from 'ziplayer';
 import ffmpeg from 'ffmpeg-static';
 import { isRecoverableNetworkOrStreamError } from './src/networkShield.js';
 import { playTrackChecked } from './src/playResult.js';
-import { resolveSocialPreview, downloadPreviewMedia } from './src/socialPreview.js';
+import { resolveSocialPreview, downloadPreviewMedia, buildSocialPreviewPayload } from './src/socialPreview.js';
 import {
  ensureYouTubeVisitorSession,
  extractYouTubeVideoId,
@@ -4063,6 +4063,7 @@ client.on(Events.InteractionCreate, async i => {
   if (socialPreviewBusy) return await i.editReply({ content: '⏳ Đang xử lý một link khác, bạn thử lại sau nhé.', allowedMentions: { parse: [] } });
   socialPreviewBusy = true;
   let downloaded = null;
+  let cover = null;
   try {
    const result = await resolveSocialPreview(i.options.getString('url', true));
    let note = '';
@@ -4075,15 +4076,16 @@ client.on(Events.InteractionCreate, async i => {
     note = 'Không lấy được tệp trực tiếp; hãy mở link gốc. Discord có thể tự hiện bản xem trước nếu nguồn cho phép.';
    }
    if (downloaded && result.coverOnly) note = 'Chỉ lấy được ảnh bìa; chưa lấy được video gốc.';
-   const description = [result.author ? `👤 ${result.author}` : null, result.title !== `Bài đăng ${result.platform}` ? result.title : null, note || null].filter(Boolean).join('\n');
-   const payload = {
-    content: `🔗 ${result.url}${result.embedUrl && !downloaded ? `\n🌐 Thử xem trực tiếp qua ${result.source}: ${result.embedUrl}` : ''}`,
-    embeds: [{ title: `🌐 ${result.platform}`, description: description.slice(0, 1000) || 'Bài đăng công khai', color: 0x34d399, ...(result.source ? { footer: { text: `Dữ liệu công khai qua ${result.source}` } } : {}) }],
-    allowedMentions: { parse: [] },
-    ...(downloaded ? { files: [downloaded.file] } : {}),
-   };
-   return await i.editReply(payload);
+   // Ảnh bìa tối đa 512 KiB; nếu tải lỗi, video thật vẫn được gửi bình thường.
+   if (downloaded && result.media?.type === 'video' && result.cover) {
+    try { cover = await downloadPreviewMedia({ url: result.cover, type: 'image' }, { maxBytes: Math.min(512 * 1024, i.attachmentSizeLimit || 512 * 1024) }); }
+    catch { /* Giữ video, bỏ ảnh bìa khi CDN không phản hồi. */ }
+   }
+   return await i.editReply(buildSocialPreviewPayload(result, {
+    mediaFile: downloaded?.file, coverFile: cover?.file, note,
+   }));
   } finally {
+   if (cover) await cover.cleanup().catch(() => {});
    if (downloaded) await downloaded.cleanup().catch(() => {});
    socialPreviewBusy = false;
   }

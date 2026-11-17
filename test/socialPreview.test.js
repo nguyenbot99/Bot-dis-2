@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { stat } from 'node:fs/promises';
-import { parseSocialUrl, resolveSocialPreview, downloadPreviewMedia, allowedMediaUrl } from '../src/socialPreview.js';
+import { parseSocialUrl, resolveSocialPreview, downloadPreviewMedia, allowedMediaUrl, buildSocialPreviewPayload } from '../src/socialPreview.js';
 
 test('Chỉ chấp nhận link HTTPS thuộc nền tảng hỗ trợ', () => {
  assert.equal(parseSocialUrl('https://vt.tiktok.com/ZS123/?tracking=abc').url, 'https://vt.tiktok.com/ZS123/');
@@ -85,4 +85,29 @@ test('TikTok: ưu tiên MP4 CDN trước wmplay ở miền không cho phép', as
  const result = await resolveSocialPreview('https://vt.tiktok.com/ZSpGqa4c5/', { fetchImpl });
  assert.deepEqual(result.media, { url: play, type: 'video' });
  assert.equal(allowedMediaUrl(wmplay), false);
+});
+
+test('Thẻ video TikTok có tác giả, ảnh bìa nằm trong Embed và MP4 thật ở ngoài', () => {
+ const result = {
+  platform: 'TikTok', url: 'https://vt.tiktok.com/ZSpGqa4c5/',
+  title: 'Sáo bay về nơi chân trời', author: 'ADAM', handle: 'adam_123',
+  avatar: 'https://p19.tiktokcdn-us.com/avatar.jpeg', cover: 'https://p16.tiktokcdn-us.com/cover.jpeg',
+  media: { type: 'video', url: 'https://v16m.tiktokcdn-us.com/video/' }, source: 'TikWM',
+ };
+ const payload = buildSocialPreviewPayload(result, { mediaFile: '/tmp/a/bai-dang.mp4', coverFile: '/tmp/b/bai-dang.webp' });
+ assert.equal(payload.content, '');
+ assert.equal(payload.files.length, 2);
+ assert.deepEqual(payload.files[1], { attachment: '/tmp/b/bai-dang.webp', name: 'anh-bia.webp' });
+ assert.equal(payload.embeds[0].image.url, 'attachment://anh-bia.webp');
+ assert.equal(payload.embeds[0].author.name, 'ADAM (@adam_123)');
+ assert.equal(payload.embeds[0].url, result.url);
+ assert.equal(payload.embeds[0].footer.text.includes('Video được đính kèm'), true);
+});
+
+test('Ảnh đính kèm được hiển thị ngay trong thẻ, không tạo thêm link preview', () => {
+ const result = { platform: 'TikTok', url: 'https://vt.tiktok.com/abc/', title: 'Ảnh', media: { type: 'image' }, source: 'TikWM' };
+ const payload = buildSocialPreviewPayload(result, { mediaFile: '/tmp/bai-dang.jpg' });
+ assert.equal(payload.content, '');
+ assert.equal(payload.embeds[0].image.url, 'attachment://bai-dang.jpg');
+ assert.deepEqual(payload.files, ['/tmp/bai-dang.jpg']);
 });

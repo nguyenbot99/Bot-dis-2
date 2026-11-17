@@ -96,6 +96,9 @@ export async function resolveSocialPreview(input, { fetchImpl = fetch } = {}) {
    if (!data || typeof data !== 'object') return result;
    result.title = String(data.title || result.title).slice(0, 240);
    result.author = String(data.author?.nickname || data.author?.unique_id || '').slice(0, 100);
+   result.handle = String(data.author?.unique_id || '').replace(/^@/, '').slice(0, 40);
+   if (typeof data.author?.avatar === 'string' && allowedMediaUrl(data.author.avatar)) result.avatar = data.author.avatar;
+   if (typeof data.cover === 'string' && allowedMediaUrl(data.cover)) result.cover = data.cover;
    const image = Array.isArray(data.images) ? data.images.find(x => typeof x === 'string' && allowedMediaUrl(x)) : null;
    // wmplay đôi lúc trỏ đến tiktokv.us (không nằm trong danh sách tải an toàn),
    // còn play là MP4 trên CDN TikTok. Ưu tiên play để gửi được tệp video.
@@ -168,4 +171,33 @@ export async function downloadPreviewMedia(media, { fetchImpl = fetch, maxBytes 
   await rm(dir, { recursive: true, force: true }).catch(() => {});
   throw error;
  }
+}
+
+// Discord không hỗ trợ video đính kèm nằm bên trong Embed; ảnh bìa nằm trong thẻ,
+// còn tệp MP4 thật được Discord hiển thị bằng trình phát riêng.
+export function buildSocialPreviewPayload(result, { mediaFile = null, coverFile = null, note = '' } = {}) {
+ const isVideo = result.media?.type === 'video' && !!mediaFile;
+ const imageFile = isVideo ? coverFile : (result.media?.type === 'image' ? mediaFile : null);
+ const files = [];
+ if (mediaFile) files.push(mediaFile);
+ const coverName = coverFile ? `anh-bia${path.extname(coverFile)}` : null;
+ if (isVideo && coverFile) files.push({ attachment: coverFile, name: coverName });
+ const author = [result.author, result.handle && !result.author?.includes(result.handle) ? `(@${result.handle})` : null].filter(Boolean).join(' ');
+ const description = [result.title !== `Bài đăng ${result.platform}` ? result.title : null, note].filter(Boolean).join('\n\n').slice(0, 1200);
+ const embed = {
+  color: result.platform === 'TikTok' ? 0x25f4ee : 0x34d399,
+  title: `${isVideo ? '🎬' : result.media?.type === 'image' ? '🖼️' : '🔗'} ${result.platform}`,
+  url: result.url,
+  description: description || 'Bài đăng công khai',
+  ...(author ? { author: { name: author.slice(0, 250), ...(result.avatar && allowedMediaUrl(result.avatar) ? { icon_url: result.avatar } : {}) } } : {}),
+  ...(imageFile ? { image: { url: `attachment://${isVideo ? coverName : path.basename(imageFile)}` } } : {}),
+  footer: { text: `${isVideo ? 'Video được đính kèm phía trên' : result.coverOnly ? 'Chỉ có ảnh bìa, không có video gốc' : 'Xem bài gốc qua tiêu đề'}${result.source ? ` • Nguồn: ${result.source}` : ''}`.slice(0, 200) },
+ };
+ return {
+  // Không gửi link trần khi đã có tệp: tránh Discord tự sinh thêm khung xem trước.
+  content: !mediaFile ? `🔗 <${result.url}>${result.embedUrl ? `\n🌐 <${result.embedUrl}>` : ''}` : '',
+  embeds: [embed],
+  allowedMentions: { parse: [] },
+  ...(files.length ? { files } : {}),
+ };
 }

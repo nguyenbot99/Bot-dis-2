@@ -23,9 +23,10 @@ export function evaluateBotVoiceTransition(oldState, newState, session = {}, opt
    return { action: 'manual_leave', oldChannelId };
   }
 
-  if (session.stay247) {
+  if (session.stay247 || options.autoReconnectNormal) {
+   const was247 = Boolean(session.stay247);
    const prevKicks = Array.isArray(session.kickTimestamps) ? session.kickTimestamps : [];
-   const recentKicks = prevKicks.filter(ts => now - ts < KICK_WINDOW_MS);
+   const recentKicks = prevKicks.filter(ts => now >= ts && now - ts < KICK_WINDOW_MS);
    recentKicks.push(now);
    session.kickTimestamps = recentKicks;
 
@@ -35,14 +36,14 @@ export function evaluateBotVoiceTransition(oldState, newState, session = {}, opt
     session.muteReason = null;
     session.autoPausedByMute = false;
     return {
-     action: 'kicked_abort_247',
+     action: was247 ? 'kicked_abort_247' : 'kicked_abort_reconnect',
      oldChannelId,
      kickCount: recentKicks.length,
     };
    }
 
    return {
-    action: 'kicked_reconnect_247',
+    action: was247 ? 'kicked_reconnect_247' : 'kicked_reconnect',
     oldChannelId,
     kickCount: recentKicks.length,
    };
@@ -175,25 +176,28 @@ export function buildVoiceGuardEmbed(event, { autoDeleteMs = 270000 } = {}) {
      autoCleanLine,
     ].filter(Boolean).join('\n'));
 
+  case 'kicked_reconnect':
   case 'kicked_reconnect_247':
    return new EmbedBuilder()
     .setColor(0xfee75c)
-    .setTitle('⚠️ Phát hiện bot bị kick / ngắt kết nối khỏi phòng')
+    .setTitle('⚠️ Bot bị ngắt kết nối khỏi phòng thoại')
     .setDescription([
-     `Bot vừa bị đưa ra khỏi phòng <#${event.oldChannelId}>.`,
-     '🌙 Vì chế độ **24/7** đang bật nên bot sẽ thử vào lại sau **3 giây**.',
-     '-# Dùng `/leave` hoặc `/247 mode:off` nếu bạn muốn cho bot nghỉ hẳn.',
-    ].join('\n'));
+     `Bot vừa rời phòng <#${event.oldChannelId}>; sẽ **thử vào lại một lần sau 3 giây**.`,
+     event.hasSavedMusic ? '💾 Đã lưu bài, mốc đang phát và hàng đợi để thử khôi phục.' : null,
+     '🛑 Nếu bot tiếp tục bị kick trong 30 giây, bot sẽ dừng tự vào lại để tôn trọng quản trị viên.',
+    ].filter(Boolean).join('\n'));
 
+  case 'kicked_abort_reconnect':
   case 'kicked_abort_247':
    return new EmbedBuilder()
     .setColor(0xed4245)
-    .setTitle('👢 Bot bị kick khỏi phòng liên tiếp — Đã tắt 24/7')
+    .setTitle('👢 Bot bị kick liên tiếp — Đã dừng tự vào lại')
     .setDescription([
-     `Phát hiện bot bị đưa ra khỏi phòng <#${event.oldChannelId}> nhiều lần liên tiếp.`,
-     '🛑 Bot đã **tự tắt chế độ 24/7** và dừng vào lại để tránh làm phiền quản trị viên.',
+     `Phát hiện bot bị đưa ra khỏi phòng <#${event.oldChannelId}> nhiều lần trong 30 giây.`,
+     event.action === 'kicked_abort_247' ? '🛑 Đã tắt chế độ 24/7.' : null,
+     '🛑 Bot sẽ không tiếp tục tự vào lại để tránh làm phiền quản trị viên.',
      event.hasSavedMusic
-      ? '💾 Nhạc đang phát & hàng đợi vẫn được lưu tạm — gõ `/join` hoặc `/247` để phát tiếp khi cần.'
+      ? '💾 Nhạc & hàng đợi được giữ tạm; dùng `/join` để thử phát tiếp khi được phép.'
       : null,
      autoCleanLine,
     ].filter(Boolean).join('\n'));

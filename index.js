@@ -442,6 +442,8 @@ const guildKickAlerts = new Map();
 const guildLastKickAlertAt = new Map();
 const guildLastRejoinAt = new Map();
 const guildKickSnapshots = new Map();
+const guildKickAttempts = new Map(); // Giữ lượt kick giữa hai phiên Player để không lặp vô hạn.
+const guildKickRecoveryPending = new Map();
 const pendingAutoDeletes = new Map();
 const pendingSearches = new Map(); // token -> { userId, guildId, playNext, tracks, expiresAt }
 const channelLastSweepAt = new Map();
@@ -935,13 +937,18 @@ async function restoreKickSnapshotIfAny(player, voiceChannel, fallbackUserId) {
  if (!guildId) return null;
  const snap = guildKickSnapshots.get(guildId);
  if (!snap) return null;
- guildKickSnapshots.delete(guildId);
- if (Date.now() - snap.savedAt > KICK_SNAPSHOT_TTL_MS) return null;
+ if (Date.now() - snap.savedAt > KICK_SNAPSHOT_TTL_MS) {
+  guildKickSnapshots.delete(guildId);
+  return null;
+ }
 
  const allTracks = [snap.currentTrack, ...(snap.upcomingTracks ?? [])]
   .filter(Boolean)
   .map(healRestoredYouTubeTrack);
- if (!allTracks.length) return null;
+ if (!allTracks.length) {
+  guildKickSnapshots.delete(guildId);
+  return null;
+ }
  const [firstTrack, ...restTracks] = allTracks;
 
  const origOwner = resolveHumanRequester(firstTrack.requestedBy) || snap.ownerId;
@@ -969,7 +976,7 @@ async function restoreKickSnapshotIfAny(player, voiceChannel, fallbackUserId) {
  if (typeof snap.volume === 'number' && snap.volume !== 100) player.setVolume(snap.volume);
  if (snap.autoPlay) player.autoPlay(true);
 
- const played = await player.play(firstTrack, firstTrack.requestedBy || fallbackUserId).catch(() => false);
+ const played = await playTrackChecked(player, firstTrack, firstTrack.requestedBy || fallbackUserId).catch(() => false);
  if (!played) return null;
 
  if (restTracks.length > 0) {
@@ -989,6 +996,8 @@ async function restoreKickSnapshotIfAny(player, voiceChannel, fallbackUserId) {
  if (snap.wasPaused && !player.isPaused) {
   await player.pause().catch(() => {});
  }
+ if (player.destroyed || manager.get(guildId) !== player) return null;
+ if (guildKickSnapshots.get(guildId) === snap) guildKickSnapshots.delete(guildId);
  if (player.userdata && !player.userdata.panelMessage) {
   player.userdata.pendingKickRestoreSync = true;
  }
@@ -998,6 +1007,46 @@ async function restoreKickSnapshotIfAny(player, voiceChannel, fallbackUserId) {
   resumedAtMs,
   queuedCount: restTracks.length,
  };
+}
+
+// Chỉ tự thử vào lại một lần; dùng chính cơ chế /join để khôi phục bài + mốc tua,
+// không giữ luồng âm thanh cũ chạy ngầm khi bot đang ngoài phòng thoại.
+function scheduleKickRecovery({ guild, channelId, textChannel, ownerId, was247, snapshot }) {
+ const token = {};
+ guildKickRecoveryPending.set(guild.id, token);
+ const timer = setTimeout(async () => {
+  if (guildKickRecoveryPending.get(guild.id) !== token) return;
+  guildKickRecoveryPending.delete(guild.id);
+  if (closing || manager.get(guild.id) || (snapshot && guildKickSnapshots.get(guild.id) !== snapshot)) return;
+  // Nếu quản trị viên/chủ bot đã gọi bot vào phòng khác thì không giành lại kết nối.
+  if (guild.members.me?.voice?.channelId) return;
+  try {
+   const target = guild.channels.cache.get(channelId);
+   if (!target || target.type !== 2) throw new Error('Phòng thoại không còn tồn tại.');
+   const me = guild.members.me ?? await guild.members.fetchMe().catch(() => null);
+   if (!me || !target.permissionsFor(me)?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect, PermissionFlagsBits.Speak])) {
+    throw new Error('Bot không có quyền vào phòng thoại.');
+   }
+   const { player } = await ensureVoiceSession({ guild, voiceChannel: target, textChannel, userId: ownerId, initial247: was247 });
+   if (snapshot) {
+    const restored = await restoreKickSnapshotIfAny(player, target, ownerId);
+    if (!restored) {
+     // Không khẳng định tiếp tục được nếu nguồn bị khóa/mốc seek bị lỗi.
+     if (!was247 && manager.get(guild.id) === player) await destroyPlayerSession(guild.id, '⚠️ Bot đã vào lại nhưng không thể phát tiếp bài cũ. Dùng `/join` để thử lại.');
+     textChannel?.send?.({ content: '⚠️ Đã thử vào lại phòng nhưng chưa khôi phục được bài đang phát. Bạn có thể dùng `/join` để thử lại.', allowedMentions: { parse: [] } }).catch(() => {});
+     return;
+    }
+    const pos = restored.resumedAtMs > 0 ? ` tại mốc ${formatDuration(restored.resumedAtMs)}` : ' (không tua được tới mốc cũ)';
+    textChannel?.send?.({ content: `▶️ Bot đã vào lại <#${channelId}> và phát tiếp **${cleanText(restored.track.title, 85)}**${pos}.`, allowedMentions: { parse: [] } }).catch(() => {});
+   } else if (was247) {
+    void closeCurrentPanel(player, 'Đã vào lại phòng thoại 24/7 sau khi ngắt kết nối.', { keepIdle247: true });
+   }
+  } catch (err) {
+   console.warn('[khôi-phục-kick] Không thể vào lại:', err?.message ?? 'Lỗi');
+   textChannel?.send?.({ content: `⚠️ Bot không thể tự vào lại <#${channelId}>. Kiểm tra quyền kết nối hoặc dùng \`/join\` sau nhé.`, allowedMentions: { parse: [] } }).catch(() => {});
+  }
+ }, 3000);
+ timer.unref?.();
 }
 
 // Tự động xóa thông báo bị kick khỏi phòng ngay khi bot được gọi vào lại kênh thoại (kể cả thông báo cũ trước lúc bot restart).
@@ -2087,11 +2136,19 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
    }
   }
 
+  if (oldState.channelId && !newState.channelId && !p.userdata.manualDisconnect) {
+   p.userdata.kickTimestamps = guildKickAttempts.get(guild.id) ?? [];
+  }
   const ev = evaluateBotVoiceTransition(oldState, newState, p.userdata, {
    afkChannelId: guild.afkChannelId,
    isPlaying: Boolean(p.isPlaying || p.queue?.currentTrack),
    isPaused: Boolean(p.isPaused),
+   autoReconnectNormal: Boolean(p.queue?.currentTrack || p.currentTrack),
   });
+  if (ev.action.startsWith('kicked_') && ev.kickCount) {
+   if (guildKickAttempts.size >= 50 && !guildKickAttempts.has(guild.id)) guildKickAttempts.clear();
+   guildKickAttempts.set(guild.id, p.userdata.kickTimestamps);
+  }
 
   if (ev.action === 'manual_leave') return;
 
@@ -2106,7 +2163,7 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
    return;
   }
 
-  if (ev.action === 'kicked_abort_247') {
+  if (ev.action === 'kicked_abort_247' || ev.action === 'kicked_abort_reconnect') {
    if (p.userdata.kickHandled) return;
    p.userdata.kickHandled = true;
    const alertChannel = p.userdata.textChannel;
@@ -2114,28 +2171,28 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
    ev.hasSavedMusic = Boolean(saved);
    void destroyPlayerSession(
     guild.id,
-    `👢 Phát hiện bot bị kick khỏi kênh <#${ev.oldChannelId}> liên tiếp — đã tự tắt 24/7 và rời phòng.`,
+    `👢 Bot bị kick khỏi kênh <#${ev.oldChannelId}> liên tiếp — đã dừng tự vào lại${ev.action === 'kicked_abort_247' ? ' và tắt 24/7' : ''}.`,
    );
    void sendVoiceGuardAlert(alertChannel, null, ev, guild.id);
    return;
   }
 
-  if (ev.action === 'kicked_reconnect_247') {
-   void sendVoiceGuardAlert(p.userdata.textChannel, p.userdata, ev, guild.id);
-   if (Date.now() - p.userdata.lastReconnectAt > 4000) {
-    p.userdata.lastReconnectAt = Date.now();
-    const target = guild.channels.cache.get(p.userdata.voiceChannelId);
-    const timer = setTimeout(() => {
-     if (!p.destroyed && p.userdata?.stay247 && !p.userdata.manualDisconnect && target) {
-      p.connect(target).catch(() => {
-       const ch = p.userdata?.textChannel;
-       void destroyPlayerSession(guild.id, `🚫 Bot không còn quyền vào lại kênh thoại <#${ev.oldChannelId}>.`);
-       ch?.send?.({ content: `🚫 Bot không còn quyền kết nối lại vào kênh <#${ev.oldChannelId}> — đã dừng chế độ 24/7.` }).catch(() => {});
-      });
-     }
-    }, 3000);
-    timer.unref?.();
-   }
+  if (ev.action === 'kicked_reconnect_247' || ev.action === 'kicked_reconnect') {
+   if (p.userdata.kickHandled) return;
+   p.userdata.kickHandled = true;
+   const channelId = ev.oldChannelId;
+   const textChannel = p.userdata.textChannel;
+   const was247 = Boolean(p.userdata.stay247);
+   const snapshot = captureKickSnapshot(p);
+   const ownerId = resolveHumanRequester(snapshot?.currentTrack?.requestedBy) || p.userdata.ownerId || client.user?.id;
+   ev.hasSavedMusic = Boolean(snapshot);
+   void sendVoiceGuardAlert(textChannel, null, ev, guild.id);
+   void (async () => {
+    await destroyPlayerSession(guild.id, `👢 Bot vừa bị ngắt kết nối khỏi <#${channelId}>, đang thử khôi phục.`);
+    if (!closing && (snapshot || was247)) {
+     scheduleKickRecovery({ guild, channelId, textChannel, ownerId, was247, snapshot });
+    }
+   })().catch(err => console.warn('[khôi-phục-kick] Không thể chuẩn bị:', err?.message ?? 'Lỗi'));
    return;
   }
 

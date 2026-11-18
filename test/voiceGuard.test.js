@@ -122,3 +122,27 @@ test('detects being dragged to AFK channel and pauses playback', () => {
  assert.equal(movedAfk.shouldPause, true);
  assert.match(buildVoiceGuardEmbed(movedAfk).toJSON().title, /AFK/);
 });
+
+test('chế độ thường tự vào lại một lần khi đang phát, kick lần hai trong 30 giây thì dừng', () => {
+ const firstSession = { manualDisconnect: false, stay247: false, kickTimestamps: [] };
+ const first = evaluateBotVoiceTransition(
+  { channelId: '100' }, { channelId: null }, firstSession,
+  { autoReconnectNormal: true, now: 1000 },
+ );
+ assert.equal(first.action, 'kicked_reconnect');
+ assert.equal(first.oldChannelId, '100');
+ assert.match(buildVoiceGuardEmbed({ ...first, hasSavedMusic: true }).toJSON().description, /mốc đang phát/);
+ // Phiên mới sau khi vào lại vẫn nhớ lần kick trước, không thành vòng lặp.
+ const secondSession = { manualDisconnect: false, stay247: false, kickTimestamps: firstSession.kickTimestamps };
+ const second = evaluateBotVoiceTransition(
+  { channelId: '100' }, { channelId: null }, secondSession,
+  { autoReconnectNormal: true, now: 12000 },
+ );
+ assert.equal(second.action, 'kicked_abort_reconnect');
+ assert.match(buildVoiceGuardEmbed(second).toJSON().description, /không tiếp tục tự vào lại/);
+ const afterWindow = evaluateBotVoiceTransition(
+  { channelId: '100' }, { channelId: null }, { kickTimestamps: secondSession.kickTimestamps },
+  { autoReconnectNormal: true, now: 44000 },
+ );
+ assert.equal(afterWindow.action, 'kicked_reconnect');
+});

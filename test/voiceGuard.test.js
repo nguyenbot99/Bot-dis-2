@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildVoiceGuardEmbed, evaluateBotVoiceTransition } from '../src/voiceGuard.js';
+import { buildVoiceGuardEmbed, evaluateBotVoiceTransition, shouldAttemptSelfUnmute } from '../src/voiceGuard.js';
 import { buildIdle247Payload, buildPlayerPayload } from '../src/playerGui.js';
 
 test('detects Server Mute, auto-pauses playing music, and auto-resumes when unmuted', () => {
@@ -145,4 +145,18 @@ test('chế độ thường tự vào lại một lần khi đang phát, kick l�
   { autoReconnectNormal: true, now: 44000 },
  );
  assert.equal(afterWindow.action, 'kicked_reconnect');
+});
+
+test('chỉ thử mở Server Mute trên phòng thoại khi có Mute Members, tối đa một lượt mỗi 30 giây', () => {
+ const context = { serverMute: true, channelId: '100', isVoiceChannel: true, isAfk: false, canMuteMembers: true };
+ assert.equal(shouldAttemptSelfUnmute({ ...context, now: 1000 }), true);
+ assert.equal(shouldAttemptSelfUnmute({ ...context, lastAttemptAt: 1000, now: 15000 }), false);
+ assert.equal(shouldAttemptSelfUnmute({ ...context, lastAttemptAt: 1000, now: 31000 }), true);
+ assert.equal(shouldAttemptSelfUnmute({ ...context, canMuteMembers: false, now: 1000 }), false);
+ assert.equal(shouldAttemptSelfUnmute({ ...context, isAfk: true, now: 1000 }), false);
+ assert.equal(shouldAttemptSelfUnmute({ ...context, isVoiceChannel: false, now: 1000 }), false);
+ assert.equal(shouldAttemptSelfUnmute({ ...context, serverMute: false, now: 1000 }), false);
+ const event = { action: 'muted', newChannelId: '100', muteReason: 'server_mute', autoUnmuteAttempted: true, shouldPause: true };
+ assert.match(buildVoiceGuardEmbed(event).toJSON().description, /tự mở mic một lần/);
+ assert.match(buildVoiceGuardEmbed({ ...event, autoUnmuteAttempted: false, autoUnmutePermissionMissing: true }).toJSON().description, /Mute Members/);
 });

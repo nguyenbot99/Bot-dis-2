@@ -83,7 +83,7 @@ import {
  parseGifTimingRange,
  parseQualityAndFpsInput,
 } from './src/videoToGif.js';
-import { buildVoiceGuardEmbed, evaluateBotVoiceTransition, shouldAttemptSelfUnmute } from './src/voiceGuard.js';
+import { buildVoiceGuardEmbed, evaluateBotVoiceTransition, shouldAttemptSelfUnmute, isMuteNoticeStale, invalidateMuteNotice } from './src/voiceGuard.js';
 import { createSelfUnmuteController } from './src/selfUnmute.js';
 import { buildHelpPayload, commands, CONTEXT_AVATAR_NAME, CONTEXT_GIF_NAME, CONTEXT_PLAY_NAME, dmCommands } from './src/commands.js';
 import {
@@ -1103,18 +1103,15 @@ async function sendVoiceGuardAlert(textChannel, userdata, event, guildId = textC
  if (!embed || !textChannel?.send) return;
  const payload = { embeds: [embed], allowedMentions: { parse: [] } };
 
- // Khi mở lại mic, ưu tiên sửa đè ngay lên khung báo tắt mic trước đó để kênh chat luôn sạch sẽ.
- if (event.action === 'unmuted' && userdata?.voiceAlertMessage) {
-  const edited = await userdata.voiceAlertMessage.edit(payload).catch(() => null);
-  if (edited) {
-   schedulePanelAutoDelete(edited, null, 60000, textChannel.id);
-   return;
-  }
- }
-
+ const isMuteEvent = event.action === 'muted' || event.action === 'joined_muted';
+ // Chống sót khung cũ khi Discord báo mở mic ngay trong lúc gửi thông báo mute.
+ if (isMuteEvent && userdata && !userdata.voiceMuted) return;
  const isKickEvent = String(event.action).startsWith('kicked_');
  const startedAt = Date.now();
- if (!isKickEvent && userdata && startedAt - (userdata.lastVoiceAlertAt ?? 0) < 3000) return;
+ if (!isKickEvent && userdata?.voiceAlertMessage && startedAt - (userdata.lastVoiceAlertAt ?? 0) < 3000) return;
+ const muteGeneration = isMuteEvent && userdata
+  ? (userdata.muteAlertGeneration = (userdata.muteAlertGeneration ?? 0) + 1)
+  : null;
  if (isKickEvent && guildId) {
   // Khóa chống gửi đúp khi Discord bắn 2 sự kiện VoiceStateUpdate liên tiếp lúc bị kick.
   if (startedAt - (guildLastKickAlertAt.get(guildId) ?? 0) < 4000) return;
@@ -1130,10 +1127,16 @@ async function sendVoiceGuardAlert(textChannel, userdata, event, guildId = textC
   if (userdata.voiceAlertMessage) {
    void deleteDiscordMessage(client.rest, userdata.voiceAlertMessage, textChannel.id);
    userdata.voiceAlertMessage = null;
+   userdata.voiceAlertKind = null;
   }
  }
  const sent = await textChannel.send(payload).catch(() => null);
  if (!sent) return;
+ if (isMuteEvent && isMuteNoticeStale(userdata, muteGeneration)) {
+  // Mic đã mở trong lúc Discord đang xử lý lệnh gửi: xóa ngay thông báo trễ.
+  void deleteDiscordMessage(client.rest, sent, textChannel.id);
+  return;
+ }
  if (isKickEvent && guildId) {
   if ((guildLastRejoinAt.get(guildId) ?? 0) >= startedAt) {
    void deleteDiscordMessage(client.rest, sent, textChannel.id);
@@ -1146,7 +1149,15 @@ async function sendVoiceGuardAlert(textChannel, userdata, event, guildId = textC
   schedulePanelAutoDelete(sent, null, IDLE_PANEL_AUTO_DELETE_MS, textChannel.id);
   return;
  }
- if (userdata && !isKickEvent) userdata.voiceAlertMessage = sent;
+ if (userdata && !isKickEvent) {
+  userdata.voiceAlertMessage = sent;
+  userdata.voiceAlertKind = isMuteEvent ? 'mute' : 'other';
+ }
+}
+
+function clearMuteAlertOnUnmute(userdata, fallbackChannelId = null) {
+ const message = invalidateMuteNotice(userdata);
+ if (message) void deleteDiscordMessage(client.rest, message, fallbackChannelId);
 }
 
 // Cập nhật dòng trạng thái dưới tên bot trong Discord để mọi thành viên thấy tên bài đang phát & địa chỉ Website Now Playing.
@@ -2270,6 +2281,7 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
 
   if (ev.action === 'unmuted') {
    selfUnmuteController.stop(guild.id);
+   clearMuteAlertOnUnmute(p.userdata, p.userdata.textChannel?.id);
    if (ev.shouldResume && p.queue?.currentTrack) p.resume();
    if (p.userdata.idleOpen && !p.queue?.currentTrack) {
     if (p.userdata.panelMessage) {
@@ -2280,7 +2292,6 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
    } else {
     schedulePanelUpdate(p, { paused: Boolean(p.isPaused), voiceMuted: false, muteReason: null });
    }
-   void sendVoiceGuardAlert(p.userdata.textChannel, p.userdata, ev);
    return;
   }
 

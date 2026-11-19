@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildVoiceGuardEmbed, evaluateBotVoiceTransition, shouldAttemptSelfUnmute } from '../src/voiceGuard.js';
+import { buildVoiceGuardEmbed, evaluateBotVoiceTransition, shouldAttemptSelfUnmute, isMuteNoticeStale, invalidateMuteNotice } from '../src/voiceGuard.js';
 import { buildIdle247Payload, buildPlayerPayload } from '../src/playerGui.js';
 
 test('detects Server Mute, auto-pauses playing music, and auto-resumes when unmuted', () => {
@@ -188,4 +188,27 @@ test('mở mic quá nhanh vẫn yêu cầu RESUME dù PAUSE bất đồng bộ c
  assert.equal(ev.action, 'unmuted');
  assert.equal(ev.shouldResume, true);
  assert.equal(session.autoPausedByMute, false);
+});
+
+test('mở mic xóa khung cảnh báo mute ngay và không giữ thông báo gửi chậm', () => {
+ const msg = { id: 'message-1', channelId: 'chat' };
+ const session = { voiceMuted: true, voiceAlertKind: 'mute', voiceAlertMessage: msg, muteAlertGeneration: 7 };
+ assert.equal(isMuteNoticeStale(session, 7), false);
+ assert.equal(invalidateMuteNotice(session), msg);
+ assert.equal(session.voiceAlertMessage, null);
+ assert.equal(session.voiceAlertKind, null);
+ assert.equal(isMuteNoticeStale(session, 7), true);
+ session.voiceMuted = false;
+ assert.equal(isMuteNoticeStale(session, 8), true);
+});
+
+test('mở mic không xóa nhầm thông báo AFK và loại bỏ tin mute cũ sau khi mute lại nhanh', () => {
+ const other = { id: 'afk-msg' };
+ const session = { voiceMuted: true, voiceAlertKind: 'other', voiceAlertMessage: other, muteAlertGeneration: 1 };
+ assert.equal(invalidateMuteNotice(session), null);
+ assert.equal(session.voiceAlertMessage, other);
+ session.voiceMuted = false;
+ session.voiceMuted = true;
+ session.muteAlertGeneration++;
+ assert.equal(isMuteNoticeStale(session, 1), true);
 });

@@ -2,6 +2,21 @@ import { EmbedBuilder } from 'discord.js';
 
 export const KICK_WINDOW_MS = 30_000;
 export const MAX_RECONNECT_KICKS = 2;
+
+// Thông báo mute gửi chậm hơn sự kiện mở mic không được lưu lại trong kênh chat.
+export function isMuteNoticeStale(userdata, generation) {
+ return !userdata?.voiceMuted || Boolean(userdata.manualDisconnect) || userdata.muteAlertGeneration !== generation;
+}
+
+export function invalidateMuteNotice(userdata) {
+ if (!userdata) return null;
+ userdata.muteAlertGeneration = (userdata.muteAlertGeneration ?? 0) + 1;
+ if (userdata.voiceAlertKind !== 'mute') return null;
+ const message = userdata.voiceAlertMessage;
+ userdata.voiceAlertMessage = null;
+ userdata.voiceAlertKind = null;
+ return message ?? null;
+}
 export function shouldAttemptSelfUnmute({ serverMute, channelId, isVoiceChannel, isAfk, canMuteMembers }) {
  return Boolean(serverMute && channelId && isVoiceChannel && !isAfk && canMuteMembers);
 }

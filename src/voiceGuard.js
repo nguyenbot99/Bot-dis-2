@@ -20,7 +20,9 @@ export function evaluateBotVoiceTransition(oldState, newState, session = {}, opt
  const oldChannelId = oldState?.channelId ?? null;
  const newChannelId = newState?.channelId ?? null;
 
- const wasMuted = Boolean(oldState?.serverMute || oldState?.suppress || session.voiceMuted);
+ // Ưu tiên trạng thái thật do Discord gửi; cờ phiên có thể còn sót sau khi
+ // chuyển phòng/khôi phục, không được che sự kiện Server Mute mới.
+ const wasMuted = Boolean(oldState?.serverMute || oldState?.suppress);
  const isMuted = Boolean(newState?.serverMute || newState?.suppress);
  const muteReason = newState?.serverMute
   ? 'server_mute'
@@ -99,7 +101,7 @@ export function evaluateBotVoiceTransition(oldState, newState, session = {}, opt
  }
 
  // 4. Trường hợp phát hiện thay đổi trạng thái mic (bị tắt mic hoặc được mở lại mic).
- if (!wasMuted && isMuted) {
+ if (isMuted && (!wasMuted || (options.isPlaying && !options.isPaused) || Boolean(oldState?.serverMute) !== Boolean(newState?.serverMute))) {
   const shouldPause = Boolean(options.isPlaying && !options.isPaused);
   if (shouldPause) session.autoPausedByMute = true;
   return {
@@ -111,7 +113,8 @@ export function evaluateBotVoiceTransition(oldState, newState, session = {}, opt
  }
 
  if (wasMuted && !isMuted) {
-  const shouldResume = Boolean(session.autoPausedByMute && options.isPaused);
+  // PAUSE là RPC bất đồng bộ; sự kiện mở mic có thể đến trước khi isPaused đổi thành true.
+  const shouldResume = Boolean(session.autoPausedByMute);
   session.autoPausedByMute = false;
   return {
    action: 'unmuted',

@@ -160,3 +160,34 @@ test('chỉ thử mở Server Mute trên phòng thoại khi có Mute Members, t�
  assert.match(buildVoiceGuardEmbed(event).toJSON().description, /tự mở mic một lần/);
  assert.match(buildVoiceGuardEmbed({ ...event, autoUnmuteAttempted: false, autoUnmutePermissionMissing: true }).toJSON().description, /Mute Members/);
 });
+
+test('Server Mute mới không bị cờ phiên cũ che và bot vẫn tạm dừng nếu còn phát khi đang bị mute', () => {
+ const session = { voiceMuted: true, autoPausedByMute: false };
+ const fresh = evaluateBotVoiceTransition(
+  { channelId: '100', serverMute: false },
+  { channelId: '100', serverMute: true },
+  session, { isPlaying: true, isPaused: false },
+ );
+ assert.equal(fresh.action, 'muted');
+ assert.equal(fresh.shouldPause, true);
+ assert.equal(session.autoPausedByMute, true);
+ const stillPlaying = evaluateBotVoiceTransition(
+  { channelId: '100', serverMute: true },
+  { channelId: '100', serverMute: true },
+  { voiceMuted: true }, { isPlaying: true, isPaused: false },
+ );
+ assert.equal(stillPlaying.action, 'muted');
+ assert.equal(stillPlaying.shouldPause, true);
+});
+
+test('mở mic quá nhanh vẫn yêu cầu RESUME dù PAUSE bất đồng bộ chưa cập nhật isPaused', () => {
+ const session = { autoPausedByMute: true };
+ const ev = evaluateBotVoiceTransition(
+  { channelId: '100', serverMute: true },
+  { channelId: '100', serverMute: false },
+  session, { isPlaying: true, isPaused: false },
+ );
+ assert.equal(ev.action, 'unmuted');
+ assert.equal(ev.shouldResume, true);
+ assert.equal(session.autoPausedByMute, false);
+});

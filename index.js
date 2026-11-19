@@ -84,6 +84,7 @@ import {
  parseQualityAndFpsInput,
 } from './src/videoToGif.js';
 import { buildVoiceGuardEmbed, evaluateBotVoiceTransition, shouldAttemptSelfUnmute } from './src/voiceGuard.js';
+import { createSelfUnmuteController } from './src/selfUnmute.js';
 import { buildHelpPayload, commands, CONTEXT_AVATAR_NAME, CONTEXT_GIF_NAME, CONTEXT_PLAY_NAME, dmCommands } from './src/commands.js';
 import {
  buildAddSongModal,
@@ -444,7 +445,37 @@ const guildLastRejoinAt = new Map();
 const guildKickSnapshots = new Map();
 const guildKickAttempts = new Map(); // Giữ lượt kick giữa hai phiên Player để không lặp vô hạn.
 const guildKickRecoveryPending = new Map();
-const guildLastSelfUnmuteAttempt = new Map();
+// Một vòng thử mở mic cho một phiên thoại; chỉ hoạt động khi Discord còn báo Server Mute.
+const selfUnmuteController = createSelfUnmuteController({
+ intervalMs: 5000,
+ getContext: async (guildId, channelId, initialVoiceState) => {
+  const guild = client.guilds.cache.get(guildId);
+  const p = manager.get(guildId);
+  const vs = initialVoiceState ?? guild?.voiceStates.cache.get(client.user?.id);
+  const active = Boolean(!closing && p && !p.destroyed && !p.userdata?.manualDisconnect && vs?.channelId === channelId);
+  if (!active || !vs?.serverMute) return { active, muted: false };
+  const me = guild.members.me ?? vs.member ?? await guild.members.fetchMe().catch(() => null);
+  const room = vs.channel ?? guild.channels.cache.get(channelId) ?? await guild.channels.fetch(channelId).catch(() => null);
+  const canUnmute = shouldAttemptSelfUnmute({
+   serverMute: vs.serverMute, channelId, isVoiceChannel: room?.type === 2,
+   isAfk: channelId === guild.afkChannelId,
+   canMuteMembers: Boolean(me && room?.permissionsFor(me)?.has(PermissionFlagsBits.MuteMembers)),
+  });
+  return { active, muted: true, canUnmute, unmute: async () => {
+   await vs.setMute(false, 'Bot tự mở mic khi bị Server Mute');
+   console.log('[mở-mic] Đã gửi yêu cầu bỏ Server Mute; sẽ kiểm tra lại sau 5 giây nếu vẫn bị mute.');
+  } };
+ },
+ onError: (guildId, err) => {
+  console.warn('[mở-mic] Không mở được Server Mute:', err?.code ?? err?.message ?? 'Lỗi');
+  if (err?.code === 50013 || err?.status === 403 || String(err?.message).includes('thiếu quyền')) {
+   manager.get(guildId)?.userdata?.textChannel?.send?.({
+    content: '⚠️ Bot không tự mở mic được: thiếu quyền **Tắt tiếng thành viên (Mute Members)** tại phòng thoại hoặc Discord từ chối. Nhờ quản trị viên kiểm tra.',
+    allowedMentions: { parse: [] },
+   }).catch(() => {});
+  }
+ },
+});
 const pendingAutoDeletes = new Map();
 const pendingSearches = new Map(); // token -> { userId, guildId, playNext, tracks, expiresAt }
 const channelLastSweepAt = new Map();
@@ -1136,6 +1167,7 @@ function updateBotPresence(track = null) {
 
 // Đóng toàn bộ phiên phát, xóa mọi bộ hẹn giờ/tham chiếu và cho bot rời khỏi kênh thoại.
 async function destroyPlayerSession(guildId, reason) {
+ selfUnmuteController.stop(guildId);
  sleepTimerManager.cancel(guildId);
  ttsController.cancelGuild(guildId);
  clearPersistedSession(guildId);
@@ -2074,6 +2106,7 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
 
  // Trường hợp trạng thái thoại của chính bot thay đổi (vào phòng, bị tắt/mở mic, bị kéo phòng hoặc bị kick).
  if ((newState.id ?? oldState.id) === client.user?.id) {
+  if (!newState.channelId || !newState.serverMute) selfUnmuteController.stop(guild.id);
   // Nếu bị kéo sang phòng khác, dùng rejoin của kết nối hiện tại để quay lại phòng cũ.
   // Giới hạn số lần thử để tránh vòng lặp khi quản trị viên liên tục di chuyển bot.
   if (oldState.channelId && newState.channelId && oldState.channelId !== newState.channelId && !p.userdata.manualDisconnect) {
@@ -2227,42 +2260,16 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
    } else {
     schedulePanelUpdate(p, { paused: Boolean(p.isPaused), voiceMuted: true, muteReason: ev.muteReason });
    }
-   // Server Mute là trạng thái phía Discord. Dùng newState ngay tại sự kiện,
-   // không đợi gửi thông báo hoặc đọc voiceStates.cache (có thể còn cũ).
-   void (async () => {
-    const me = guild.members.me ?? newState.member ?? await guild.members.fetchMe().catch(() => null);
-    const room = newState.channel ?? guild.channels.cache.get(newState.channelId)
-     ?? await guild.channels.fetch(newState.channelId).catch(() => null);
-    const canMuteMembers = Boolean(me && room?.permissionsFor(me)?.has(PermissionFlagsBits.MuteMembers));
-    const attemptUnmute = shouldAttemptSelfUnmute({
-     serverMute: newState.serverMute,
-     channelId: newState.channelId,
-     isVoiceChannel: room?.type === 2,
-     isAfk: newState.channelId === guild.afkChannelId,
-     canMuteMembers,
-     lastAttemptAt: guildLastSelfUnmuteAttempt.get(guild.id) ?? 0,
-    });
-    if (newState.serverMute) {
-     ev.autoUnmuteAttempted = attemptUnmute;
-     ev.autoUnmutePermissionMissing = !canMuteMembers;
-    }
-    // Không để yêu cầu gửi tin nhắn mạng chậm ngăn việc tự mở mic.
-    void sendVoiceGuardAlert(p.userdata?.textChannel, p.userdata, ev).catch(() => {});
-    if (!attemptUnmute || p.destroyed || manager.get(guild.id) !== p) return;
-    if (guildLastSelfUnmuteAttempt.size >= 50 && !guildLastSelfUnmuteAttempt.has(guild.id)) guildLastSelfUnmuteAttempt.clear();
-    guildLastSelfUnmuteAttempt.set(guild.id, Date.now());
-    try {
-     await newState.setMute(false, 'Bot tự mở mic một lần sau khi bị Server Mute');
-     console.log(`[mở-mic] Đã yêu cầu Discord bỏ Server Mute tại ${newState.channelId}.`);
-    } catch (err) {
-     console.warn('[mở-mic] Discord từ chối bỏ Server Mute:', err?.code ?? err?.message ?? 'Lỗi');
-     p.userdata?.textChannel?.send?.({ content: '⚠️ Discord từ chối để bot tự mở mic. Hãy kiểm tra quyền **Tắt tiếng thành viên (Mute Members)** trong đúng kênh thoại và nhờ quản trị viên mở mic.', allowedMentions: { parse: [] } }).catch(() => {});
-    }
-   })().catch(err => console.warn('[mở-mic] Không xử lý được sự kiện:', err?.code ?? err?.message ?? 'Lỗi'));
+   if (newState.serverMute && newState.channelId && newState.channelId !== guild.afkChannelId) {
+    ev.autoUnmuteAttempted = true;
+    selfUnmuteController.start(guild.id, newState.channelId, newState);
+   }
+   void sendVoiceGuardAlert(p.userdata.textChannel, p.userdata, ev);
    return;
   }
 
   if (ev.action === 'unmuted') {
+   selfUnmuteController.stop(guild.id);
    if (ev.shouldResume && p.queue?.currentTrack) p.resume();
    if (p.userdata.idleOpen && !p.queue?.currentTrack) {
     if (p.userdata.panelMessage) {

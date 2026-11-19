@@ -2,14 +2,8 @@ import { EmbedBuilder } from 'discord.js';
 
 export const KICK_WINDOW_MS = 30_000;
 export const MAX_RECONNECT_KICKS = 2;
-export const AUTO_UNMUTE_COOLDOWN_MS = 30_000;
-
-// Chỉ thử mở mic máy chủ một lần trong mỗi cửa sổ 30 giây, tránh đối đầu lặp với quản trị viên.
-export function shouldAttemptSelfUnmute({ serverMute, channelId, isVoiceChannel, isAfk, canMuteMembers, lastAttemptAt = 0, now = Date.now() }) {
- return Boolean(
-  serverMute && channelId && isVoiceChannel && !isAfk && canMuteMembers &&
-  (lastAttemptAt === 0 || now - lastAttemptAt >= AUTO_UNMUTE_COOLDOWN_MS),
- );
+export function shouldAttemptSelfUnmute({ serverMute, channelId, isVoiceChannel, isAfk, canMuteMembers }) {
+ return Boolean(serverMute && channelId && isVoiceChannel && !isAfk && canMuteMembers);
 }
 
 // Phân tích trạng thái thoại của bot (bị tắt mic Server Mute / khóa mic Sân khấu / bị kick khỏi phòng / bị kéo sang kênh AFK).
@@ -156,10 +150,10 @@ export function buildVoiceGuardEmbed(event, { autoDeleteMs = 270000 } = {}) {
        `🔇 Bot đang bị **Tắt mic máy chủ (Server Mute)** trong kênh <#${event.newChannelId}>.`,
        event.shouldPause ? '⏸️ Đã **tự động tạm dừng nhạc** — khi bạn mở lại mic, bot sẽ tự phát tiếp!' : null,
        event.autoUnmuteAttempted
-        ? '🔓 Bot đang thử **tự mở mic một lần**. Nếu tiếp tục bị tắt mic trong 30 giây, bot sẽ không lặp lại.'
+        ? '🔓 Bot sẽ thử tự mở mic **mỗi 5 giây** khi còn bị Server Mute trong phòng thoại.'
         : event.autoUnmutePermissionMissing
          ? '💡 Muốn bot tự mở mic, hãy cấp quyền **Tắt tiếng thành viên (Mute Members)**; nếu không, nhờ quản trị viên mở mic thủ công.'
-         : '💡 Bot vừa thử tự mở mic gần đây; hãy đợi hoặc nhờ quản trị viên mở mic thủ công.',
+         : '💡 Bot không thể tự mở mic tại kênh này; nhờ quản trị viên kiểm tra.',
       ].filter(Boolean).join('\n');
    return new EmbedBuilder()
     .setColor(0xed4245)

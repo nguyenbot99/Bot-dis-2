@@ -85,6 +85,7 @@ import {
 } from './src/videoToGif.js';
 import { buildVoiceGuardEmbed, evaluateBotVoiceTransition, shouldAttemptSelfUnmute, isMuteNoticeStale, invalidateMuteNotice } from './src/voiceGuard.js';
 import { createSelfUnmuteController } from './src/selfUnmute.js';
+import { createIdle247RecoveryPolicy, IDLE_247_CHECK_MS } from './src/idle247Guard.js';
 import { buildHelpPayload, commands, CONTEXT_AVATAR_NAME, CONTEXT_GIF_NAME, CONTEXT_PLAY_NAME, dmCommands } from './src/commands.js';
 import {
  buildAddSongModal,
@@ -2100,6 +2101,65 @@ async function executeWebRemoteCommand(cmd) {
  }
 }
 
+// Phòng 24/7 rảnh có thể rớt riêng kết nối thoại khi Gateway vẫn online;
+// VoiceStateUpdate không phải lúc nào cũng báo. Chỉ đọc trạng thái cache mỗi 20s.
+const idle247RecoveryPolicy = createIdle247RecoveryPolicy();
+let idle247WatchBusy = false;
+const idle247LimitWarnedAt = new Map();
+async function checkIdle247Voice() {
+ if (closing || !client.isReady() || idle247WatchBusy) return;
+ idle247WatchBusy = true;
+ try {
+  for (const p of manager.getAll()) {
+   const ud = p?.userdata;
+   const guild = client.guilds.cache.get(p?.guildId);
+   const roomId = ud?.voiceChannelId;
+   const active = Boolean(guild && roomId && !p.destroyed && ud.stay247 &&
+    !ud.manualDisconnect && !ud.kickHandled && !ud.returningVoiceChannelId &&
+    (!ud.restoringUntil || Date.now() >= ud.restoringUntil) &&
+    !p.queue?.currentTrack && !p.isPlaying && !guildKickRecoveryPending.has(p.guildId));
+   const voiceState = guild?.voiceStates.cache.get(client.user?.id);
+   const ready = p.connection?.state?.status === 'ready';
+   const healthy = Boolean(ready && voiceState?.channelId === roomId);
+   const decision = idle247RecoveryPolicy.check(p.guildId, { active, healthy });
+   if (decision === 'limit') {
+    if (Date.now() - (idle247LimitWarnedAt.get(p.guildId) ?? 0) > 10 * 60_000) {
+     idle247LimitWarnedAt.set(p.guildId, Date.now());
+     console.warn('[247-watch] Kết nối thoại vẫn vắng sau 2 lần thử trong 10 phút; tạm ngừng để tránh lặp với quản trị viên.');
+     ud.textChannel?.send?.({ content: `⚠️ Bot chưa thể ở lại phòng <#${roomId}> dù đang bật 24/7. Đã thử nối lại 2 lần và tạm ngừng; kiểm tra mạng/quyền hoặc gọi \`/join\`.`, allowedMentions: { parse: [] } }).catch(() => {});
+    }
+    continue;
+   }
+   if (decision !== 'reconnect') continue;
+   const recentKicks = guildKickAttempts.get(p.guildId)?.filter(ts => Date.now() - ts < 30_000) ?? [];
+   if (recentKicks.length > 0) continue; // Không đánh nhau với việc kick có chủ ý.
+   const room = guild.channels.cache.get(roomId);
+   const me = guild.members.me ?? await guild.members.fetchMe().catch(() => null);
+   if (!room || room.type !== 2 || !me?.permissionsIn(room)?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect, PermissionFlagsBits.Speak])) {
+    console.warn(`[247-watch] Không đủ quyền hoặc không tìm thấy phòng ${roomId}; không thử nối lại.`);
+    continue;
+   }
+   try {
+    console.warn(`[247-watch] Phòng 24/7 rảnh mất trạng thái thoại (voice=${voiceState?.channelId ?? 'none'}, connection=${p.connection?.state?.status ?? 'none'}), đang thử vào lại.`);
+    if (ready && voiceState?.channelId !== roomId) {
+     const accepted = p.connection.rejoin({ channelId: roomId, selfDeaf: true, selfMute: false });
+     if (!accepted) throw new Error('Kết nối thoại từ chối yêu cầu rejoin.');
+    } else {
+     await p.connect(room);
+    }
+    if (manager.get(p.guildId) === p && !p.destroyed) persistActiveSession(p, { immediate: true });
+    console.log('[247-watch] Đã gửi yêu cầu nối lại phòng 24/7; sẽ kiểm tra trạng thái ở nhịp tiếp theo.');
+   } catch (err) {
+    console.warn('[247-watch] Nối lại phòng 24/7 chưa thành công:', err?.message ?? 'Lỗi');
+   }
+  }
+ } catch (err) {
+  console.warn('[247-watch] Lỗi kiểm tra phòng 24/7:', err?.message ?? 'Lỗi');
+ } finally { idle247WatchBusy = false; }
+}
+const idle247WatchTimer = setInterval(() => { void checkIdle247Voice(); }, IDLE_247_CHECK_MS);
+idle247WatchTimer.unref?.();
+
 // Theo dõi biến động kênh thoại: phát hiện bị tắt mic (Server Mute / Stage), bị kick khỏi phòng, chuyển kênh AFK, hoặc kênh trống.
 let socialPreviewBusy = false;
 
@@ -2193,6 +2253,9 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
    isPaused: Boolean(p.isPaused),
    autoReconnectNormal: Boolean(p.queue?.currentTrack || p.currentTrack),
   });
+  if (ev.action.startsWith('kicked_')) {
+   console.warn(`[voice-guard] Bot rời phòng thoại; loại=${ev.action}, 24/7=${Boolean(p.userdata.stay247)}, phòng=${ev.oldChannelId ?? 'none'}.`);
+  }
   if (ev.action.startsWith('kicked_') && ev.kickCount) {
    if (guildKickAttempts.size >= 50 && !guildKickAttempts.has(guild.id)) guildKickAttempts.clear();
    guildKickAttempts.set(guild.id, p.userdata.kickTimestamps);

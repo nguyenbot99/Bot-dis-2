@@ -5,7 +5,7 @@ import { ActivityType, Client, Events, GatewayIntentBits, MessageFlags, Options,
 import { PlayerManager } from 'ziplayer';
 import ffmpeg from 'ffmpeg-static';
 import { isRecoverableNetworkOrStreamError } from './src/networkShield.js';
-import { playTrackChecked } from './src/playResult.js';
+import { playTrackChecked, pausePlayerSafely } from './src/playResult.js';
 import { resolveSocialPreview, downloadPreviewMedia, buildSocialPreviewPayload } from './src/socialPreview.js';
 import {
  ensureYouTubeVisitorSession,
@@ -1027,7 +1027,7 @@ async function restoreKickSnapshotIfAny(player, voiceChannel, fallbackUserId) {
   if (seekOk) resumedAtMs = snap.positionMs;
  }
  if (snap.wasPaused && !player.isPaused) {
-  await player.pause().catch(() => {});
+  await pausePlayerSafely(player);
  }
  if (player.destroyed || manager.get(guildId) !== player) return null;
  if (guildKickSnapshots.get(guildId) === snap) guildKickSnapshots.delete(guildId);
@@ -1070,7 +1070,9 @@ function scheduleKickRecovery({ guild, channelId, textChannel, ownerId, was247, 
      return;
     }
     const pos = restored.resumedAtMs > 0 ? ` tại mốc ${formatDuration(restored.resumedAtMs)}` : ' (không tua được tới mốc cũ)';
-    textChannel?.send?.({ content: `▶️ Bot đã vào lại <#${channelId}> và phát tiếp **${cleanText(restored.track.title, 85)}**${pos}.`, allowedMentions: { parse: [] } }).catch(() => {});
+    console.log(`[khôi-phục-kick] ✅ Đã vào lại phòng ${channelId}, khôi phục bài cũ${restored.resumedAtMs > 0 ? ' và mốc tua' : ''}.`);
+    const action = snapshot?.wasPaused ? 'khôi phục bài đang tạm dừng' : 'phát tiếp';
+    textChannel?.send?.({ content: `▶️ Bot đã vào lại <#${channelId}> và ${action} **${cleanText(restored.track.title, 85)}**${pos}.`, allowedMentions: { parse: [] } }).catch(() => {});
    } else if (was247) {
     void closeCurrentPanel(player, 'Đã vào lại phòng thoại 24/7 sau khi ngắt kết nối.', { keepIdle247: true });
    }
@@ -2551,7 +2553,7 @@ async function restorePersistedSessionsOnStartup(readyClient, gatewayFallback = 
       await p.seek(snap.positionMs).catch(() => {});
      }
      if (snap.wasPaused && !p.isPaused) {
-      await p.pause().catch(() => {});
+      await pausePlayerSafely(p);
      }
      if (p.userdata && !p.userdata.panelMessage) {
       p.userdata.pendingKickRestoreSync = true;

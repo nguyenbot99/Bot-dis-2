@@ -258,6 +258,21 @@ export function createStatsStore({
  };
 }
 
+// Discord giới hạn mỗi ô Embed tối đa 1024 ký tự; link SoundCloud dài có thể làm /stats báo CombinedError.
+function fitStatsField(lines, fallback) {
+ if (!lines.length) return fallback;
+ const kept = [];
+ let length = 0;
+ for (const line of lines) {
+  const next = length + (kept.length ? 1 : 0) + line.length;
+  if (next > 1000) break;
+  kept.push(line);
+  length = next;
+ }
+ if (!kept.length) return fallback;
+ return kept.length < lines.length ? `${kept.join('\n')}\n…` : kept.join('\n');
+}
+
 export function buildStatsEmbed(summary, { scope = 'server', discordUser = null, botUser = null } = {}) {
  const botAvatar = botUser?.displayAvatarURL?.({ size: 128 }) ?? undefined;
  const userAvatar = discordUser?.displayAvatarURL?.({ size: 128 }) ?? botAvatar;
@@ -287,24 +302,24 @@ export function buildStatsEmbed(summary, { scope = 'server', discordUser = null,
  const medals = ['🥇', '🥈', '🥉'];
  const tracksBlock = summary.topTracks.length === 0
   ? 'Chưa có bài hát nào được phát.'
-  : summary.topTracks
+  : fitStatsField(summary.topTracks
      .slice(0, 8)
      .map((t, idx) => {
       const prefix = medals[idx] ?? `\`#${idx + 1}\``;
-      const link = t.url ? `[${cleanText(t.title, 52)}](${t.url})` : cleanText(t.title, 52);
+      const title = cleanText(t.title, 52);
+      // URL quá dài thì vẫn hiện tên bài, tránh vượt giới hạn ô Embed.
+      const link = t.url && t.url.length <= 100 ? `[${title}](${t.url})` : title;
       return `${prefix} ${link} — **${t.plays}** lần`;
-     })
-     .join('\n');
+     }), 'Chưa có bài hát nào được phát.');
 
  const djsBlock = summary.topDjs.length === 0
   ? 'Chưa có dữ liệu DJ.'
-  : summary.topDjs
+  : fitStatsField(summary.topDjs
      .slice(0, 5)
      .map((u, idx) => {
       const prefix = medals[idx] ?? `\`#${idx + 1}\``;
       return `${prefix} <@${u.userId}> — **${u.plays} bài** (*${formatTotalHoursMinutes(u.listenMs)}*)`;
-     })
-     .join('\n');
+     }), 'Chưa có dữ liệu DJ.');
 
  return new EmbedBuilder()
   .setColor(0x8b5cf6)
